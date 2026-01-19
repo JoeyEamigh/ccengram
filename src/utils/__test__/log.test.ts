@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { rm, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { log, getLogPath, setLogPath } from "../log.js";
+import { log, getLogPath, setLogPath, resetLogPath } from "../log.js";
 
 describe("Logger", () => {
   const testDir = `/tmp/ccmemory-log-test-${Date.now()}`;
@@ -17,6 +17,7 @@ describe("Logger", () => {
   afterEach(async () => {
     await log.flush();
     await rm(testDir, { recursive: true, force: true });
+    resetLogPath();
     process.env = { ...originalEnv };
   });
 

@@ -372,7 +372,7 @@ export function createMemoryStore(): MemoryStore {
 
       const now = Date.now();
       await db.execute(
-        `INSERT INTO session_memories (session_id, memory_id, created_at, usage_type)
+        `INSERT OR IGNORE INTO session_memories (session_id, memory_id, created_at, usage_type)
          VALUES (?, ?, ?, ?)`,
         [sessionId, memoryId, now, usageType]
       );

@@ -298,11 +298,11 @@ After completing a task:
 ## Phase 9: Polish
 
 ### P9.1: Integration Testing
-- [ ] **T184** Full capture flow test (`tests/integration/capture.test.ts`)
-- [ ] **T185** Search quality test (`tests/integration/search.test.ts`)
-- [ ] **T186** Concurrent instance test (`tests/integration/concurrent.test.ts`)
-- [ ] **T187** Model switching test (`tests/integration/model-switch.test.ts`)
-- [ ] **T188** Multi-agent WebSocket test (`tests/integration/websocket.test.ts`)
+- [x] **T184** Full capture flow test (`tests/integration/capture.test.ts`)
+- [x] **T185** Search quality test (`tests/integration/search.test.ts`)
+- [x] **T186** Concurrent instance test (`tests/integration/concurrent.test.ts`)
+- [x] **T187** Model switching test (`tests/integration/model-switch.test.ts`)
+- [x] **T188** Multi-agent WebSocket test (`tests/integration/websocket.test.ts`)
 
 ### P9.2: Documentation
 - [ ] **T189** Update CLAUDE.md for project

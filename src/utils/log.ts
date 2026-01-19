@@ -2,6 +2,8 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { getPaths } from "./paths.js";
 
+const isTestEnvironment = process.env["NODE_ENV"] === "test";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
 export type LogContext = Record<string, unknown>;
@@ -32,6 +34,7 @@ function parseLogLevel(str: string | undefined): LogLevel {
 
 let currentLevel: LogLevel = parseLogLevel(process.env["LOG_LEVEL"]);
 let logPath: string | null = null;
+let logPathExplicitlySet = false;
 let pendingWrites: Promise<void>[] = [];
 let directoryEnsured = false;
 
@@ -45,6 +48,13 @@ export function getLogPath(): string {
 
 export function setLogPath(path: string): void {
   logPath = path;
+  logPathExplicitlySet = true;
+  directoryEnsured = false;
+}
+
+export function resetLogPath(): void {
+  logPath = null;
+  logPathExplicitlySet = false;
   directoryEnsured = false;
 }
 
@@ -81,11 +91,15 @@ async function writeLog(
 
   const line = formatLine(level, module, message, context);
 
+  if (isTestEnvironment && !logPathExplicitlySet) {
+    return;
+  }
+
   try {
     await ensureLogDirectory();
     const path = getLogPath();
     await appendFile(path, line);
-  } catch (err) {
+  } catch {
     process.stderr.write(`[LOG WRITE FAILED] ${line}`);
   }
 }

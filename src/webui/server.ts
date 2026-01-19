@@ -28,7 +28,7 @@ type StartServerOptions = {
   open?: boolean;
 };
 
-type ServerResult = {
+export type ServerResult = {
   alreadyRunning?: boolean;
   server?: ReturnType<typeof Bun.serve>;
   checkInterval?: ReturnType<typeof setInterval>;
