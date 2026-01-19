@@ -106,14 +106,18 @@ describe("Sector Decay Rates", () => {
     const rates = Object.entries(SECTOR_DECAY_RATES).sort((a, b) => a[1] - b[1]);
     const slowest = rates[0];
     expect(slowest).toBeDefined();
-    expect(slowest[0]).toBe("emotional");
+    if (slowest) {
+      expect(slowest[0]).toBe("emotional");
+    }
   });
 
   test("episodic memories decay fastest", () => {
     const rates = Object.entries(SECTOR_DECAY_RATES).sort((a, b) => b[1] - a[1]);
     const fastest = rates[0];
     expect(fastest).toBeDefined();
-    expect(fastest[0]).toBe("episodic");
+    if (fastest) {
+      expect(fastest[0]).toBe("episodic");
+    }
   });
 
   test("all sectors have decay rates", () => {

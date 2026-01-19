@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { OllamaProvider } from "../ollama.js";
 
+function mockFetch(fn: (url: string | URL | Request) => Promise<Response>): void {
+  globalThis.fetch = mock(fn) as unknown as typeof fetch;
+}
+
 describe("OllamaProvider", () => {
   const originalFetch = globalThis.fetch;
 
@@ -12,7 +16,7 @@ describe("OllamaProvider", () => {
     const mockEmbedding = new Array(4096).fill(0).map(() => Math.random());
 
     let callCount = 0;
-    globalThis.fetch = mock(async (url: string | URL | Request) => {
+    mockFetch(async (url: string | URL | Request) => {
       const urlStr = typeof url === "string" ? url : url.toString();
       callCount++;
 
@@ -44,7 +48,7 @@ describe("OllamaProvider", () => {
   });
 
   test("returns false when Ollama is not running", async () => {
-    globalThis.fetch = mock(async () => {
+    mockFetch(async () => {
       throw new Error("ECONNREFUSED");
     });
 
@@ -58,7 +62,7 @@ describe("OllamaProvider", () => {
   });
 
   test("returns false when model is not installed", async () => {
-    globalThis.fetch = mock(async () => {
+    mockFetch(async () => {
       return new Response(
         JSON.stringify({
           models: [{ name: "llama3:latest" }],
@@ -79,7 +83,7 @@ describe("OllamaProvider", () => {
   test("embed returns vector of correct dimensions", async () => {
     const mockEmbedding = new Array(4096).fill(0).map(() => Math.random());
 
-    globalThis.fetch = mock(async (url: string | URL | Request) => {
+    mockFetch(async (url: string | URL | Request) => {
       const urlStr = typeof url === "string" ? url : url.toString();
 
       if (urlStr.includes("/api/tags")) {
@@ -107,7 +111,7 @@ describe("OllamaProvider", () => {
   test("embedBatch processes multiple texts", async () => {
     const mockEmbedding = new Array(4096).fill(0).map(() => Math.random());
 
-    globalThis.fetch = mock(async (url: string | URL | Request) => {
+    mockFetch(async (url: string | URL | Request) => {
       const urlStr = typeof url === "string" ? url : url.toString();
 
       if (urlStr.includes("/api/tags")) {
@@ -144,7 +148,7 @@ describe("OllamaProvider", () => {
   });
 
   test("handles Ollama API errors", async () => {
-    globalThis.fetch = mock(async (url: string | URL | Request) => {
+    mockFetch(async (url: string | URL | Request) => {
       const urlStr = typeof url === "string" ? url : url.toString();
 
       if (urlStr.includes("/api/tags")) {
@@ -173,7 +177,7 @@ describe("OllamaProvider", () => {
     });
 
     let calledUrl = "";
-    globalThis.fetch = mock(async (url: string | URL | Request) => {
+    mockFetch(async (url: string | URL | Request) => {
       calledUrl = typeof url === "string" ? url : url.toString();
       return new Response(JSON.stringify({ models: [] }), { status: 200 });
     });

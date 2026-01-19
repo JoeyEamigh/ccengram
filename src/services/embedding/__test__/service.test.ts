@@ -3,6 +3,10 @@ import { createDatabase, closeDatabase, setDatabase, type Database } from "../..
 import { createEmbeddingService, createEmbeddingServiceOptional } from "../index.js";
 import type { EmbeddingConfig } from "../types.js";
 
+function mockFetch(fn: (url: string | URL | Request) => Promise<Response>): void {
+  globalThis.fetch = mock(fn) as unknown as typeof fetch;
+}
+
 describe("EmbeddingService", () => {
   const originalFetch = globalThis.fetch;
   let db: Database;
@@ -18,7 +22,7 @@ describe("EmbeddingService", () => {
   });
 
   function mockOllamaAvailable(embedding: number[] = new Array(4096).fill(0.1)) {
-    globalThis.fetch = mock(async (url: string | URL | Request) => {
+    mockFetch(async (url: string | URL | Request) => {
       const urlStr = typeof url === "string" ? url : url.toString();
 
       if (urlStr.includes("localhost:11434/api/tags")) {
@@ -36,31 +40,8 @@ describe("EmbeddingService", () => {
     });
   }
 
-  function mockOpenRouterAvailable(embedding: number[] = new Array(1536).fill(0.1)) {
-    globalThis.fetch = mock(async (url: string | URL | Request) => {
-      const urlStr = typeof url === "string" ? url : url.toString();
-
-      if (urlStr.includes("openrouter.ai/api/v1/models")) {
-        return new Response(JSON.stringify({ data: [] }), { status: 200 });
-      }
-
-      if (urlStr.includes("openrouter.ai/api/v1/embeddings")) {
-        return new Response(
-          JSON.stringify({
-            data: [{ embedding, index: 0 }],
-            model: "openai/text-embedding-3-small",
-            usage: { prompt_tokens: 5, total_tokens: 5 },
-          }),
-          { status: 200 }
-        );
-      }
-
-      return new Response("Not found", { status: 404 });
-    });
-  }
-
   function mockOllamaUnavailable() {
-    globalThis.fetch = mock(async (url: string | URL | Request) => {
+    mockFetch(async (url: string | URL | Request) => {
       const urlStr = typeof url === "string" ? url : url.toString();
 
       if (urlStr.includes("localhost:11434")) {
@@ -114,7 +95,7 @@ describe("EmbeddingService", () => {
   });
 
   test("throws when no providers available", async () => {
-    globalThis.fetch = mock(async () => {
+    mockFetch(async () => {
       throw new Error("Network error");
     });
 
@@ -185,9 +166,7 @@ describe("EmbeddingService", () => {
   });
 
   test("switchProvider changes active provider", async () => {
-    let currentMock: "ollama" | "openrouter" = "ollama";
-
-    globalThis.fetch = mock(async (url: string | URL | Request) => {
+    mockFetch(async (url: string | URL | Request) => {
       const urlStr = typeof url === "string" ? url : url.toString();
 
       if (urlStr.includes("localhost:11434/api/tags")) {
@@ -257,7 +236,7 @@ describe("EmbeddingService", () => {
   });
 
   test("createEmbeddingServiceOptional returns null when no providers available", async () => {
-    globalThis.fetch = mock(async () => {
+    mockFetch(async () => {
       throw new Error("Network error");
     });
 

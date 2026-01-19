@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { OpenRouterProvider } from "../openrouter.js";
 
+function mockFetch(fn: (url: string | URL | Request) => Promise<Response>): void {
+  globalThis.fetch = mock(fn) as unknown as typeof fetch;
+}
+
 describe("OpenRouterProvider", () => {
   const originalFetch = globalThis.fetch;
   const originalEnv = { ...process.env };
@@ -23,7 +27,7 @@ describe("OpenRouterProvider", () => {
   test("uses API key from config", async () => {
     delete process.env["OPENROUTER_API_KEY"];
 
-    globalThis.fetch = mock(async () => {
+    mockFetch(async () => {
       return new Response(JSON.stringify({ data: [] }), { status: 200 });
     });
 
@@ -39,7 +43,7 @@ describe("OpenRouterProvider", () => {
   test("uses API key from environment", async () => {
     process.env["OPENROUTER_API_KEY"] = "env-test-key";
 
-    globalThis.fetch = mock(async () => {
+    mockFetch(async () => {
       return new Response(JSON.stringify({ data: [] }), { status: 200 });
     });
 
@@ -82,7 +86,7 @@ describe("OpenRouterProvider", () => {
   test("embed returns vector", async () => {
     const mockEmbedding = new Array(1536).fill(0).map(() => Math.random());
 
-    globalThis.fetch = mock(async () => {
+    mockFetch(async () => {
       return new Response(
         JSON.stringify({
           data: [{ embedding: mockEmbedding, index: 0 }],
@@ -109,7 +113,7 @@ describe("OpenRouterProvider", () => {
       { embedding: new Array(1536).fill(0.2), index: 1 },
     ];
 
-    globalThis.fetch = mock(async () => {
+    mockFetch(async () => {
       return new Response(
         JSON.stringify({
           data: mockEmbeddings,
@@ -132,7 +136,7 @@ describe("OpenRouterProvider", () => {
   });
 
   test("handles API errors", async () => {
-    globalThis.fetch = mock(async () => {
+    mockFetch(async () => {
       return new Response("Unauthorized", { status: 401 });
     });
 
@@ -145,7 +149,7 @@ describe("OpenRouterProvider", () => {
   });
 
   test("handles network errors during availability check", async () => {
-    globalThis.fetch = mock(async () => {
+    mockFetch(async () => {
       throw new Error("Network error");
     });
 
