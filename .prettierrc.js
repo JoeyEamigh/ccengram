@@ -7,7 +7,7 @@ export default {
   arrowParens: 'avoid',
   semi: true,
   plugins: ['prettier-plugin-organize-imports', 'prettier-plugin-tailwindcss'],
-  tailwindStylesheet: './apps/web/app/globals.css',
+  tailwindStylesheet: './src/webui/globals.css',
   overrides: [
     {
       files: ['*.ts', '*.js', '*.tsx', '*.jsx', '*.cjs', '*.mjs'],

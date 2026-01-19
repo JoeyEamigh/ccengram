@@ -67,6 +67,18 @@ function getCacheDir(platform: Platform): string {
 }
 
 const APP_NAME = "ccmemory";
+const DEFAULT_PORT = 37778;
+
+export function getPort(): number {
+  const envPort = process.env["CCMEMORY_PORT"];
+  if (envPort) {
+    const parsed = parseInt(envPort, 10);
+    if (!Number.isNaN(parsed) && parsed > 0 && parsed < 65536) {
+      return parsed;
+    }
+  }
+  return DEFAULT_PORT;
+}
 
 export function getPaths(): Paths {
   const platform = getPlatform();

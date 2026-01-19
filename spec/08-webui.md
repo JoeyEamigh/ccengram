@@ -15,6 +15,7 @@ The WebUI provides a browser-based interface for searching and managing memories
 ### Stack: Bun.serve + React SSR + Tailwind CSS + shadcn/ui
 
 **Why this stack:**
+
 - Bun natively supports React (JSX/TSX, SSR, hydration)
 - Tailwind CSS for utility-first styling (no custom CSS files)
 - shadcn/ui for accessible, composable components (built on Radix UI)
@@ -22,6 +23,7 @@ The WebUI provides a browser-based interface for searching and managing memories
 - SSR for fast initial loads, hydration for interactivity
 
 **Key patterns:**
+
 - Server renders React to HTML string
 - Client hydrates and takes over
 - WebSocket pushes real-time updates
@@ -2290,6 +2292,7 @@ describe("WebUI Server", () => {
 ## Acceptance Criteria
 
 ### Server & Coordination
+
 - [ ] Server starts on configurable port (default 37778)
 - [ ] First instance acquires lock and starts server
 - [ ] Additional instances register as clients without starting new server
@@ -2298,13 +2301,15 @@ describe("WebUI Server", () => {
 - [ ] Health endpoint available at /api/health
 
 ### React SSR
+
 - [ ] Initial page load returns server-rendered HTML
-- [ ] Initial data embedded in __INITIAL_DATA__ script tag
+- [ ] Initial data embedded in **INITIAL_DATA** script tag
 - [ ] Client hydrates and becomes interactive
 - [ ] Navigation works client-side after hydration
 - [ ] Browser back/forward works correctly
 
 ### WebSocket
+
 - [ ] WebSocket connection established on page load
 - [ ] Automatic reconnection on disconnect
 - [ ] Memory creation broadcasts to connected clients
@@ -2313,6 +2318,7 @@ describe("WebUI Server", () => {
 - [ ] Reinforce/deemphasize work over WebSocket
 
 ### Search & Browse
+
 - [ ] Search by query with sector filter
 - [ ] Toggle inclusion of superseded memories
 - [ ] Results show session context (date, summary snippet)
@@ -2322,6 +2328,7 @@ describe("WebUI Server", () => {
 - [ ] New memories appear in results in real-time
 
 ### Memory Detail Modal
+
 - [ ] Shows full content and metadata
 - [ ] Shows session context if available
 - [ ] Reinforce/de-emphasize buttons update salience instantly
@@ -2330,6 +2337,7 @@ describe("WebUI Server", () => {
 - [ ] View Timeline button navigates correctly
 
 ### Multi-Agent View
+
 - [ ] Lists sessions from last 24 hours
 - [ ] Groups parallel (overlapping) sessions visually
 - [ ] Shows session metadata (duration, memory count)
@@ -2340,6 +2348,7 @@ describe("WebUI Server", () => {
 - [ ] View Timeline button shows session timeline
 
 ### Timeline
+
 - [ ] Shows chronological list of memories
 - [ ] Highlights anchor memory when provided
 - [ ] Shows superseded memories with badge
@@ -2347,6 +2356,7 @@ describe("WebUI Server", () => {
 - [ ] Click memory opens detail modal
 
 ### Settings & Stats
+
 - [ ] Shows embedding provider info
 - [ ] Shows memory counts by sector
 - [ ] Shows total sessions count

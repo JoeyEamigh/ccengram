@@ -5,6 +5,42 @@
   "author": {
     "name": "JoeyEamigh"
   },
-  "homepage": "https://github.com/JoeyEamigho/ccmemory",
-  "repository": "https://github.com/JoeyEamigho/ccmemory"
+  "homepage": "https://github.com/JoeyEamigh/ccmemory",
+  "repository": "https://github.com/JoeyEamigh/ccmemory",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ccmemory-wrapper.sh hook capture",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ccmemory-wrapper.sh hook summarize",
+            "timeout": 120
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ccmemory-wrapper.sh hook cleanup",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
 }

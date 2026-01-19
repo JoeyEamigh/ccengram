@@ -35,27 +35,19 @@ ollama pull qwen3-embedding
 
 Alternatively, set `OPENROUTER_API_KEY` for cloud-based embeddings.
 
-### Option 1: Download Binary (Recommended)
+### Option 1: Quick Install (Recommended)
 
-Download the pre-built executable for your platform from the [releases page](https://github.com/your-username/ccmemory/releases):
+Install with a single command:
 
 ```bash
-# Linux x64
-wget https://github.com/your-username/ccmemory/releases/latest/download/ccmemory-linux-x64
-chmod +x ccmemory-linux-x64
-sudo mv ccmemory-linux-x64 /usr/local/bin/ccmemory
+curl -fsSL https://raw.githubusercontent.com/joeyguerra/ccmemory/main/scripts/install.sh | bash
+```
 
-# macOS ARM (Apple Silicon)
-wget https://github.com/your-username/ccmemory/releases/latest/download/ccmemory-darwin-arm64
-chmod +x ccmemory-darwin-arm64
-sudo mv ccmemory-darwin-arm64 /usr/local/bin/ccmemory
+This installs to `~/.local/bin/ccmemory` (user-scoped, no sudo required). Make sure `~/.local/bin` is in your PATH.
 
-# macOS x64 (Intel)
-wget https://github.com/your-username/ccmemory/releases/latest/download/ccmemory-darwin-x64
-chmod +x ccmemory-darwin-x64
-sudo mv ccmemory-darwin-x64 /usr/local/bin/ccmemory
+Verify installation:
 
-# Verify installation
+```bash
 ccmemory --version
 ccmemory health
 ```
@@ -155,6 +147,18 @@ ccmemory config embedding.provider ollama
 # Start WebUI
 ccmemory serve --port 37778 --open
 
+# Shutdown running server
+ccmemory shutdown
+
+# Check for updates
+ccmemory update --check
+
+# Update to latest version
+ccmemory update
+
+# Force update (even if up-to-date)
+ccmemory update --force
+
 # Import a document
 ccmemory import document.md --title "Project Docs"
 
@@ -166,17 +170,64 @@ ccmemory export --output memories.json
 
 When used as a Claude Code plugin, these tools are available:
 
-| Tool | Description |
-|------|-------------|
-| `memory_search` | Hybrid search with sector filtering |
-| `memory_timeline` | Chronological view with session grouping |
-| `memory_add` | Create new memory with auto-classification |
-| `memory_reinforce` | Increase salience (mark as useful) |
-| `memory_deemphasize` | Decrease salience (mark as less relevant) |
-| `memory_delete` | Soft delete a memory |
-| `memory_supersede` | Replace old memory with new version |
-| `docs_search` | Search ingested documents |
-| `docs_ingest` | Ingest file, URL, or raw content |
+| Tool                 | Description                                |
+| -------------------- | ------------------------------------------ |
+| `memory_search`      | Hybrid search with sector filtering        |
+| `memory_timeline`    | Chronological view with session grouping   |
+| `memory_add`         | Create new memory with auto-classification |
+| `memory_reinforce`   | Increase salience (mark as useful)         |
+| `memory_deemphasize` | Decrease salience (mark as less relevant)  |
+| `memory_delete`      | Soft delete a memory                       |
+| `memory_supersede`   | Replace old memory with new version        |
+| `docs_search`        | Search ingested documents                  |
+| `docs_ingest`        | Ingest file, URL, or raw content           |
+
+### Tool Modes
+
+CCMemory supports three tool exposure modes to control which MCP tools are available to Claude Code:
+
+| Mode     | Tools Available                                   | Use Case                                                     |
+| -------- | ------------------------------------------------- | ------------------------------------------------------------ |
+| `full`   | All 9 tools                                       | Full control over memory management                          |
+| `recall` | `memory_search`, `memory_timeline`, `docs_search` | Read-only access (memories captured automatically via hooks) |
+| `custom` | User-specified list                               | Fine-grained control                                         |
+
+**Configuration (in order of priority):**
+
+1. **Environment variable**: `CCMEMORY_TOOLS_MODE=recall`
+2. **Per-project config**: Create `.claude/ccmemory.local.md` in your project:
+   ```yaml
+   ---
+   tools:
+     mode: recall
+   ---
+   ```
+3. **Global config**: `ccmemory config tools.mode recall`
+4. **Database setting**: Via WebUI Settings
+
+**Example: Per-project recall mode**
+
+For projects where you only want Claude to recall memories (not manually add them), create `.claude/ccmemory.local.md`:
+
+```yaml
+---
+tools:
+  mode: recall
+---
+```
+
+**Example: Custom tool selection**
+
+```yaml
+---
+tools:
+  mode: custom
+  enabledTools:
+    - memory_search
+    - memory_add
+    - docs_search
+---
+```
 
 ## Architecture
 
@@ -221,39 +272,41 @@ When used as a Claude Code plugin, these tools are available:
 
 ## Memory Sectors
 
-| Sector | Description | Decay Rate |
-|--------|-------------|------------|
-| **Episodic** | What happened (tool calls, observations) | Fast (0.1/day) |
-| **Semantic** | Facts and knowledge | Slow (0.02/day) |
-| **Procedural** | How to do things (commands, workflows) | Very slow (0.01/day) |
-| **Emotional** | Preferences and reactions | Medium (0.05/day) |
-| **Reflective** | Session summaries and insights | Very slow (0.01/day) |
+| Sector         | Description                              | Decay Rate           |
+| -------------- | ---------------------------------------- | -------------------- |
+| **Episodic**   | What happened (tool calls, observations) | Fast (0.1/day)       |
+| **Semantic**   | Facts and knowledge                      | Slow (0.02/day)      |
+| **Procedural** | How to do things (commands, workflows)   | Very slow (0.01/day) |
+| **Emotional**  | Preferences and reactions                | Medium (0.05/day)    |
+| **Reflective** | Session summaries and insights           | Very slow (0.01/day) |
 
 ## Configuration
 
 ### Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `CCMEMORY_DATA_DIR` | Database location | `~/.local/share/ccmemory` |
-| `CCMEMORY_CONFIG_DIR` | Config files | `~/.config/ccmemory` |
-| `CCMEMORY_CACHE_DIR` | Cache files | `~/.cache/ccmemory` |
-| `OPENROUTER_API_KEY` | OpenRouter API key (fallback) | (none) |
-| `LOG_LEVEL` | Log verbosity: debug, info, warn, error | `info` |
+| Variable              | Description                                    | Default                   |
+| --------------------- | ---------------------------------------------- | ------------------------- |
+| `CCMEMORY_DATA_DIR`   | Database location                              | `~/.local/share/ccmemory` |
+| `CCMEMORY_CONFIG_DIR` | Config files                                   | `~/.config/ccmemory`      |
+| `CCMEMORY_CACHE_DIR`  | Cache files                                    | `~/.cache/ccmemory`       |
+| `CCMEMORY_TOOLS_MODE` | Tool exposure mode: `full`, `recall`, `custom` | `full`                    |
+| `OPENROUTER_API_KEY`  | OpenRouter API key (fallback)                  | (none)                    |
+| `LOG_LEVEL`           | Log verbosity: debug, info, warn, error        | `info`                    |
 
 ### Data Directories by Platform
 
-| Platform | Data | Config | Cache |
-|----------|------|--------|-------|
-| Linux | `~/.local/share/ccmemory` | `~/.config/ccmemory` | `~/.cache/ccmemory` |
-| macOS | `~/Library/Application Support/ccmemory` | `~/Library/Preferences/ccmemory` | `~/Library/Caches/ccmemory` |
-| Windows | `%LOCALAPPDATA%\ccmemory` | `%APPDATA%\ccmemory` | `%LOCALAPPDATA%\ccmemory\cache` |
+| Platform | Data                                     | Config                           | Cache                           |
+| -------- | ---------------------------------------- | -------------------------------- | ------------------------------- |
+| Linux    | `~/.local/share/ccmemory`                | `~/.config/ccmemory`             | `~/.cache/ccmemory`             |
+| macOS    | `~/Library/Application Support/ccmemory` | `~/Library/Preferences/ccmemory` | `~/Library/Caches/ccmemory`     |
+| Windows  | `%LOCALAPPDATA%\ccmemory`                | `%APPDATA%\ccmemory`             | `%LOCALAPPDATA%\ccmemory\cache` |
 
 ### Embedding Configuration
 
 Configure via CLI, WebUI, or config file:
 
 **CLI:**
+
 ```bash
 # View current config
 ccmemory config
@@ -267,6 +320,7 @@ ccmemory config embedding.provider openrouter
 
 **WebUI:**
 Navigate to Settings (gear icon) in the WebUI to configure:
+
 - Embedding provider and model
 - Capture settings (enable/disable, max result size)
 - Other runtime options
@@ -280,6 +334,7 @@ ccmemory serve --port 37778 --open
 ```
 
 Features:
+
 - Real-time memory updates via WebSocket
 - Search with sector filters
 - Timeline view with session grouping
@@ -366,6 +421,7 @@ Error: Failed to connect to Ollama at http://localhost:11434
 ```
 
 **Solutions:**
+
 1. Ensure Ollama is running: `ollama serve`
 2. Check if the port is blocked by firewall
 3. Verify Ollama URL: `curl http://localhost:11434/api/tags`
@@ -377,6 +433,7 @@ Error: Model qwen3-embedding not found
 ```
 
 **Solutions:**
+
 1. Pull the model: `ollama pull qwen3-embedding`
 2. Check available models: `ollama list`
 
@@ -387,6 +444,7 @@ Error: EACCES: permission denied
 ```
 
 **Solutions:**
+
 1. Create directory manually: `mkdir -p ~/.local/share/ccmemory`
 2. Fix permissions: `chmod 755 ~/.local/share/ccmemory`
 
@@ -397,30 +455,38 @@ Error: database is locked
 ```
 
 **Solutions:**
+
 1. Only one write process should access the database at a time
 2. Check for zombie processes: `ps aux | grep ccmemory`
 3. Remove stale lock files if necessary
 
 ## Updating
 
-### Plugin (Automatic)
+### Auto-Update (Recommended)
 
-The plugin automatically checks for updates hourly and downloads new versions from GitHub releases in the background. No manual action required.
+CCMemory includes a built-in update command:
 
-To force an update, delete the cached binary:
 ```bash
-rm ~/.claude/plugins/ccmemory/bin/ccmemory
-# The next hook/MCP call will download the latest version
+# Check for updates
+ccmemory update --check
+
+# Update to latest version
+ccmemory update
+
+# Force update (even if already up-to-date)
+ccmemory update --force
 ```
 
-### CLI Binary (Manual)
+### Plugin (Automatic)
 
-Download and replace the binary:
+The plugin wrapper automatically checks for updates once every 24 hours in the background. No manual action required.
+
+### Reinstall via Script
+
+Re-run the install script to get the latest version:
 
 ```bash
-wget https://github.com/your-username/ccmemory/releases/latest/download/ccmemory-linux-x64
-chmod +x ccmemory-linux-x64
-sudo mv ccmemory-linux-x64 /usr/local/bin/ccmemory
+curl -fsSL https://raw.githubusercontent.com/joeyguerra/ccmemory/main/scripts/install.sh | bash
 ```
 
 ### From Source
@@ -459,8 +525,8 @@ Users with the plugin installed will automatically receive the update within an 
 # Remove plugin
 rm -rf ~/.claude/plugins/ccmemory
 
-# Remove CLI
-sudo rm /usr/local/bin/ccmemory
+# Remove CLI (default location)
+rm ~/.local/bin/ccmemory
 
 # Remove data (optional - this deletes all memories!)
 rm -rf ~/.local/share/ccmemory

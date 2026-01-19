@@ -3,6 +3,7 @@ import { createMemoryStore } from "../../services/memory/store.js";
 import { createEmbeddingService } from "../../services/embedding/index.js";
 import { getDatabase } from "../../db/database.js";
 import { broadcastToRoom } from "../ws/handler.js";
+import { shutdownServer } from "../server.js";
 import { log } from "../../utils/log.js";
 import type { MemorySector } from "../../services/memory/types.js";
 import type { EmbeddingService } from "../../services/embedding/types.js";
@@ -148,6 +149,13 @@ export async function handleAPI(req: Request, path: string): Promise<Response> {
       const body = (await req.json()) as { projectId?: string };
       const deleted = await clearMemories(body.projectId);
       return json({ ok: true, deleted });
+    }
+
+    if (path === "/api/shutdown" && req.method === "POST") {
+      log.info("webui", "Shutdown requested via API");
+      // Respond before shutting down
+      setTimeout(() => shutdownServer(), 100);
+      return json({ ok: true, message: "Server shutting down" });
     }
 
     if (path === "/api/hooks/memory-created" && req.method === "POST") {

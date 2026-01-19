@@ -7,14 +7,14 @@ Self-contained memory plugin for Claude Code. Provides persistent, searchable me
 ```bash
 bun install                    # Install dependencies
 bun run build                  # Build single executable (dist/ccmemory)
-bun run build:plugin           # Build and copy to plugin/bin/
-bun run test                   # Run all tests (396 tests)
-./dist/ccmemory serve          # Start WebUI at localhost:37778
+bun run bin:install            # Build and copy to ~/.local/bin/ccmemory
+bun run test                   # Run all tests
 ```
 
 ## Architecture
 
 CCMemory uses a 5-sector memory model:
+
 - **Episodic**: Tool observations, session events
 - **Semantic**: Facts, documentation, code knowledge
 - **Procedural**: How-to instructions, workflows
@@ -72,8 +72,6 @@ function isMemory(obj: unknown): obj is Memory {
 
 ```bash
 bun run test                        # All tests
-bun test src/services/memory        # Specific directory
-bun test --watch                    # Watch mode
 ```
 
 - Unit tests: `src/**/__test__/*.test.ts` (colocated)
@@ -99,6 +97,7 @@ ccmemory search "query"          # Search memories
 ccmemory show <id>               # Show memory details
 ccmemory delete <id>             # Soft delete memory
 ccmemory serve                   # Start WebUI
+ccmemory shutdown                # Shutdown WebUI
 ccmemory stats                   # Show statistics
 ccmemory health                  # Check system health
 ccmemory config get <key>        # View configuration
@@ -109,6 +108,7 @@ ccmemory export <file>           # Export memories
 ## MCP Tools
 
 When used as a Claude Code plugin, these tools are available:
+
 - `memory_search` - Search memories by query
 - `memory_timeline` - View memories around a point in time
 - `memory_add` - Create new memory
@@ -122,6 +122,7 @@ When used as a Claude Code plugin, these tools are available:
 ## Hooks
 
 The plugin uses Claude Code hooks:
+
 - **PostToolUse**: Captures tool observations as episodic memories
 - **Stop**: Generates session summary as reflective memory
 - **SessionEnd**: Promotes high-salience session memories to project tier
@@ -129,23 +130,9 @@ The plugin uses Claude Code hooks:
 ## Configuration
 
 Environment variables:
+
 - `CCMEMORY_DATA_DIR` - Data directory (default: XDG data dir)
 - `CCMEMORY_CONFIG_DIR` - Config directory (default: XDG config dir)
 - `CCMEMORY_CACHE_DIR` - Cache directory (default: XDG cache dir)
 - `LOG_LEVEL` - Logging level (debug/info/warn/error)
 - `OPENROUTER_API_KEY` - API key for OpenRouter embedding fallback
-
-## Specs Reference
-
-| Spec | Topic |
-|------|-------|
-| `spec/00-overview.md` | Project overview |
-| `spec/01-database.md` | libSQL, schema, migrations |
-| `spec/02-embedding.md` | Ollama/OpenRouter providers |
-| `spec/03-memory.md` | Memory types, dedup, decay |
-| `spec/04-search.md` | FTS5, vectors, hybrid ranking |
-| `spec/05-documents.md` | Chunking, ingestion |
-| `spec/06-plugin.md` | Hooks, MCP server |
-| `spec/07-cli.md` | CLI commands |
-| `spec/08-webui.md` | Browser UI |
-| `spec/99-tasks.md` | Task tracking |

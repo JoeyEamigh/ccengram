@@ -2,6 +2,7 @@ import { FolderGit2, Brain, Users, Activity, Search, Clock } from "lucide-react"
 import { Card, CardContent, CardHeader } from "./ui/card.js";
 import { Button } from "./ui/button.js";
 import { cn } from "../lib/utils.js";
+import { RelativeTime } from "./RelativeTime.js";
 
 type Project = {
   id: string;
@@ -65,7 +66,7 @@ export function ProjectCard({ project, onClick, onViewMemories, onViewTimeline }
         {project.last_activity && (
           <div className="flex items-center gap-2 text-xs text-muted-foreground mt-3">
             <Activity className="h-3 w-3" />
-            <span>Last activity: {formatDate(project.last_activity)}</span>
+            <span>Last activity: <RelativeTime timestamp={project.last_activity} /></span>
           </div>
         )}
         <div className="flex gap-2 mt-3 pt-3 border-t">
@@ -95,28 +96,4 @@ export function ProjectCard({ project, onClick, onViewMemories, onViewTimeline }
       </CardContent>
     </Card>
   );
-}
-
-function formatDate(ts: number): string {
-  const date = new Date(ts < 1e12 ? ts * 1000 : ts);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-  if (diffDays === 0) {
-    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-    if (diffHours === 0) {
-      const diffMins = Math.floor(diffMs / (1000 * 60));
-      return diffMins <= 1 ? "just now" : `${diffMins}m ago`;
-    }
-    return `${diffHours}h ago`;
-  }
-  if (diffDays === 1) return "yesterday";
-  if (diffDays < 7) return `${diffDays}d ago`;
-
-  return date.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: date.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
-  });
 }

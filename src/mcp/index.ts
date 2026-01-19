@@ -10,10 +10,13 @@ import { createDocumentService, type DocumentSearchResult } from "../services/do
 import { createEmbeddingService } from "../services/embedding/index.js";
 import { getOrCreateProject } from "../services/project.js";
 import { supersede } from "../services/memory/relationships.js";
+import { getToolsConfig, filterTools, type ToolsConfig } from "./tools-config.js";
 import { log } from "../utils/log.js";
 import type { TimelineResult } from "../services/search/hybrid.js";
 
 console.log = console.error;
+
+let cachedToolsConfig: ToolsConfig | null = null;
 
 const TOOLS = [
   {
@@ -410,23 +413,59 @@ Match: ${r.chunk.content.slice(0, 200)}...`;
 }
 
 export async function runMcpServer(): Promise<void> {
+  const cwd = process.env["CLAUDE_PROJECT_DIR"] ?? process.cwd();
+
+  // Load tool configuration (cached for the session)
+  if (!cachedToolsConfig) {
+    cachedToolsConfig = await getToolsConfig(cwd);
+    log.info("mcp", "Tool configuration loaded", {
+      mode: cachedToolsConfig.mode,
+      enabledTools:
+        cachedToolsConfig.mode === "custom"
+          ? cachedToolsConfig.enabledTools
+          : undefined,
+    });
+  }
+
   const server = new Server(
     { name: "ccmemory", version: "1.0.0" },
     { capabilities: { tools: {} } }
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: TOOLS.map((t) => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema,
-    })),
-  }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    const filteredTools = filterTools(TOOLS, cachedToolsConfig!);
+    return {
+      tools: filteredTools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      })),
+    };
+  });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
-    const cwd = process.env["CLAUDE_PROJECT_DIR"] ?? process.cwd();
     const start = Date.now();
+
+    // Check if tool is enabled
+    const filteredTools = filterTools(TOOLS, cachedToolsConfig!);
+    const isEnabled = filteredTools.some((t) => t.name === name);
+
+    if (!isEnabled) {
+      log.warn("mcp", "Tool call rejected - not enabled", {
+        name,
+        mode: cachedToolsConfig!.mode,
+      });
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Error: Tool '${name}' is not enabled in current configuration (mode: ${cachedToolsConfig!.mode})`,
+          },
+        ],
+        isError: true,
+      };
+    }
 
     try {
       const result = await handleToolCall(name, (args ?? {}) as ToolArgs, cwd);

@@ -245,5 +245,8 @@ export function AgentView({
 }
 
 function formatDate(ts: number): string {
-  return new Date(ts).toLocaleString();
+  if (!ts || !Number.isFinite(ts)) return "";
+  const t = ts < 1e12 ? ts * 1000 : ts;
+  const date = new Date(t);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
 }

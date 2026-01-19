@@ -17,13 +17,13 @@ The memory system stores, classifies, and manages memories using a 5-sector mode
 
 Based on OpenMemory research, memories are classified into 5 sectors with different decay characteristics:
 
-| Sector | Description | Decay Rate | Examples |
-|--------|-------------|------------|----------|
-| `episodic` | Events, conversations, specific interactions | 0.02/day | "User asked about auth flow" |
-| `semantic` | Facts, knowledge, learned information | 0.005/day | "API endpoint is /api/users" |
-| `procedural` | Skills, workflows, how-to knowledge | 0.01/day | "Deploy via `bun run deploy`" |
-| `emotional` | Sentiments, frustrations, satisfactions | 0.003/day | "Frustrated by slow tests" |
-| `reflective` | Insights, patterns, lessons learned | 0.008/day | "This codebase favors composition" |
+| Sector       | Description                                  | Decay Rate | Examples                           |
+| ------------ | -------------------------------------------- | ---------- | ---------------------------------- |
+| `episodic`   | Events, conversations, specific interactions | 0.02/day   | "User asked about auth flow"       |
+| `semantic`   | Facts, knowledge, learned information        | 0.005/day  | "API endpoint is /api/users"       |
+| `procedural` | Skills, workflows, how-to knowledge          | 0.01/day   | "Deploy via `bun run deploy`"      |
+| `emotional`  | Sentiments, frustrations, satisfactions      | 0.003/day  | "Frustrated by slow tests"         |
+| `reflective` | Insights, patterns, lessons learned          | 0.008/day  | "This codebase favors composition" |
 
 ### Type Definitions
 

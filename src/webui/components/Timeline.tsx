@@ -12,6 +12,7 @@ import {
   SelectItem,
 } from "./ui/select.js";
 import { cn } from "../lib/utils.js";
+import { RelativeTime } from "./RelativeTime.js";
 import type { Memory, MemorySector } from "../../services/memory/types.js";
 import type { TimelineResult } from "../../services/search/hybrid.js";
 
@@ -79,9 +80,10 @@ function MemoryTimelineCard({
           <span className="text-sm text-muted-foreground">
             Salience: {(memory.salience * 100).toFixed(0)}%
           </span>
-          <span className="text-sm text-muted-foreground ml-auto">
-            {formatDate(memory.createdAt)}
-          </span>
+          <RelativeTime
+            timestamp={memory.createdAt}
+            className="text-sm text-muted-foreground ml-auto"
+          />
         </div>
       </CardHeader>
       <CardContent>
@@ -111,9 +113,10 @@ function BrowseMemoryCard({
           <span className="text-xs text-muted-foreground">
             {(memory.salience * 100).toFixed(0)}%
           </span>
-          <span className="text-xs text-muted-foreground ml-auto">
-            {formatTime(memory.created_at ?? memory.createdAt)}
-          </span>
+          <RelativeTime
+            timestamp={memory.created_at ?? memory.createdAt}
+            className="text-xs text-muted-foreground ml-auto"
+          />
         </div>
       </CardHeader>
       <CardContent className="space-y-2" onClick={onClick}>
@@ -547,19 +550,6 @@ export function Timeline({
       )}
     </div>
   );
-}
-
-function formatDate(ts: number): string {
-  const t = ts < 1e12 ? ts * 1000 : ts;
-  return new Date(t).toLocaleString();
-}
-
-function formatTime(ts: number): string {
-  const t = ts < 1e12 ? ts * 1000 : ts;
-  return new Date(t).toLocaleTimeString(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  });
 }
 
 function formatShortDate(dateStr: string): string {

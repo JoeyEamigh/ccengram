@@ -5,15 +5,14 @@
 set -e
 
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(dirname "$(dirname "$(realpath "$0")")")}"
-SCRIPTS_DIR="$PLUGIN_ROOT/scripts"
 BIN_DIR="$PLUGIN_ROOT/bin"
 BINARY="$BIN_DIR/ccmemory"
-VERSION_FILE="$BIN_DIR/.version"
+VERSION_FILE="$BIN_DIR/.ccmemory-version"
 UPDATE_CHECK_FILE="$BIN_DIR/.last-update-check"
-REPO="your-username/ccmemory"  # Update this with actual repo
+REPO="JoeyEamigh/ccmemory"
 
-# Only check for updates once per hour to avoid API rate limits
-UPDATE_CHECK_INTERVAL=3600
+# Update check interval: 24 hours in seconds
+UPDATE_CHECK_INTERVAL=86400
 
 should_check_updates() {
     if [ ! -f "$UPDATE_CHECK_FILE" ]; then
@@ -57,14 +56,6 @@ get_latest_version() {
     fi
 }
 
-get_installed_version() {
-    if [ -f "$VERSION_FILE" ]; then
-        cat "$VERSION_FILE"
-    else
-        echo ""
-    fi
-}
-
 download_binary() {
     local version="$1"
     local platform="$2"
@@ -97,34 +88,43 @@ download_binary() {
     echo "CCMemory: Installed ${version}" >&2
 }
 
+check_for_updates_background() {
+    # Run update check in background without blocking
+    (
+        local platform installed_version latest_version
+        platform=$(detect_platform)
+        installed_version=$(cat "$VERSION_FILE" 2>/dev/null || echo "")
+
+        latest_version=$(get_latest_version)
+        date +%s > "$UPDATE_CHECK_FILE"
+
+        if [ -n "$latest_version" ] && [ -n "$installed_version" ] && [ "$latest_version" != "$installed_version" ]; then
+            download_binary "$latest_version" "$platform"
+        fi
+    ) &>/dev/null &
+    disown 2>/dev/null || true
+}
+
 ensure_binary() {
-    local platform installed_version latest_version
+    local platform
 
-    platform=$(detect_platform)
-    installed_version=$(get_installed_version)
-
-    # If binary exists and is executable
-    if [ -x "$BINARY" ] && [ -n "$installed_version" ]; then
-        # Periodically check for updates (in background to not slow down commands)
+    # If binary exists and is executable, use it
+    if [ -x "$BINARY" ]; then
+        # Periodically check for updates in background (once per day)
         if should_check_updates; then
-            (
-                latest_version=$(get_latest_version)
-                date +%s > "$UPDATE_CHECK_FILE"
-                if [ -n "$latest_version" ] && [ "$latest_version" != "$installed_version" ]; then
-                    download_binary "$latest_version" "$platform"
-                fi
-            ) &>/dev/null &
-            disown 2>/dev/null || true
+            check_for_updates_background
         fi
         return 0
     fi
 
-    # Binary doesn't exist - must download synchronously
+    # Binary doesn't exist - try to download
+    platform=$(detect_platform)
+    local latest_version
     latest_version=$(get_latest_version)
 
     if [ -z "$latest_version" ]; then
-        echo "CCMemory Error: Cannot download binary. Check network connection." >&2
-        echo "Repository: https://github.com/$REPO/releases" >&2
+        echo "CCMemory Error: Binary not found at $BINARY" >&2
+        echo "Install with: curl -fsSL https://raw.githubusercontent.com/$REPO/main/scripts/install.sh | bash" >&2
         exit 1
     fi
 

@@ -21,6 +21,8 @@ const DEFAULT_PORT = 37778;
 type WebSocketData = { projectId?: string };
 
 let buildOutput: BuildOutput | null = null;
+let serverInstance: ReturnType<typeof Bun.serve> | null = null;
+let checkIntervalId: ReturnType<typeof setInterval> | null = null;
 
 type StartServerOptions = {
   port?: number;
@@ -124,6 +126,7 @@ export async function startServer(
   });
 
   setServer(server);
+  serverInstance = server;
 
   log.info("webui", "WebUI server started", { port });
   console.log(`CCMemory WebUI running at http://localhost:${port}`);
@@ -132,17 +135,29 @@ export async function startServer(
     openBrowser(`http://localhost:${port}`);
   }
 
-  const checkInterval = setInterval(async () => {
+  checkIntervalId = setInterval(async () => {
     const clients = await getActiveClients();
     if (clients.length === 0) {
       log.info("webui", "No active clients, shutting down server");
-      clearInterval(checkInterval);
-      server.stop();
-      await releaseLock();
+      await shutdownServer();
     }
   }, 5000);
 
-  return { server, checkInterval };
+  return { server, checkInterval: checkIntervalId };
+}
+
+export async function shutdownServer(): Promise<void> {
+  log.info("webui", "Shutting down WebUI server");
+  if (checkIntervalId) {
+    clearInterval(checkIntervalId);
+    checkIntervalId = null;
+  }
+  if (serverInstance) {
+    serverInstance.stop();
+    serverInstance = null;
+  }
+  await releaseLock();
+  process.exit(0);
 }
 
 async function renderPage(url: URL): Promise<Response> {

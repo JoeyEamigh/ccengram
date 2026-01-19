@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Activity, Zap, Minus, Trash2 } from "lucide-react";
 import { Badge } from "./ui/badge.js";
 import { cn } from "../lib/utils.js";
+import { RelativeTime } from "./RelativeTime.js";
 import type { Memory, MemorySector } from "../../services/memory/types.js";
 
 export type ActivityEvent = {
@@ -150,9 +151,10 @@ export function ActivityFeed({
                     </div>
                   </div>
                 )}
-                <span className="text-[10px] text-muted-foreground ml-auto">
-                  {formatTime(event.timestamp)}
-                </span>
+                <RelativeTime
+                  timestamp={event.timestamp}
+                  className="text-[10px] text-muted-foreground ml-auto"
+                />
               </div>
               <p className={cn("text-sm mt-1", compact ? "line-clamp-1" : "line-clamp-2")}>
                 {event.memory.summary ?? event.memory.content}
@@ -168,21 +170,4 @@ export function ActivityFeed({
       )}
     </div>
   );
-}
-
-function formatTime(ts: number): string {
-  const now = Date.now();
-  const diffMs = now - ts;
-  const diffSecs = Math.floor(diffMs / 1000);
-
-  if (diffSecs < 5) return "just now";
-  if (diffSecs < 60) return `${diffSecs}s ago`;
-
-  const diffMins = Math.floor(diffSecs / 60);
-  if (diffMins < 60) return `${diffMins}m ago`;
-
-  return new Date(ts).toLocaleTimeString(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  });
 }

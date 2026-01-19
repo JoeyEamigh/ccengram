@@ -1,6 +1,8 @@
 import { createMemoryStore } from "../services/memory/store.js";
 import { getOrCreateProject } from "../services/project.js";
 import { getOrCreateSession } from "../services/memory/sessions.js";
+import { isServerRunning, registerClient } from "../webui/coordination.js";
+import { getPort } from "../utils/paths.js";
 import { log } from "../utils/log.js";
 
 type HookInput = {
@@ -8,7 +10,7 @@ type HookInput = {
   cwd: string;
   tool_name: string;
   tool_input: Record<string, unknown>;
-  tool_result: unknown;
+  tool_response: unknown;
 };
 
 const TIMEOUT_MS = 10000;
@@ -42,10 +44,13 @@ export async function captureHook(): Promise<void> {
     process.exit(0);
   }
 
-  const { session_id, cwd, tool_name, tool_input, tool_result } = input;
+  const { session_id, cwd, tool_name, tool_input, tool_response } = input;
   log.debug("capture", "Processing tool observation", { session_id, tool_name });
 
-  const resultStr = JSON.stringify(tool_result);
+  // Ensure server is running and register this session
+  await ensureServerAndRegister(session_id);
+
+  const resultStr = JSON.stringify(tool_response);
   if (resultStr.length > 10000) {
     log.debug("capture", "Skipping large tool result", {
       tool_name,
@@ -58,8 +63,8 @@ export async function captureHook(): Promise<void> {
   const project = await getOrCreateProject(cwd);
   await getOrCreateSession(session_id, project.id);
 
-  const content = formatToolObservation(tool_name, tool_input, tool_result);
-  const files = extractFilePaths(tool_input, tool_result);
+  const content = formatToolObservation(tool_name, tool_input, tool_response);
+  const files = extractFilePaths(tool_input, tool_response);
 
   const store = createMemoryStore();
 
@@ -146,13 +151,43 @@ function extractFilePaths(
   return [...new Set(paths)];
 }
 
+async function ensureServerAndRegister(sessionId: string): Promise<void> {
+  try {
+    // Register this session as a client
+    await registerClient(sessionId);
+
+    // Check if server is already running
+    if (await isServerRunning(getPort())) {
+      log.debug("capture", "WebUI server already running");
+      return;
+    }
+
+    // Start server in background
+    log.info("capture", "Starting WebUI server in background");
+    const binaryPath = process.argv[0] ?? "ccmemory";
+    const proc = Bun.spawn([binaryPath, "serve", "--port", String(getPort())], {
+      stdout: "ignore",
+      stderr: "ignore",
+      stdin: "ignore",
+    });
+    proc.unref(); // Allow this process to exit without waiting for server
+
+    // Wait briefly for server to start
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  } catch (err) {
+    log.warn("capture", "Failed to ensure server running", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 async function notifyMemoryCreated(
   memoryId: string,
   projectId: string,
   sessionId: string
 ): Promise<void> {
   try {
-    const res = await fetch("http://localhost:37778/api/hooks/memory-created", {
+    const res = await fetch(`http://localhost:${getPort()}/api/hooks/memory-created`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ memoryId, projectId, sessionId }),

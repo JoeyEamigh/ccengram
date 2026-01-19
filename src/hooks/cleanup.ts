@@ -1,4 +1,6 @@
 import { getDatabase, closeDatabase } from "../db/database.js";
+import { unregisterClient, getActiveClients } from "../webui/coordination.js";
+import { getPort } from "../utils/paths.js";
 import { log } from "../utils/log.js";
 
 type HookInput = {
@@ -62,9 +64,32 @@ export async function cleanupHook(): Promise<void> {
     count: promoted.rowsAffected,
   });
 
-  clearTimeout(timeoutId);
   closeDatabase();
 
+  // Unregister this session and check if we should shut down server
+  await unregisterClient(session_id);
+  const remainingClients = await getActiveClients();
+
+  if (remainingClients.length === 0) {
+    log.info("cleanup", "No active clients, signaling server shutdown");
+    await signalServerShutdown();
+  }
+
+  clearTimeout(timeoutId);
   log.info("cleanup", "Session cleanup complete", { session_id });
   process.exit(0);
+}
+
+async function signalServerShutdown(): Promise<void> {
+  try {
+    const res = await fetch(`http://localhost:${getPort()}/api/shutdown`, {
+      method: "POST",
+      signal: AbortSignal.timeout(2000),
+    });
+    if (res.ok) {
+      log.info("cleanup", "Server shutdown signal sent");
+    }
+  } catch {
+    log.debug("cleanup", "Server shutdown signal failed (may already be down)");
+  }
 }

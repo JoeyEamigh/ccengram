@@ -8,6 +8,8 @@ import { configCommand } from "./cli/commands/config.js";
 import { healthCommand } from "./cli/commands/health.js";
 import { statsCommand } from "./cli/commands/stats.js";
 import { serveCommand } from "./cli/commands/serve.js";
+import { shutdownCommand } from "./cli/commands/shutdown.js";
+import { updateCommand } from "./cli/commands/update.js";
 import { log } from "./utils/log.js";
 
 const VERSION = "0.1.0";
@@ -23,6 +25,8 @@ const cliCommands: Record<string, (args: string[]) => Promise<void>> = {
   health: healthCommand,
   stats: statsCommand,
   serve: serveCommand,
+  shutdown: shutdownCommand,
+  update: updateCommand,
 };
 
 async function runMcpServer(): Promise<void> {
@@ -103,6 +107,13 @@ Commands:
   serve                   Start WebUI server
     -p, --port <port>      Port (default: 37778)
     --open                 Open in browser
+
+  shutdown                Stop the WebUI server
+    -p, --port <port>      Port (default: 37778)
+
+  update                  Check for and install updates
+    -c, --check            Check only, don't install
+    -f, --force            Force update even if current
 
 Internal commands (used by Claude Code plugin):
   mcp-server              Start MCP server (stdio transport)

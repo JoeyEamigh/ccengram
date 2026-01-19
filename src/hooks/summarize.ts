@@ -2,6 +2,7 @@ import { getDatabase, closeDatabase } from "../db/database.js";
 import { createMemoryStore } from "../services/memory/store.js";
 import { getOrCreateProject } from "../services/project.js";
 import { createSessionService } from "../services/memory/sessions.js";
+import { getPort } from "../utils/paths.js";
 import { log } from "../utils/log.js";
 
 type HookInput = {
@@ -140,7 +141,7 @@ async function notifyMemoryCreated(
   sessionId: string
 ): Promise<void> {
   try {
-    const res = await fetch("http://localhost:37778/api/hooks/memory-created", {
+    const res = await fetch(`http://localhost:${getPort()}/api/hooks/memory-created`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ memoryId, projectId, sessionId }),

@@ -4,6 +4,7 @@ import { Card, CardContent, CardFooter, CardHeader } from "./ui/card.js";
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { cn } from "../lib/utils.js";
+import { RelativeTime } from "./RelativeTime.js";
 import type { MemorySector, Memory } from "../../services/memory/types.js";
 
 type SessionMemory = {
@@ -148,7 +149,7 @@ export function SessionCard({
         {session.lastActivity && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Activity className="h-4 w-4" />
-            <span>Last: {formatDate(session.lastActivity)}</span>
+            <span>Last: <RelativeTime timestamp={session.lastActivity} /></span>
           </div>
         )}
         {session.summary && (
@@ -185,9 +186,10 @@ export function SessionCard({
                       <Badge variant="outline" className="text-[10px] px-1 py-0">
                         {memory.sector}
                       </Badge>
-                      <span className="text-[10px] opacity-70">
-                        {formatTime(memory.createdAt)}
-                      </span>
+                      <RelativeTime
+                        timestamp={memory.createdAt}
+                        className="text-[10px] opacity-70"
+                      />
                     </div>
                     <p className="line-clamp-2">
                       {memory.summary ?? memory.content}
@@ -232,22 +234,4 @@ function formatDuration(ms: number): string {
   const hours = Math.floor(minutes / 60);
   if (hours > 0) return `${hours}h ${minutes % 60}m`;
   return `${minutes}m`;
-}
-
-function formatDate(ts: number): string {
-  return new Date(ts).toLocaleString();
-}
-
-function formatTime(ts: number): string {
-  const now = Date.now();
-  const diffMs = now - ts;
-  const diffMins = Math.floor(diffMs / 60000);
-
-  if (diffMins < 1) return "just now";
-  if (diffMins < 60) return `${diffMins}m ago`;
-
-  const diffHours = Math.floor(diffMins / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
-
-  return new Date(ts).toLocaleDateString();
 }

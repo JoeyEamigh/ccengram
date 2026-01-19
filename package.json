@@ -1,6 +1,6 @@
 {
   "name": "ccmemory",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "private": true,
   "bin": {
@@ -16,7 +16,8 @@
     "build:macos-arm": "bun run prebuild:webui && bun build src/main.ts --compile --target=bun-darwin-arm64 --outfile dist/ccmemory-darwin-arm64",
     "build:windows": "bun run prebuild:webui && bun build src/main.ts --compile --target=bun-windows-x64 --outfile dist/ccmemory-windows-x64.exe",
     "build:all-platforms": "bun run build:linux && bun run build:macos && bun run build:macos-arm && bun run build:windows",
-    "build:plugin": "bun run build && cp dist/ccmemory plugin/bin/ccmemory",
+    "bin:install": "bun run build && cp dist/ccmemory ~/.local/bin/ccmemory",
+    "bin:uninstall": "rm -f ~/.local/bin/ccmemory",
     "dev:cli": "bun --watch src/main.ts",
     "dev:mcp": "bun --watch src/main.ts mcp-server",
     "dev:serve": "bun --watch src/main.ts serve",
@@ -29,7 +30,8 @@
     "ollama:check": "curl -s http://localhost:11434/api/tags | jq -r '.models[].name'",
     "ollama:pull": "ollama pull qwen3-embedding",
     "typecheck": "tsc --noEmit",
-    "lint": "bun run typecheck"
+    "lint": "bun run typecheck",
+    "format": "prettier --write ."
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.1.0",

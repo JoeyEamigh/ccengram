@@ -45,36 +45,40 @@ CCMemory is a Claude Code memory plugin that captures agent activity, vectorizes
 ## Key Differentiators
 
 ### vs claude-mem
-| Aspect | claude-mem | CCMemory |
-|--------|-----------|----------|
-| Context injection | SessionStart auto-inject | On-demand only |
-| Architecture | HTTP worker daemon | Direct DB access |
-| Process management | Zombies possible | Explicit cleanup |
-| Concurrent instances | Port conflicts | WAL mode, no ports |
+
+| Aspect               | claude-mem               | CCMemory           |
+| -------------------- | ------------------------ | ------------------ |
+| Context injection    | SessionStart auto-inject | On-demand only     |
+| Architecture         | HTTP worker daemon       | Direct DB access   |
+| Process management   | Zombies possible         | Explicit cleanup   |
+| Concurrent instances | Port conflicts           | WAL mode, no ports |
 
 ### vs OpenMemory
-| Aspect | OpenMemory | CCMemory |
-|--------|------------|----------|
-| Integration | Generic API | Tight Claude Code plugin |
-| Dependencies | Postgres + Redis | Self-contained libSQL |
-| Setup | Complex infrastructure | Single file DB |
+
+| Aspect       | OpenMemory             | CCMemory                 |
+| ------------ | ---------------------- | ------------------------ |
+| Integration  | Generic API            | Tight Claude Code plugin |
+| Dependencies | Postgres + Redis       | Self-contained libSQL    |
+| Setup        | Complex infrastructure | Single file DB           |
 
 ## Memory Model
 
 ### Tiers
-| Tier | Scope | Decay | Purpose |
-|------|-------|-------|---------|
-| Session | Current session | None | Working context |
-| Project | Per-project | Slow (salience) | Architecture, decisions |
-| Global | Cross-project | Aggressive | User preferences, patterns |
+
+| Tier    | Scope           | Decay           | Purpose                    |
+| ------- | --------------- | --------------- | -------------------------- |
+| Session | Current session | None            | Working context            |
+| Project | Per-project     | Slow (salience) | Architecture, decisions    |
+| Global  | Cross-project   | Aggressive      | User preferences, patterns |
 
 ### Types
-| Type | Description | Decay Rate |
-|------|-------------|------------|
-| decision | Architecture/design choices | 0.005 |
-| procedure | Workflows, patterns | 0.01 |
-| discovery | Codebase facts | 0.02 |
-| preference | User style, conventions | 0.008 |
+
+| Type       | Description                 | Decay Rate |
+| ---------- | --------------------------- | ---------- |
+| decision   | Architecture/design choices | 0.005      |
+| procedure  | Workflows, patterns         | 0.01       |
+| discovery  | Codebase facts              | 0.02       |
+| preference | User style, conventions     | 0.008      |
 
 ## Technology Stack
 
@@ -138,6 +142,7 @@ $XDG_CACHE_HOME/ccmemory/embeddings/      # Embedding cache (optional)
 ```
 
 Default fallbacks:
+
 - Linux: `~/.config`, `~/.local/share`, `~/.cache`
 - macOS: `~/Library/Application Support`, same, `~/Library/Caches`
 - Windows: `%APPDATA%`, `%LOCALAPPDATA%`, `%LOCALAPPDATA%\cache`
@@ -157,25 +162,33 @@ Default fallbacks:
 ## Implementation Phases
 
 ### Phase 1: Core Infrastructure
+
 Database, XDG paths, embedding service foundation
 
 ### Phase 2: Memory System
+
 CRUD operations, deduplication, type classification, decay
 
 ### Phase 3: Plugin Integration
+
 Hooks (capture, summarize, cleanup), MCP server
 
 ### Phase 4: Search
+
 FTS5, vector similarity, hybrid ranking
 
 ### Phase 5: Documents
+
 Ingestion, chunking, separate search
 
 ### Phase 6: CLI
+
 Commands, config, import/export, diagnostics
 
 ### Phase 7: WebUI
+
 On-demand server, search UI, settings
 
 ### Phase 8: Polish
+
 Tests, optimization, error handling

@@ -2,6 +2,7 @@ import { Link2, Clock, Zap } from "lucide-react";
 import { Card, CardContent, CardFooter, CardHeader } from "./ui/card.js";
 import { Badge } from "./ui/badge.js";
 import { cn } from "../lib/utils.js";
+import { RelativeTime } from "./RelativeTime.js";
 import type { SearchResult } from "../../services/search/hybrid.js";
 import type { MemorySector } from "../../services/memory/types.js";
 
@@ -87,12 +88,10 @@ export function MemoryCard({ result, onClick }: MemoryCardProps): JSX.Element {
           )}
 
           {sourceSession && (
-            <span
+            <RelativeTime
+              timestamp={sourceSession.startedAt}
               className="text-xs text-muted-foreground ml-auto"
-              title={sourceSession.summary ?? ""}
-            >
-              {formatDate(sourceSession.startedAt)}
-            </span>
+            />
           )}
         </div>
       </CardHeader>
@@ -106,7 +105,7 @@ export function MemoryCard({ result, onClick }: MemoryCardProps): JSX.Element {
       <CardFooter className="pt-0 text-xs text-muted-foreground">
         <div className="flex items-center gap-1">
           <Clock className="h-3 w-3" />
-          <span>{formatDate(memory.createdAt)}</span>
+          <RelativeTime timestamp={memory.createdAt} />
         </div>
         {memory.tags && memory.tags.length > 0 && (
           <div className="ml-auto flex gap-1 flex-wrap">
@@ -123,28 +122,4 @@ export function MemoryCard({ result, onClick }: MemoryCardProps): JSX.Element {
       </CardFooter>
     </Card>
   );
-}
-
-function formatDate(ts: number): string {
-  const date = new Date(ts < 1e12 ? ts * 1000 : ts);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-  if (diffDays === 0) {
-    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-    if (diffHours === 0) {
-      const diffMins = Math.floor(diffMs / (1000 * 60));
-      return diffMins <= 1 ? "just now" : `${diffMins}m ago`;
-    }
-    return `${diffHours}h ago`;
-  }
-  if (diffDays === 1) return "yesterday";
-  if (diffDays < 7) return `${diffDays}d ago`;
-
-  return date.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: date.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
-  });
 }

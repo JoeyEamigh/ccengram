@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'package.json'
+      - 'plugin/.claude-plugin/plugin.json'
 
 jobs:
   check-version:
@@ -20,13 +20,15 @@ jobs:
       - name: Check if version changed
         id: check
         run: |
+          PLUGIN_JSON="plugin/.claude-plugin/plugin.json"
+
           # Get current version
-          CURRENT_VERSION=$(jq -r '.version' package.json)
+          CURRENT_VERSION=$(jq -r '.version' "$PLUGIN_JSON")
           echo "Current version: $CURRENT_VERSION"
 
           # Get previous version
-          git show HEAD~1:package.json > /tmp/old-package.json 2>/dev/null || echo '{"version":"0.0.0"}' > /tmp/old-package.json
-          PREVIOUS_VERSION=$(jq -r '.version' /tmp/old-package.json)
+          git show HEAD~1:"$PLUGIN_JSON" > /tmp/old-plugin.json 2>/dev/null || echo '{"version":"0.0.0"}' > /tmp/old-plugin.json
+          PREVIOUS_VERSION=$(jq -r '.version' /tmp/old-plugin.json)
           echo "Previous version: $PREVIOUS_VERSION"
 
           # Check if version changed
@@ -110,31 +112,26 @@ jobs:
           body: |
             ## CCMemory v${{ needs.check-version.outputs.version }}
 
-            ### Installation
+            ### Quick Install
 
-            **As Claude Code Plugin (Recommended):**
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | bash
+            ```
+
+            ### Claude Code Plugin
+
             ```bash
             /plugin marketplace add ${{ github.repository }}
             /plugin install ccmemory@ccmemory-marketplace
             ```
 
-            **Standalone CLI:**
-            ```bash
-            # Linux x64
-            wget https://github.com/${{ github.repository }}/releases/download/v${{ needs.check-version.outputs.version }}/ccmemory-linux-x64
-            chmod +x ccmemory-linux-x64
-            sudo mv ccmemory-linux-x64 /usr/local/bin/ccmemory
+            ### Manual Installation
 
-            # macOS Apple Silicon
-            wget https://github.com/${{ github.repository }}/releases/download/v${{ needs.check-version.outputs.version }}/ccmemory-darwin-arm64
-            chmod +x ccmemory-darwin-arm64
-            sudo mv ccmemory-darwin-arm64 /usr/local/bin/ccmemory
-
-            # macOS Intel
-            wget https://github.com/${{ github.repository }}/releases/download/v${{ needs.check-version.outputs.version }}/ccmemory-darwin-x64
-            chmod +x ccmemory-darwin-x64
-            sudo mv ccmemory-darwin-x64 /usr/local/bin/ccmemory
-            ```
+            Download the binary for your platform and add to your PATH:
+            - **Linux x64**: `ccmemory-linux-x64`
+            - **macOS Apple Silicon**: `ccmemory-darwin-arm64`
+            - **macOS Intel**: `ccmemory-darwin-x64`
+            - **Windows x64**: `ccmemory-windows-x64.exe`
 
             ### What's New
             See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.

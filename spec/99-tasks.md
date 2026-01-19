@@ -3,11 +3,13 @@
 **⚠️ CRITICAL: UPDATE THIS FILE AS YOU WORK ⚠️**
 
 Before starting ANY task:
+
 1. Find the next `[ ]` task
 2. Change it to `[~]` IMMEDIATELY
 3. Save and commit: `git commit -am "WIP: T0XX in progress"`
 
 After completing a task:
+
 1. Change `[~]` to `[x]`
 2. Save and commit: `git commit -am "Complete T0XX: description"`
 
@@ -16,6 +18,7 @@ After completing a task:
 ---
 
 ## Status Legend
+
 - [ ] Not started
 - [~] In progress (MARK THIS BEFORE YOU START)
 - [x] Completed (MARK THIS WHEN TESTS PASS)
@@ -25,18 +28,21 @@ After completing a task:
 ## Phase 1: Core Infrastructure
 
 ### P1.1: Project Setup
+
 - [x] **T001** Create package.json with dependencies
 - [x] **T002** Configure TypeScript (tsconfig.json)
 - [x] **T003** Set up Bun test configuration
 - [x] **T004** Create directory structure
 
 ### P1.2: XDG Paths
+
 - [x] **T005** Implement `src/utils/paths.ts`
 - [x] **T006** Platform detection (Linux, macOS, Windows)
 - [x] **T007** Directory creation utility
 - [x] **T008** Write tests for paths (`src/utils/__test__/paths.test.ts`)
 
 ### P1.3: Logging
+
 - [x] **T009** Implement `src/utils/log.ts`
 - [x] **T010** Log levels (debug, info, warn, error)
 - [x] **T011** Structured logging with module + context
@@ -44,6 +50,7 @@ After completing a task:
 - [x] **T013** Write tests for logging (`src/utils/__test__/log.test.ts`)
 
 ### P1.4: Database Setup
+
 - [x] **T014** Implement `src/db/database.ts` (libSQL connection)
 - [x] **T015** Enable WAL mode and pragmas
 - [x] **T016** Implement `src/db/schema.ts` (table definitions)
@@ -56,6 +63,7 @@ After completing a task:
 ## Phase 2: Embedding Service
 
 ### P2.1: Ollama Provider
+
 - [x] **T020** Implement `src/services/embedding/ollama.ts`
 - [x] **T021** Availability check (model detection)
 - [x] **T022** Dimension detection
@@ -63,6 +71,7 @@ After completing a task:
 - [x] **T024** Write Ollama provider tests (`src/services/embedding/__test__/ollama.test.ts`)
 
 ### P2.2: OpenRouter Provider
+
 - [x] **T025** Implement `src/services/embedding/openrouter.ts`
 - [x] **T026** API key management
 - [x] **T027** Model dimension mapping
@@ -70,6 +79,7 @@ After completing a task:
 - [x] **T029** Write OpenRouter provider tests (`src/services/embedding/__test__/openrouter.test.ts`)
 
 ### P2.3: Embedding Service
+
 - [x] **T030** Implement `src/services/embedding/index.ts`
 - [x] **T031** Provider fallback logic
 - [x] **T032** Model registration in database
@@ -81,6 +91,7 @@ After completing a task:
 ## Phase 3: Memory System
 
 ### P3.1: Memory Sectors
+
 - [x] **T035** Implement `src/services/memory/types.ts`
 - [x] **T036** Five-sector model (episodic, semantic, procedural, emotional, reflective)
 - [x] **T037** Sector classification patterns
@@ -88,6 +99,7 @@ After completing a task:
 - [x] **T039** Write sector classification tests (`src/services/memory/__test__/types.test.ts`)
 
 ### P3.2: Deduplication
+
 - [x] **T040** Implement `src/services/memory/dedup.ts`
 - [x] **T041** Simhash computation (64-bit)
 - [x] **T042** Hamming distance calculation
@@ -95,6 +107,7 @@ After completing a task:
 - [x] **T044** Write deduplication tests (`src/services/memory/__test__/dedup.test.ts`)
 
 ### P3.3: Memory Relationships
+
 - [x] **T045** Implement `src/services/memory/relationships.ts`
 - [x] **T046** Relationship types (SUPERSEDES, CONTRADICTS, RELATED_TO, BUILDS_ON)
 - [x] **T047** Create relationship with validation
@@ -102,6 +115,7 @@ After completing a task:
 - [x] **T049** Write relationship tests (`src/services/memory/__test__/relationships.test.ts`)
 
 ### P3.4: Memory Store
+
 - [x] **T050** Implement `src/services/memory/store.ts`
 - [x] **T051** Create memory with auto-classification
 - [x] **T052** Bi-temporal timestamps (valid_from, valid_until)
@@ -115,6 +129,7 @@ After completing a task:
 - [x] **T060** Write memory store tests (`src/services/memory/__test__/store.test.ts`)
 
 ### P3.5: Session Tracking
+
 - [x] **T061** Implement `src/services/memory/sessions.ts`
 - [x] **T062** Session creation with metadata
 - [x] **T063** Track memory usage (created, recalled, updated, reinforced)
@@ -123,6 +138,7 @@ After completing a task:
 - [x] **T066** Write session tests (`src/services/memory/__test__/sessions.test.ts`)
 
 ### P3.6: Salience Decay
+
 - [x] **T067** Implement `src/services/memory/decay.ts`
 - [x] **T068** Decay calculation by sector
 - [x] **T069** Access count protection
@@ -135,6 +151,7 @@ After completing a task:
 ## Phase 4: Search System
 
 ### P4.1: FTS5 Search
+
 - [x] **T073** Implement `src/services/search/fts.ts`
 - [x] **T074** Query preparation (prefix matching)
 - [x] **T075** Snippet extraction
@@ -142,6 +159,7 @@ After completing a task:
 - [x] **T077** Write FTS tests (`src/services/search/__test__/fts.test.ts`)
 
 ### P4.2: Vector Search
+
 - [x] **T078** Implement `src/services/search/vector.ts`
 - [x] **T079** Query embedding
 - [x] **T080** vector_top_k usage
@@ -149,6 +167,7 @@ After completing a task:
 - [x] **T082** Write vector search tests (`src/services/search/__test__/vector.test.ts`)
 
 ### P4.3: Hybrid Search & Ranking
+
 - [x] **T083** Implement `src/services/search/ranking.ts`
 - [x] **T084** Score computation with weights
 - [x] **T085** Sector-specific boosts
@@ -165,6 +184,7 @@ After completing a task:
 ## Phase 5: Documents
 
 ### P5.1: Chunking
+
 - [x] **T093** Implement `src/services/documents/chunk.ts`
 - [x] **T094** Sentence/paragraph aware splitting
 - [x] **T095** Overlap handling
@@ -172,6 +192,7 @@ After completing a task:
 - [x] **T097** Write chunking tests (`src/services/documents/__test__/chunk.test.ts`)
 
 ### P5.2: Document Service
+
 - [x] **T098** Implement `src/services/documents/ingest.ts`
 - [x] **T099** File path ingestion
 - [x] **T100** URL fetching
@@ -188,11 +209,13 @@ After completing a task:
 ## Phase 6: Claude Code Plugin
 
 ### P6.1: Plugin Configuration
+
 - [x] **T108** Create `plugin/.claude-plugin/plugin.json`
 - [x] **T109** Create `plugin/hooks/hooks.json`
 - [x] **T110** Create `plugin/.mcp.json`
 
 ### P6.2: Hook Scripts
+
 - [x] **T111** Implement `scripts/capture.ts` (PostToolUse)
 - [x] **T112** Tool observation formatting (sector: episodic)
 - [x] **T113** File path extraction
@@ -206,6 +229,7 @@ After completing a task:
 - [x] **T121** Write hook tests (`scripts/*.test.ts`)
 
 ### P6.3: MCP Server - Core Tools
+
 - [x] **T122** Implement `src/mcp/server.ts`
 - [x] **T123** memory_search tool (sector/tier filtering)
 - [x] **T124** memory_timeline tool (session context)
@@ -215,6 +239,7 @@ After completing a task:
 - [x] **T128** Project detection (CLAUDE_PROJECT_DIR)
 
 ### P6.4: MCP Server - Memory Management Tools
+
 - [x] **T129** memory_reinforce tool (increase salience)
 - [x] **T130** memory_deemphasize tool (reduce salience)
 - [x] **T131** memory_delete tool (soft delete)
@@ -226,6 +251,7 @@ After completing a task:
 ## Phase 7: CLI
 
 ### P7.1: Commands
+
 - [x] **T134** Implement `src/cli/index.ts` (entry point)
 - [x] **T135** search command (sector filtering)
 - [x] **T136** show command (with relationships)
@@ -240,6 +266,7 @@ After completing a task:
 - [x] **T145** Write CLI tests (`src/cli/commands/__test__/*.test.ts`)
 
 ### P7.2: Build
+
 - [x] **T146** CLI build script
 - [x] **T147** Executable configuration (bin)
 
@@ -248,6 +275,7 @@ After completing a task:
 ## Phase 8: WebUI
 
 ### P8.1: Server Core
+
 - [x] **T148** Implement `src/webui/server.ts` (Bun.serve)
 - [x] **T149** HTTP request routing
 - [x] **T150** WebSocket handler
@@ -255,6 +283,7 @@ After completing a task:
 - [x] **T152** Client hydration script bundle
 
 ### P8.2: Instance Coordination
+
 - [x] **T153** Implement `src/webui/coordinator.ts`
 - [x] **T154** Lock file management
 - [x] **T155** Client registration/deregistration
@@ -262,6 +291,7 @@ After completing a task:
 - [x] **T157** Auto-stop with last instance
 
 ### P8.3: API Routes
+
 - [x] **T158** Implement `src/webui/routes.ts`
 - [x] **T159** Search API (sector, tier filtering)
 - [x] **T160** Memory CRUD APIs (reinforce, deemphasize, delete)
@@ -272,6 +302,7 @@ After completing a task:
 - [x] **T165** Active agents API
 
 ### P8.4: WebSocket Events
+
 - [x] **T166** Implement `src/webui/websocket.ts`
 - [x] **T167** memory:created event
 - [x] **T168** memory:updated event
@@ -281,6 +312,7 @@ After completing a task:
 - [x] **T172** agent:activity event
 
 ### P8.5: React Components
+
 - [x] **T173** Create `src/webui/components/App.tsx`
 - [x] **T174** Create `src/webui/components/Search.tsx`
 - [x] **T175** Create `src/webui/components/Timeline.tsx`
@@ -298,6 +330,7 @@ After completing a task:
 ## Phase 9: Polish
 
 ### P9.1: Integration Testing
+
 - [x] **T184** Full capture flow test (`tests/integration/capture.test.ts`)
 - [x] **T185** Search quality test (`tests/integration/search.test.ts`)
 - [x] **T186** Concurrent instance test (`tests/integration/concurrent.test.ts`)
@@ -305,11 +338,13 @@ After completing a task:
 - [x] **T188** Multi-agent WebSocket test (`tests/integration/websocket.test.ts`)
 
 ### P9.2: Documentation
+
 - [x] **T189** Update CLAUDE.md for project
 - [x] **T190** README.md
 - [x] **T191** Installation instructions
 
 ### P9.3: Error Handling
+
 - [x] **T192** Graceful degradation (no Ollama)
 - [x] **T193** Database recovery
 - [x] **T194** Hook failure isolation
@@ -333,17 +368,17 @@ T108-T133 (plugin) → T134-T147 (cli) → T148-T183 (webui)
 
 ## Quick Reference
 
-| Phase | Tasks | Spec File |
-|-------|-------|-----------|
-| 1: Infrastructure | T001-T019 | 01-database.md |
-| 2: Embedding | T020-T034 | 02-embedding.md |
-| 3: Memory | T035-T072 | 03-memory.md |
-| 4: Search | T073-T092 | 04-search.md |
-| 5: Documents | T093-T107 | 05-documents.md |
-| 6: Plugin | T108-T133 | 06-plugin.md |
-| 7: CLI | T134-T147 | 07-cli.md |
-| 8: WebUI | T148-T183 | 08-webui.md |
-| 9: Polish | T184-T195 | - |
+| Phase             | Tasks     | Spec File       |
+| ----------------- | --------- | --------------- |
+| 1: Infrastructure | T001-T019 | 01-database.md  |
+| 2: Embedding      | T020-T034 | 02-embedding.md |
+| 3: Memory         | T035-T072 | 03-memory.md    |
+| 4: Search         | T073-T092 | 04-search.md    |
+| 5: Documents      | T093-T107 | 05-documents.md |
+| 6: Plugin         | T108-T133 | 06-plugin.md    |
+| 7: CLI            | T134-T147 | 07-cli.md       |
+| 8: WebUI          | T148-T183 | 08-webui.md     |
+| 9: Polish         | T184-T195 | -               |
 
 ## Loop Execution Notes
 
@@ -360,12 +395,14 @@ T108-T133 (plugin) → T134-T147 (cli) → T148-T183 (webui)
 9. **Commit with task ID**: `git commit -am "Complete T0XX: description"`
 
 **REMEMBER:**
+
 - Mark `[~]` BEFORE you start coding
 - Mark `[x]` AFTER tests pass
 - Never leave without updating this file
 - One task at a time
 
 Each task should be:
+
 - Implementable in one context window
 - Testable in isolation
 - Not dependent on incomplete tasks
@@ -382,9 +419,11 @@ Each task should be:
 ## Test Structure
 
 **Colocated unit tests** - next to source files:
+
 - `src/services/memory/store.ts` → `src/services/memory/__test__/store.test.ts`
 - `src/mcp/server.ts` → `src/mcp/__test__/server.test.ts`
 
 **Integration tests** - in `tests/` directory:
+
 - `tests/integration/capture.test.ts`
 - `tests/integration/search.test.ts`

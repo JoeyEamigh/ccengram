@@ -1153,6 +1153,7 @@ Key differences from claude-mem:
 ## Acceptance Criteria
 
 ### Hook Scripts
+
 - [ ] PostToolUse captures tool observations silently (no context pollution)
 - [ ] PostToolUse links memories to sessions with usage_type
 - [ ] PostToolUse skips tool results > 10KB
@@ -1163,6 +1164,7 @@ Key differences from claude-mem:
 - [ ] No zombie processes after session end
 
 ### MCP Server
+
 - [ ] MCP server starts with Claude Code via stdio
 - [ ] memory_search finds relevant memories with hybrid search
 - [ ] memory_search returns session context (date, summary)
@@ -1181,6 +1183,7 @@ Key differences from claude-mem:
 - [ ] docs_ingest chunks and embeds documents
 
 ### Concurrency & Lifecycle
+
 - [ ] Multiple concurrent sessions work (WAL mode)
 - [ ] No port conflicts (stdio transport)
 - [ ] Session isolation via session_id

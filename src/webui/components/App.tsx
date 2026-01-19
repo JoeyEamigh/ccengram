@@ -68,13 +68,20 @@ export function App({ url, initialData }: AppProps): JSX.Element {
       switch (msg.type) {
         case "memory:created":
           if (currentPath === "/" || currentPath === "/search") {
-            setData((prev) => ({
-              ...prev,
-              results: [
-                msg as unknown as SearchResult,
-                ...(prev.results ?? []),
-              ],
-            }));
+            const newMemory = msg.memory as Memory;
+            if (newMemory) {
+              const newResult: SearchResult = {
+                memory: newMemory,
+                score: newMemory.salience ?? 0.5,
+                matchType: "both",
+                isSuperseded: false,
+                relatedMemoryCount: 0,
+              };
+              setData((prev) => ({
+                ...prev,
+                results: [newResult, ...(prev.results ?? [])],
+              }));
+            }
           }
           break;
         case "memory:updated":

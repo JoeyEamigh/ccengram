@@ -1,6 +1,8 @@
 import { getPaths, ensureDirectories } from "../../utils/paths.js";
 import { log } from "../../utils/log.js";
 
+type ToolMode = "full" | "recall" | "custom";
+
 type Config = {
   embedding: {
     provider: "ollama" | "openrouter";
@@ -10,6 +12,10 @@ type Config = {
   capture: {
     enabled: boolean;
     maxResultSize: number;
+  };
+  tools: {
+    mode: ToolMode;
+    enabledTools: string[];
   };
 };
 
@@ -23,6 +29,10 @@ function getDefaultConfig(): Config {
     capture: {
       enabled: true,
       maxResultSize: 10000,
+    },
+    tools: {
+      mode: "full",
+      enabledTools: [],
     },
   };
 }
