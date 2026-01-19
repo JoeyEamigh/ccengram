@@ -188,38 +188,38 @@ After completing a task:
 ## Phase 6: Claude Code Plugin
 
 ### P6.1: Plugin Configuration
-- [ ] **T108** Create `plugin/.claude-plugin/plugin.json`
-- [ ] **T109** Create `plugin/hooks/hooks.json`
-- [ ] **T110** Create `plugin/.mcp.json`
+- [x] **T108** Create `plugin/.claude-plugin/plugin.json`
+- [x] **T109** Create `plugin/hooks/hooks.json`
+- [x] **T110** Create `plugin/.mcp.json`
 
 ### P6.2: Hook Scripts
-- [ ] **T111** Implement `scripts/capture.ts` (PostToolUse)
-- [ ] **T112** Tool observation formatting (sector: episodic)
-- [ ] **T113** File path extraction
-- [ ] **T114** Size limit handling
-- [ ] **T115** Implement `scripts/summarize.ts` (Stop)
-- [ ] **T116** SDK agent integration
-- [ ] **T117** Summary prompt (sector: reflective)
-- [ ] **T118** AbortController handling
-- [ ] **T119** Implement `scripts/cleanup.ts` (SessionEnd)
-- [ ] **T120** Session tier promotion
-- [ ] **T121** Write hook tests (`scripts/*.test.ts`)
+- [x] **T111** Implement `scripts/capture.ts` (PostToolUse)
+- [x] **T112** Tool observation formatting (sector: episodic)
+- [x] **T113** File path extraction
+- [x] **T114** Size limit handling
+- [x] **T115** Implement `scripts/summarize.ts` (Stop)
+- [x] **T116** SDK agent integration
+- [x] **T117** Summary prompt (sector: reflective)
+- [x] **T118** AbortController handling
+- [x] **T119** Implement `scripts/cleanup.ts` (SessionEnd)
+- [x] **T120** Session tier promotion
+- [x] **T121** Write hook tests (`scripts/*.test.ts`)
 
 ### P6.3: MCP Server - Core Tools
-- [ ] **T122** Implement `src/mcp/server.ts`
-- [ ] **T123** memory_search tool (sector/tier filtering)
-- [ ] **T124** memory_timeline tool (session context)
-- [ ] **T125** memory_add tool (sector classification)
-- [ ] **T126** docs_search tool
-- [ ] **T127** docs_ingest tool
-- [ ] **T128** Project detection (CLAUDE_PROJECT_DIR)
+- [x] **T122** Implement `src/mcp/server.ts`
+- [x] **T123** memory_search tool (sector/tier filtering)
+- [x] **T124** memory_timeline tool (session context)
+- [x] **T125** memory_add tool (sector classification)
+- [x] **T126** docs_search tool
+- [x] **T127** docs_ingest tool
+- [x] **T128** Project detection (CLAUDE_PROJECT_DIR)
 
 ### P6.4: MCP Server - Memory Management Tools
-- [ ] **T129** memory_reinforce tool (increase salience)
-- [ ] **T130** memory_deemphasize tool (reduce salience)
-- [ ] **T131** memory_delete tool (soft delete)
-- [ ] **T132** memory_supersede tool (create relationship + invalidate)
-- [ ] **T133** Write MCP server tests (`src/mcp/__test__/server.test.ts`)
+- [x] **T129** memory_reinforce tool (increase salience)
+- [x] **T130** memory_deemphasize tool (reduce salience)
+- [x] **T131** memory_delete tool (soft delete)
+- [x] **T132** memory_supersede tool (create relationship + invalidate)
+- [x] **T133** Write MCP server tests (`src/mcp/__test__/server.test.ts`)
 
 ---
 

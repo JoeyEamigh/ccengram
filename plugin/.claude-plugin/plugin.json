@@ -1,0 +1,8 @@
+{
+  "name": "ccmemory",
+  "version": "1.0.0",
+  "description": "Self-contained memory system for Claude Code with vector search",
+  "author": "CCMemory",
+  "homepage": "https://github.com/ccmemory/ccmemory",
+  "repository": "https://github.com/ccmemory/ccmemory"
+}

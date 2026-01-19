@@ -63,6 +63,37 @@ function parseJsonObject(value: unknown): Record<string, unknown> {
   return {};
 }
 
+export async function getOrCreateSession(
+  sessionId: string,
+  projectId: string
+): Promise<Session> {
+  const db = await getDatabase();
+
+  const existing = await db.execute("SELECT * FROM sessions WHERE id = ?", [
+    sessionId,
+  ]);
+
+  if (existing.rows.length > 0 && existing.rows[0]) {
+    return rowToSession(existing.rows[0]);
+  }
+
+  const now = Date.now();
+  await db.execute(
+    `INSERT INTO sessions (id, project_id, started_at, context_json)
+     VALUES (?, ?, ?, ?)`,
+    [sessionId, projectId, now, "{}"]
+  );
+
+  log.info("session", "Created session", { id: sessionId, projectId });
+
+  return {
+    id: sessionId,
+    projectId,
+    startedAt: now,
+    context: {},
+  };
+}
+
 export function createSessionService(): SessionService {
   const service: SessionService = {
     async create(input: SessionInput): Promise<Session> {

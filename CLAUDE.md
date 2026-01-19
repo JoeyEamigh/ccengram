@@ -118,3 +118,7 @@ log.error("db", "Connection failed", { error: err.message });
 ```
 
 Log levels controlled via `LOG_LEVEL` env var: `debug`, `info`, `warn`, `error` (default: `info`).
+
+## Ending the Loop
+
+Output <promise>COMPLETE</promise> when all phases done.
