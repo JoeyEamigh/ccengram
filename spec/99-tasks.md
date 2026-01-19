@@ -25,31 +25,31 @@ After completing a task:
 ## Phase 1: Core Infrastructure
 
 ### P1.1: Project Setup
-- [ ] **T001** Create package.json with dependencies
-- [ ] **T002** Configure TypeScript (tsconfig.json)
-- [ ] **T003** Set up Bun test configuration
-- [ ] **T004** Create directory structure
+- [x] **T001** Create package.json with dependencies
+- [x] **T002** Configure TypeScript (tsconfig.json)
+- [x] **T003** Set up Bun test configuration
+- [x] **T004** Create directory structure
 
 ### P1.2: XDG Paths
-- [ ] **T005** Implement `src/utils/paths.ts`
-- [ ] **T006** Platform detection (Linux, macOS, Windows)
-- [ ] **T007** Directory creation utility
-- [ ] **T008** Write tests for paths (`src/utils/__test__/paths.test.ts`)
+- [x] **T005** Implement `src/utils/paths.ts`
+- [x] **T006** Platform detection (Linux, macOS, Windows)
+- [x] **T007** Directory creation utility
+- [x] **T008** Write tests for paths (`src/utils/__test__/paths.test.ts`)
 
 ### P1.3: Logging
-- [ ] **T009** Implement `src/utils/log.ts`
-- [ ] **T010** Log levels (debug, info, warn, error)
-- [ ] **T011** Structured logging with module + context
-- [ ] **T012** LOG_LEVEL env var support
-- [ ] **T013** Write tests for logging (`src/utils/__test__/log.test.ts`)
+- [x] **T009** Implement `src/utils/log.ts`
+- [x] **T010** Log levels (debug, info, warn, error)
+- [x] **T011** Structured logging with module + context
+- [x] **T012** LOG_LEVEL env var support
+- [x] **T013** Write tests for logging (`src/utils/__test__/log.test.ts`)
 
 ### P1.4: Database Setup
-- [ ] **T014** Implement `src/db/database.ts` (libSQL connection)
-- [ ] **T015** Enable WAL mode and pragmas
-- [ ] **T016** Implement `src/db/schema.ts` (table definitions)
-- [ ] **T017** Implement `src/db/migrations.ts`
-- [ ] **T018** Create initial migration (v1)
-- [ ] **T019** Write database tests (`src/db/__test__/*.test.ts`)
+- [x] **T014** Implement `src/db/database.ts` (libSQL connection)
+- [x] **T015** Enable WAL mode and pragmas
+- [x] **T016** Implement `src/db/schema.ts` (table definitions)
+- [x] **T017** Implement `src/db/migrations.ts`
+- [x] **T018** Create initial migration (v1)
+- [x] **T019** Write database tests (`src/db/__test__/*.test.ts`)
 
 ---
 
