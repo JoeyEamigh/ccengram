@@ -1,4 +1,5 @@
 import { parseArgs } from "util";
+import { startServer } from "../../webui/server.js";
 import { log } from "../../utils/log.js";
 
 export async function serveCommand(args: string[]): Promise<void> {
@@ -11,15 +12,32 @@ export async function serveCommand(args: string[]): Promise<void> {
   });
 
   const port = parseInt(values.port as string, 10);
+  const sessionId = `cli-${Date.now()}`;
 
   log.info("cli", "Starting WebUI server", { port });
 
-  console.log(`\nCCMemory WebUI`);
-  console.log(`\nStarting server on port ${port}...`);
-  console.log(`\n⚠️  WebUI not yet implemented (Phase 8)`);
-  console.log(`\nServer would be available at: http://localhost:${port}`);
+  const result = await startServer({
+    port,
+    sessionId,
+    open: values.open,
+  });
 
-  if (values.open) {
-    console.log(`Would open browser automatically.`);
+  if (result.alreadyRunning) {
+    return;
   }
+
+  console.log("\nPress Ctrl+C to stop the server.\n");
+
+  process.on("SIGINT", async () => {
+    log.info("cli", "Shutting down WebUI server");
+    if (result.server) {
+      result.server.stop();
+    }
+    if (result.checkInterval) {
+      clearInterval(result.checkInterval);
+    }
+    process.exit(0);
+  });
+
+  await new Promise(() => {});
 }

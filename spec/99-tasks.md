@@ -248,50 +248,50 @@ After completing a task:
 ## Phase 8: WebUI
 
 ### P8.1: Server Core
-- [ ] **T148** Implement `src/webui/server.ts` (Bun.serve)
-- [ ] **T149** HTTP request routing
-- [ ] **T150** WebSocket handler
-- [ ] **T151** React SSR setup
-- [ ] **T152** Client hydration script bundle
+- [x] **T148** Implement `src/webui/server.ts` (Bun.serve)
+- [x] **T149** HTTP request routing
+- [x] **T150** WebSocket handler
+- [x] **T151** React SSR setup
+- [x] **T152** Client hydration script bundle
 
 ### P8.2: Instance Coordination
-- [ ] **T153** Implement `src/webui/coordinator.ts`
-- [ ] **T154** Lock file management
-- [ ] **T155** Client registration/deregistration
-- [ ] **T156** Auto-start with first Claude Code instance
-- [ ] **T157** Auto-stop with last instance
+- [x] **T153** Implement `src/webui/coordinator.ts`
+- [x] **T154** Lock file management
+- [x] **T155** Client registration/deregistration
+- [x] **T156** Auto-start with first Claude Code instance
+- [x] **T157** Auto-stop with last instance
 
 ### P8.3: API Routes
-- [ ] **T158** Implement `src/webui/routes.ts`
-- [ ] **T159** Search API (sector, tier filtering)
-- [ ] **T160** Memory CRUD APIs (reinforce, deemphasize, delete)
-- [ ] **T161** Timeline API (session grouping)
-- [ ] **T162** Stats API (per sector/tier)
-- [ ] **T163** Config API
-- [ ] **T164** Projects API
-- [ ] **T165** Active agents API
+- [x] **T158** Implement `src/webui/routes.ts`
+- [x] **T159** Search API (sector, tier filtering)
+- [x] **T160** Memory CRUD APIs (reinforce, deemphasize, delete)
+- [x] **T161** Timeline API (session grouping)
+- [x] **T162** Stats API (per sector/tier)
+- [x] **T163** Config API
+- [x] **T164** Projects API
+- [x] **T165** Active agents API
 
 ### P8.4: WebSocket Events
-- [ ] **T166** Implement `src/webui/websocket.ts`
-- [ ] **T167** memory:created event
-- [ ] **T168** memory:updated event
-- [ ] **T169** memory:deleted event
-- [ ] **T170** session:started event
-- [ ] **T171** session:ended event
-- [ ] **T172** agent:activity event
+- [x] **T166** Implement `src/webui/websocket.ts`
+- [x] **T167** memory:created event
+- [x] **T168** memory:updated event
+- [x] **T169** memory:deleted event
+- [x] **T170** session:started event
+- [x] **T171** session:ended event
+- [x] **T172** agent:activity event
 
 ### P8.5: React Components
-- [ ] **T173** Create `src/webui/components/App.tsx`
-- [ ] **T174** Create `src/webui/components/Search.tsx`
-- [ ] **T175** Create `src/webui/components/Timeline.tsx`
-- [ ] **T176** Create `src/webui/components/AgentView.tsx` (multi-agent)
-- [ ] **T177** Create `src/webui/components/SessionCard.tsx`
-- [ ] **T178** Create `src/webui/components/MemoryDetail.tsx`
-- [ ] **T179** Create `src/webui/components/Settings.tsx`
-- [ ] **T180** Create `src/webui/hooks/useWebSocket.ts`
-- [ ] **T181** Create `src/webui/hooks/useSearch.ts`
-- [ ] **T182** Create `src/webui/styles.css`
-- [ ] **T183** Write WebUI tests (`src/webui/__test__/*.test.ts`)
+- [x] **T173** Create `src/webui/components/App.tsx`
+- [x] **T174** Create `src/webui/components/Search.tsx`
+- [x] **T175** Create `src/webui/components/Timeline.tsx`
+- [x] **T176** Create `src/webui/components/AgentView.tsx` (multi-agent)
+- [x] **T177** Create `src/webui/components/SessionCard.tsx`
+- [x] **T178** Create `src/webui/components/MemoryDetail.tsx`
+- [x] **T179** Create `src/webui/components/Settings.tsx`
+- [x] **T180** Create `src/webui/hooks/useWebSocket.ts`
+- [x] **T181** Create `src/webui/hooks/useSearch.ts`
+- [x] **T182** Create `src/webui/styles.css`
+- [x] **T183** Write WebUI tests (`src/webui/__test__/*.test.ts`)
 
 ---
 
