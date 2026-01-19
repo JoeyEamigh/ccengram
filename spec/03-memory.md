@@ -154,7 +154,7 @@ function classifyMemorySector(content: string): MemorySector {
 ### Test Specification
 
 ```typescript
-// src/services/memory/sectors.test.ts (colocated)
+// src/services/memory/__test__/sectors.test.ts (colocated)
 describe('Memory Sector Classification', () => {
   test('classifies conversation events as episodic', () => {
     const content = 'User asked about the authentication flow earlier';
@@ -266,7 +266,7 @@ function isDuplicate(hash1: string, hash2: string, threshold = 3): boolean {
 ### Test Specification
 
 ```typescript
-// src/services/memory/dedup.test.ts (colocated)
+// src/services/memory/__test__/dedup.test.ts (colocated)
 describe('Simhash Deduplication', () => {
   test('identical text produces identical hash', () => {
     const text = 'The quick brown fox jumps over the lazy dog';
@@ -475,7 +475,7 @@ function createMemoryStore(): MemoryStore {
 ### Test Specification
 
 ```typescript
-// src/services/memory/store.test.ts (colocated)
+// src/services/memory/__test__/store.test.ts (colocated)
 describe('MemoryStore', () => {
   let store: MemoryStore;
 
@@ -658,7 +658,7 @@ async function getSupersedingMemory(memoryId: string): Promise<Memory | null> {
 ### Test Specification
 
 ```typescript
-// src/services/memory/relationships.test.ts (colocated)
+// src/services/memory/__test__/relationships.test.ts (colocated)
 describe('Memory Relationships', () => {
   test('supersede marks old memory with valid_until', async () => {
     const old = await store.create({ content: 'Old fact' }, 'proj1');
@@ -756,7 +756,7 @@ function startDecayProcess(config: DecayConfig = {
 ### Test Specification
 
 ```typescript
-// src/services/memory/decay.test.ts (colocated)
+// src/services/memory/__test__/decay.test.ts (colocated)
 describe('Salience Decay', () => {
   test('emotional memories decay slowest', () => {
     const emotional: Memory = {

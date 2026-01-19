@@ -34,14 +34,14 @@ After completing a task:
 - [ ] **T005** Implement `src/utils/paths.ts`
 - [ ] **T006** Platform detection (Linux, macOS, Windows)
 - [ ] **T007** Directory creation utility
-- [ ] **T008** Write tests for paths (`src/utils/paths.test.ts`)
+- [ ] **T008** Write tests for paths (`src/utils/__test__/paths.test.ts`)
 
 ### P1.3: Logging
 - [ ] **T009** Implement `src/utils/log.ts`
 - [ ] **T010** Log levels (debug, info, warn, error)
 - [ ] **T011** Structured logging with module + context
 - [ ] **T012** LOG_LEVEL env var support
-- [ ] **T013** Write tests for logging (`src/utils/log.test.ts`)
+- [ ] **T013** Write tests for logging (`src/utils/__test__/log.test.ts`)
 
 ### P1.4: Database Setup
 - [ ] **T014** Implement `src/db/database.ts` (libSQL connection)
@@ -49,7 +49,7 @@ After completing a task:
 - [ ] **T016** Implement `src/db/schema.ts` (table definitions)
 - [ ] **T017** Implement `src/db/migrations.ts`
 - [ ] **T018** Create initial migration (v1)
-- [ ] **T019** Write database tests (`src/db/*.test.ts`)
+- [ ] **T019** Write database tests (`src/db/__test__/*.test.ts`)
 
 ---
 
@@ -60,21 +60,21 @@ After completing a task:
 - [ ] **T021** Availability check (model detection)
 - [ ] **T022** Dimension detection
 - [ ] **T023** Batch embedding support
-- [ ] **T024** Write Ollama provider tests (`src/services/embedding/ollama.test.ts`)
+- [ ] **T024** Write Ollama provider tests (`src/services/embedding/__test__/ollama.test.ts`)
 
 ### P2.2: OpenRouter Provider
 - [ ] **T025** Implement `src/services/embedding/openrouter.ts`
 - [ ] **T026** API key management
 - [ ] **T027** Model dimension mapping
 - [ ] **T028** Batch embedding support
-- [ ] **T029** Write OpenRouter provider tests (`src/services/embedding/openrouter.test.ts`)
+- [ ] **T029** Write OpenRouter provider tests (`src/services/embedding/__test__/openrouter.test.ts`)
 
 ### P2.3: Embedding Service
 - [ ] **T030** Implement `src/services/embedding/index.ts`
 - [ ] **T031** Provider fallback logic
 - [ ] **T032** Model registration in database
 - [ ] **T033** Provider switching
-- [ ] **T034** Write service integration tests (`src/services/embedding/service.test.ts`)
+- [ ] **T034** Write service integration tests (`src/services/embedding/__test__/service.test.ts`)
 
 ---
 
@@ -85,21 +85,21 @@ After completing a task:
 - [ ] **T036** Five-sector model (episodic, semantic, procedural, emotional, reflective)
 - [ ] **T037** Sector classification patterns
 - [ ] **T038** Decay rate constants per sector
-- [ ] **T039** Write sector classification tests (`src/services/memory/types.test.ts`)
+- [ ] **T039** Write sector classification tests (`src/services/memory/__test__/types.test.ts`)
 
 ### P3.2: Deduplication
 - [ ] **T040** Implement `src/services/memory/dedup.ts`
 - [ ] **T041** Simhash computation (64-bit)
 - [ ] **T042** Hamming distance calculation
 - [ ] **T043** Duplicate detection with threshold
-- [ ] **T044** Write deduplication tests (`src/services/memory/dedup.test.ts`)
+- [ ] **T044** Write deduplication tests (`src/services/memory/__test__/dedup.test.ts`)
 
 ### P3.3: Memory Relationships
 - [ ] **T045** Implement `src/services/memory/relationships.ts`
 - [ ] **T046** Relationship types (SUPERSEDES, CONTRADICTS, RELATED_TO, BUILDS_ON)
 - [ ] **T047** Create relationship with validation
 - [ ] **T048** Get related memories
-- [ ] **T049** Write relationship tests (`src/services/memory/relationships.test.ts`)
+- [ ] **T049** Write relationship tests (`src/services/memory/__test__/relationships.test.ts`)
 
 ### P3.4: Memory Store
 - [ ] **T050** Implement `src/services/memory/store.ts`
@@ -112,7 +112,7 @@ After completing a task:
 - [ ] **T057** Touch (access tracking)
 - [ ] **T058** Reinforce with diminishing returns
 - [ ] **T059** De-emphasize (reduce salience)
-- [ ] **T060** Write memory store tests (`src/services/memory/store.test.ts`)
+- [ ] **T060** Write memory store tests (`src/services/memory/__test__/store.test.ts`)
 
 ### P3.5: Session Tracking
 - [ ] **T061** Implement `src/services/memory/sessions.ts`
@@ -120,7 +120,7 @@ After completing a task:
 - [ ] **T063** Track memory usage (created, recalled, updated, reinforced)
 - [ ] **T064** End session with summary
 - [ ] **T065** Promote session tier memories
-- [ ] **T066** Write session tests (`src/services/memory/sessions.test.ts`)
+- [ ] **T066** Write session tests (`src/services/memory/__test__/sessions.test.ts`)
 
 ### P3.6: Salience Decay
 - [ ] **T067** Implement `src/services/memory/decay.ts`
@@ -128,7 +128,7 @@ After completing a task:
 - [ ] **T069** Access count protection
 - [ ] **T070** Salience boost function
 - [ ] **T071** Background decay process
-- [ ] **T072** Write decay tests (`src/services/memory/decay.test.ts`)
+- [ ] **T072** Write decay tests (`src/services/memory/__test__/decay.test.ts`)
 
 ---
 
@@ -139,14 +139,14 @@ After completing a task:
 - [ ] **T074** Query preparation (prefix matching)
 - [ ] **T075** Snippet extraction
 - [ ] **T076** Project filtering
-- [ ] **T077** Write FTS tests (`src/services/search/fts.test.ts`)
+- [ ] **T077** Write FTS tests (`src/services/search/__test__/fts.test.ts`)
 
 ### P4.2: Vector Search
 - [ ] **T078** Implement `src/services/search/vector.ts`
 - [ ] **T079** Query embedding
 - [ ] **T080** vector_top_k usage
 - [ ] **T081** Model-aware search
-- [ ] **T082** Write vector search tests (`src/services/search/vector.test.ts`)
+- [ ] **T082** Write vector search tests (`src/services/search/__test__/vector.test.ts`)
 
 ### P4.3: Hybrid Search & Ranking
 - [ ] **T083** Implement `src/services/search/ranking.ts`
@@ -158,7 +158,7 @@ After completing a task:
 - [ ] **T089** Salience boost on retrieval
 - [ ] **T090** Session context in results (session_id, agent_name)
 - [ ] **T091** Timeline function with session grouping
-- [ ] **T092** Write hybrid search tests (`src/services/search/hybrid.test.ts`)
+- [ ] **T092** Write hybrid search tests (`src/services/search/__test__/hybrid.test.ts`)
 
 ---
 
@@ -169,7 +169,7 @@ After completing a task:
 - [ ] **T094** Sentence/paragraph aware splitting
 - [ ] **T095** Overlap handling
 - [ ] **T096** Offset tracking
-- [ ] **T097** Write chunking tests (`src/services/documents/chunk.test.ts`)
+- [ ] **T097** Write chunking tests (`src/services/documents/__test__/chunk.test.ts`)
 
 ### P5.2: Document Service
 - [ ] **T098** Implement `src/services/documents/ingest.ts`
@@ -181,7 +181,7 @@ After completing a task:
 - [ ] **T104** Chunk embedding
 - [ ] **T105** Document search
 - [ ] **T106** Update detection
-- [ ] **T107** Write document tests (`src/services/documents/ingest.test.ts`)
+- [ ] **T107** Write document tests (`src/services/documents/__test__/ingest.test.ts`)
 
 ---
 
@@ -219,7 +219,7 @@ After completing a task:
 - [ ] **T130** memory_deemphasize tool (reduce salience)
 - [ ] **T131** memory_delete tool (soft delete)
 - [ ] **T132** memory_supersede tool (create relationship + invalidate)
-- [ ] **T133** Write MCP server tests (`src/mcp/server.test.ts`)
+- [ ] **T133** Write MCP server tests (`src/mcp/__test__/server.test.ts`)
 
 ---
 
@@ -237,7 +237,7 @@ After completing a task:
 - [ ] **T142** health command
 - [ ] **T143** stats command (per sector/tier)
 - [ ] **T144** serve command
-- [ ] **T145** Write CLI tests (`src/cli/commands/*.test.ts`)
+- [ ] **T145** Write CLI tests (`src/cli/commands/__test__/*.test.ts`)
 
 ### P7.2: Build
 - [ ] **T146** CLI build script
@@ -291,7 +291,7 @@ After completing a task:
 - [ ] **T180** Create `src/webui/hooks/useWebSocket.ts`
 - [ ] **T181** Create `src/webui/hooks/useSearch.ts`
 - [ ] **T182** Create `src/webui/styles.css`
-- [ ] **T183** Write WebUI tests (`src/webui/*.test.ts`)
+- [ ] **T183** Write WebUI tests (`src/webui/__test__/*.test.ts`)
 
 ---
 
@@ -382,8 +382,8 @@ Each task should be:
 ## Test Structure
 
 **Colocated unit tests** - next to source files:
-- `src/services/memory/store.ts` → `src/services/memory/store.test.ts`
-- `src/mcp/server.ts` → `src/mcp/server.test.ts`
+- `src/services/memory/store.ts` → `src/services/memory/__test__/store.test.ts`
+- `src/mcp/server.ts` → `src/mcp/__test__/server.test.ts`
 
 **Integration tests** - in `tests/` directory:
 - `tests/integration/capture.test.ts`

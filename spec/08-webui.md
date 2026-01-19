@@ -2148,7 +2148,7 @@ function isProcessAlive(pid: number): boolean {
 ### Unit Tests (Colocated)
 
 ```typescript
-// src/webui/coordination.test.ts
+// src/webui/__test__/coordination.test.ts
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { tryAcquireLock, releaseLock, registerClient, unregisterClient, getActiveClients } from "./coordination";
 

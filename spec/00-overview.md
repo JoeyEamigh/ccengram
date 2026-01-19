@@ -125,7 +125,7 @@ ccmemory/
 │   │   └── hooks.json           # Hook configuration
 │   └── .mcp.json                # MCP server configuration
 ├── spec/                        # This directory
-├── tests/                       # Test files
+├── tests/                       # E2E/integration test files
 └── CLAUDE.md                    # Agent instructions
 ```
 

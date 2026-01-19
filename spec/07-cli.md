@@ -659,7 +659,7 @@ main().catch(err => {
 ## Test Specification
 
 ```typescript
-// src/cli/commands/search.test.ts (colocated unit test)
+// src/cli/commands/__test__/search.test.ts (colocated unit test)
 import { test, expect, describe, beforeEach } from "bun:test";
 
 describe("CLI Search Command", () => {
@@ -688,7 +688,7 @@ describe("CLI Search Command", () => {
   });
 });
 
-// src/cli/commands/config.test.ts (colocated unit test)
+// src/cli/commands/__test__/config.test.ts (colocated unit test)
 describe("CLI Config Command", () => {
   test("shows all config", async () => {
     const output = await runCLI(["config"]);

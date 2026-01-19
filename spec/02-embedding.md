@@ -295,7 +295,7 @@ export class OllamaProvider implements EmbeddingProvider {
 ### Test Specification
 
 ```typescript
-// src/services/embedding/ollama.test.ts (colocated unit test)
+// src/services/embedding/__test__/ollama.test.ts (colocated unit test)
 import { describe, test, expect, mock, beforeEach } from "bun:test";
 
 describe("OllamaProvider", () => {
@@ -490,7 +490,7 @@ export class OpenRouterProvider implements EmbeddingProvider {
 ### Test Specification
 
 ```typescript
-// src/services/embedding/openrouter.test.ts (colocated unit test)
+// src/services/embedding/__test__/openrouter.test.ts (colocated unit test)
 describe("OpenRouterProvider", () => {
   test("requires API key", async () => {
     delete process.env.OPENROUTER_API_KEY;
@@ -580,7 +580,7 @@ export async function reembedStaleMemories(
 ## Embedding Service Test Specification
 
 ```typescript
-// src/services/embedding/service.test.ts (colocated unit test)
+// src/services/embedding/__test__/service.test.ts (colocated unit test)
 describe("EmbeddingService", () => {
   test("falls back to OpenRouter when Ollama unavailable", async () => {
     // Mock Ollama as unavailable, OpenRouter as available

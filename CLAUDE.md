@@ -65,6 +65,7 @@ Handle `null`/`undefined` explicitly.
 | Spec | Topic |
 |------|-------|
 | `spec/99-tasks.md` | **Task list — read first** |
+| `spec/00-overview.md` | project overview |
 | `spec/01-database.md` | libSQL, schema, migrations |
 | `spec/02-embedding.md` | Ollama/OpenRouter |
 | `spec/03-memory.md` | Types, dedup, decay |
@@ -74,13 +75,11 @@ Handle `null`/`undefined` explicitly.
 | `spec/07-cli.md` | CLI commands |
 | `spec/08-webui.md` | Browser UI |
 
-## Scripts
+## Scripts (you may need to update these as you work)
 
 ```bash
 bun run typecheck     # Type check
 bun run test          # All tests
-bun run test:db       # Database tests
-bun run test:memory   # Memory tests
 bun run build:all     # Build everything
 bun run ollama:check  # Verify Ollama if not working
 bun run db:counts     # Check DB stats
@@ -98,13 +97,13 @@ src/utils/        → Shared utilities (paths, logging)
 scripts/          → Hook scripts (capture, summarize, cleanup)
 plugin/           → Plugin config (hooks.json, .mcp.json)
 spec/             → Specifications
-tests/            → Integration tests only
+tests/            → Integration/e2e tests only
 ```
 
 ## Test Structure
 
-- **Unit tests**: Colocated next to source (`src/**/*.test.ts`)
-- **Integration tests**: In `tests/integration/`
+- **Unit tests**: Colocated in `__test__` dirs next to source (`src/**/__test__/*.test.ts`)
+- **Integration/e2e tests**: In `tests/`
 
 ## Logging
 
@@ -119,8 +118,3 @@ log.error("db", "Connection failed", { error: err.message });
 ```
 
 Log levels controlled via `LOG_LEVEL` env var: `debug`, `info`, `warn`, `error` (default: `info`).
-
-## XDG Paths
-
-- Config: `$XDG_CONFIG_HOME/ccmemory/config.json`
-- Database: `$XDG_DATA_HOME/ccmemory/memories.db`

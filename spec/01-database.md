@@ -47,7 +47,7 @@ export function ensureDirectories(): Promise<void>;
 ### Test Specification
 
 ```typescript
-// src/utils/paths.test.ts (colocated)
+// src/utils/__test__/paths.test.ts (colocated)
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 
 describe("XDG Paths", () => {
@@ -228,7 +228,7 @@ log.error("db", "Connection failed", { error: err.message });
 ### Test Specification
 
 ```typescript
-// src/utils/log.test.ts (colocated)
+// src/utils/__test__/log.test.ts (colocated)
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { log, getLogPath } from "./log.js";
 import { unlink, readFile } from "node:fs/promises";
@@ -362,7 +362,7 @@ export async function createDatabase(dbPath?: string): Promise<Database> {
 ### Test Specification
 
 ```typescript
-// src/db/database.test.ts (colocated)
+// src/db/__test__/database.test.ts (colocated)
 describe("Database", () => {
   let db: Database;
 
@@ -699,7 +699,7 @@ type RelationshipType =
 ### Schema Test Specification
 
 ```typescript
-// src/db/schema.test.ts (colocated with schema.ts)
+// src/db/__test__/schema.test.ts (colocated with schema.ts)
 describe("Schema", () => {
   let db: Database;
 
@@ -832,7 +832,7 @@ export async function runMigrations(client: Client): Promise<void> {
 ### Test Specification
 
 ```typescript
-// src/db/migrations.test.ts (colocated)
+// src/db/__test__/migrations.test.ts (colocated)
 describe("Migrations", () => {
   test("migrations are ordered by version", () => {
     for (let i = 1; i < migrations.length; i++) {
@@ -885,7 +885,7 @@ ORDER BY distance ASC;
 ### Vector Test Specification
 
 ```typescript
-// src/db/vectors.test.ts (colocated)
+// src/db/__test__/vectors.test.ts (colocated)
 describe("Vector Operations", () => {
   let db: Database;
 

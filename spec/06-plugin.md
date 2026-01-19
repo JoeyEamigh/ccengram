@@ -867,7 +867,7 @@ describe("Summarize Hook", () => {
 ### MCP Server Tests (Colocated - src/mcp/server.test.ts)
 
 ```typescript
-// src/mcp/server.test.ts
+// src/mcp/__test__/server.test.ts
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { getDatabase } from "../db/database";
 import { createMemoryStore } from "../services/memory/store";

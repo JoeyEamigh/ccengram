@@ -151,7 +151,7 @@ export function chunkText(text: string, options: ChunkOptions = {}): Chunk[] {
 ### Test Specification
 
 ```typescript
-// src/services/documents/chunk.test.ts (colocated unit test)
+// src/services/documents/__test__/chunk.test.ts (colocated unit test)
 describe("Text Chunking", () => {
   test("returns single chunk for small text", () => {
     const text = "Short text that fits in one chunk.";
@@ -437,7 +437,7 @@ function extractTitle(content: string, type: "txt" | "md" | "url"): string {
 ### Test Specification
 
 ```typescript
-// src/services/documents/ingest.test.ts (colocated unit test)
+// src/services/documents/__test__/ingest.test.ts (colocated unit test)
 describe("Document Ingestion", () => {
   let docs: DocumentService;
 

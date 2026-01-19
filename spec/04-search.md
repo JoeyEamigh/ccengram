@@ -169,7 +169,7 @@ export async function searchFTS(
 ### Test Specification
 
 ```typescript
-// src/services/search/fts.test.ts (colocated)
+// src/services/search/__test__/fts.test.ts (colocated)
 describe('FTS5 Search', () => {
   beforeEach(async () => {
     await setupTestDatabase();
@@ -298,7 +298,7 @@ export async function searchVector(
 ### Test Specification
 
 ```typescript
-// src/services/search/vector.test.ts (colocated)
+// src/services/search/__test__/vector.test.ts (colocated)
 describe('Vector Search', () => {
   beforeEach(async () => {
     await setupTestDatabase();
@@ -628,7 +628,7 @@ async function getRelatedMemoryCount(memoryId: string): Promise<number> {
 ### Test Specification
 
 ```typescript
-// src/services/search/hybrid.test.ts (colocated)
+// src/services/search/__test__/hybrid.test.ts (colocated)
 describe('Hybrid Search', () => {
   let search: SearchService;
 
