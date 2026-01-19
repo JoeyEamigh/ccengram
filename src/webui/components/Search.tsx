@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Search as SearchIcon, Loader2 } from "lucide-react";
 import { MemoryCard } from "./MemoryCard.js";
 import { Button } from "./ui/button.js";
@@ -30,6 +30,18 @@ export function Search({
   const [includeSuperseded, setIncludeSuperseded] = useState(false);
   const [results, setResults] = useState(initialResults);
   const [loading, setLoading] = useState(false);
+  const [projectId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return new URLSearchParams(window.location.search).get("project");
+  });
+  const [sessionId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return new URLSearchParams(window.location.search).get("session");
+  });
+
+  useEffect(() => {
+    setResults(initialResults);
+  }, [initialResults]);
 
   const handleSearch = useCallback(
     async (e?: React.FormEvent) => {
@@ -41,6 +53,8 @@ export function Search({
         const params = new URLSearchParams({ q: query });
         if (sector !== "all") params.set("sector", sector);
         if (includeSuperseded) params.set("include_superseded", "true");
+        if (projectId) params.set("project", projectId);
+        if (sessionId) params.set("session", sessionId);
 
         const res = await fetch(`/api/search?${params}`);
         const data = (await res.json()) as { results: SearchResult[] };
@@ -52,7 +66,7 @@ export function Search({
         setLoading(false);
       }
     },
-    [query, sector, includeSuperseded]
+    [query, sector, includeSuperseded, projectId, sessionId]
   );
 
   return (
@@ -135,16 +149,31 @@ export function Search({
           <p className="text-center text-muted-foreground py-12">
             {query
               ? "No memories found."
-              : "Enter a search query to find memories."}
+              : projectId
+                ? "No memories found for this project." : sessionId
+                  ? "No memories found for this session."
+                : "Enter a search query to find memories."}
           </p>
         ) : (
-          results.map((r) => (
-            <MemoryCard
-              key={r.memory.id}
-              result={r}
-              onClick={() => onSelectMemory(r.memory)}
-            />
-          ))
+          <>
+            {!query && projectId && (
+              <p className="text-sm text-muted-foreground">
+                Showing {results.length} recent memories for this project
+              </p>
+            )}
+            {!query && sessionId && (
+              <p className="text-sm text-muted-foreground">
+                Showing {results.length} recent memories for this session
+              </p>
+            )}
+            {results.map((r) => (
+              <MemoryCard
+                key={r.memory.id}
+                result={r}
+                onClick={() => onSelectMemory(r.memory)}
+              />
+            ))}
+          </>
         )}
       </div>
     </div>

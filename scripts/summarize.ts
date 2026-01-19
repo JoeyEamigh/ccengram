@@ -84,7 +84,7 @@ async function main(): Promise<void> {
 
   const project = await getOrCreateProject(cwd);
 
-  await store.create(
+  const memory = await store.create(
     {
       content: `Session Summary:\n${summaryContent}`,
       sector: "reflective",
@@ -93,6 +93,8 @@ async function main(): Promise<void> {
     project.id,
     session_id
   );
+
+  await notifyMemoryCreated(memory.id, project.id, session_id);
 
   await sessionService.end(session_id, summaryContent);
 
@@ -129,6 +131,27 @@ function createBasicSummary(observations: string, count: number): string {
   }
 
   return lines.join("\n");
+}
+
+async function notifyMemoryCreated(
+  memoryId: string,
+  projectId: string,
+  sessionId: string
+): Promise<void> {
+  try {
+    const res = await fetch("http://localhost:37778/api/hooks/memory-created", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ memoryId, projectId, sessionId }),
+    });
+    if (!res.ok) {
+      log.debug("summarize", "WebUI notification failed (server may not be running)", {
+        status: res.status,
+      });
+    }
+  } catch {
+    log.debug("summarize", "WebUI notification skipped (server not running)");
+  }
 }
 
 process.on("SIGTERM", () => {

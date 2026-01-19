@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Brain, Search, Users, Clock, Settings, Moon, Sun } from "lucide-react";
+import { Brain, FolderGit2, Search, Users, Clock, Settings, Moon, Sun } from "lucide-react";
 import { Button } from "./ui/button.js";
 import { cn } from "../lib/utils.js";
 
@@ -11,6 +11,7 @@ type LayoutProps = {
 };
 
 const navItems = [
+  { path: "/projects", label: "Projects", icon: FolderGit2 },
   { path: "/", label: "Search", icon: Search },
   { path: "/agents", label: "Agents", icon: Users },
   { path: "/timeline", label: "Timeline", icon: Clock },

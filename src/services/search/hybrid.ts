@@ -117,6 +117,91 @@ async function getRelatedMemoryCount(memoryId: string): Promise<number> {
   return row ? Number(row["count"]) : 0;
 }
 
+async function batchGetSourceSessions(
+  memoryIds: string[]
+): Promise<Map<string, SessionSummary>> {
+  if (memoryIds.length === 0) return new Map();
+
+  const db = await getDatabase();
+  const placeholders = memoryIds.map(() => "?").join(",");
+  const result = await db.execute(
+    `SELECT sm.memory_id, s.id, s.started_at, s.summary, s.project_id
+     FROM session_memories sm
+     JOIN sessions s ON sm.session_id = s.id
+     WHERE sm.memory_id IN (${placeholders}) AND sm.usage_type = 'created'`,
+    memoryIds
+  );
+
+  const map = new Map<string, SessionSummary>();
+  for (const row of result.rows) {
+    const memoryId = String(row["memory_id"]);
+    map.set(memoryId, {
+      id: String(row["id"]),
+      startedAt: Number(row["started_at"]),
+      summary: row["summary"] ? String(row["summary"]) : undefined,
+      projectId: String(row["project_id"]),
+    });
+  }
+  return map;
+}
+
+async function batchGetSupersedingMemories(
+  memoryIds: string[]
+): Promise<Map<string, { id: string; content: string; createdAt: number }>> {
+  if (memoryIds.length === 0) return new Map();
+
+  const db = await getDatabase();
+  const placeholders = memoryIds.map(() => "?").join(",");
+  const result = await db.execute(
+    `SELECT mr.target_memory_id, m.id, m.content, m.created_at
+     FROM memory_relationships mr
+     JOIN memories m ON mr.source_memory_id = m.id
+     WHERE mr.target_memory_id IN (${placeholders})
+       AND mr.relationship_type = 'SUPERSEDES'
+       AND mr.valid_until IS NULL
+       AND m.is_deleted = 0`,
+    memoryIds
+  );
+
+  const map = new Map<string, { id: string; content: string; createdAt: number }>();
+  for (const row of result.rows) {
+    const targetId = String(row["target_memory_id"]);
+    map.set(targetId, {
+      id: String(row["id"]),
+      content: String(row["content"]).slice(0, 200),
+      createdAt: Number(row["created_at"]),
+    });
+  }
+  return map;
+}
+
+async function batchGetRelatedCounts(
+  memoryIds: string[]
+): Promise<Map<string, number>> {
+  if (memoryIds.length === 0) return new Map();
+
+  const db = await getDatabase();
+  const placeholders = memoryIds.map(() => "?").join(",");
+  const allIds = [...memoryIds, ...memoryIds];
+
+  const result = await db.execute(
+    `SELECT memory_id, COUNT(*) as count FROM (
+       SELECT source_memory_id as memory_id FROM memory_relationships
+       WHERE source_memory_id IN (${placeholders}) AND valid_until IS NULL
+       UNION ALL
+       SELECT target_memory_id as memory_id FROM memory_relationships
+       WHERE target_memory_id IN (${placeholders}) AND valid_until IS NULL
+     ) GROUP BY memory_id`,
+    allIds
+  );
+
+  const map = new Map<string, number>();
+  for (const row of result.rows) {
+    map.set(String(row["memory_id"]), Number(row["count"]));
+  }
+  return map;
+}
+
 async function checkSessionLink(memoryId: string, sessionId: string): Promise<boolean> {
   const db = await getDatabase();
   const result = await db.execute(
@@ -233,7 +318,13 @@ export function createSearchService(
       const memoryIds = Array.from(resultMap.keys());
       const memories = await Promise.all(memoryIds.map(getMemoryById));
 
-      const results: SearchResult[] = [];
+      type CandidateResult = {
+        memory: Memory;
+        data: { ftsRank: number; similarity: number; snippet?: string };
+        score: number;
+        matchType: "semantic" | "keyword" | "both";
+      };
+      const candidates: CandidateResult[] = [];
 
       for (let i = 0; i < memories.length; i++) {
         const memory = memories[i];
@@ -267,27 +358,29 @@ export function createSearchService(
               ? "semantic"
               : "keyword";
 
-        const sourceSession = await getSourceSession(memory.id);
-        const supersedingMemory = await getSupersedingMemory(memory.id);
-        const relatedCount = await getRelatedMemoryCount(memory.id);
-
-        results.push({
-          memory,
-          score,
-          matchType,
-          highlights: data.snippet ? [data.snippet] : undefined,
-          sourceSession,
-          isSuperseded: !!memory.validUntil,
-          supersededBy: supersedingMemory
-            ? {
-                id: supersedingMemory.id,
-                content: supersedingMemory.content.slice(0, 200),
-                createdAt: supersedingMemory.createdAt,
-              }
-            : undefined,
-          relatedMemoryCount: relatedCount,
-        });
+        candidates.push({ memory, data, score, matchType });
       }
+
+      const candidateIds = candidates.map((c) => c.memory.id);
+      const [sessionMap, supersededMap, relatedCountMap] = await Promise.all([
+        batchGetSourceSessions(candidateIds),
+        batchGetSupersedingMemories(candidateIds),
+        batchGetRelatedCounts(candidateIds),
+      ]);
+
+      const results: SearchResult[] = candidates.map((c) => {
+        const supersedingMemory = supersededMap.get(c.memory.id);
+        return {
+          memory: c.memory,
+          score: c.score,
+          matchType: c.matchType,
+          highlights: c.data.snippet ? [c.data.snippet] : undefined,
+          sourceSession: sessionMap.get(c.memory.id),
+          isSuperseded: !!c.memory.validUntil,
+          supersededBy: supersedingMemory,
+          relatedMemoryCount: relatedCountMap.get(c.memory.id) ?? 0,
+        };
+      });
 
       results.sort((a, b) => b.score - a.score);
 

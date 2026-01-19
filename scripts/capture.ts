@@ -79,6 +79,8 @@ async function main(): Promise<void> {
     memoryId: memory.id,
   });
 
+  await notifyMemoryCreated(memory.id, project.id, session_id);
+
   clearTimeout(timeoutId);
   process.exit(0);
 }
@@ -141,6 +143,27 @@ function extractFilePaths(
   }
 
   return [...new Set(paths)];
+}
+
+async function notifyMemoryCreated(
+  memoryId: string,
+  projectId: string,
+  sessionId: string
+): Promise<void> {
+  try {
+    const res = await fetch("http://localhost:37778/api/hooks/memory-created", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ memoryId, projectId, sessionId }),
+    });
+    if (!res.ok) {
+      log.debug("capture", "WebUI notification failed (server may not be running)", {
+        status: res.status,
+      });
+    }
+  } catch {
+    log.debug("capture", "WebUI notification skipped (server not running)");
+  }
 }
 
 main().catch((err: Error) => {

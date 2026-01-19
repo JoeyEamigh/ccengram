@@ -31,6 +31,21 @@ export const migrations: Migration[] = [
     name: "indexes",
     statements: INDEX_STATEMENTS,
   },
+  {
+    version: 4,
+    name: "config_and_compound_indexes",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS config (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_memories_project_created
+        ON memories(project_id, created_at DESC) WHERE is_deleted = 0`,
+      `CREATE INDEX IF NOT EXISTS idx_memories_project_sector_created
+        ON memories(project_id, sector, created_at DESC) WHERE is_deleted = 0`,
+    ],
+  },
 ];
 
 export async function getCurrentVersion(client: Client): Promise<number> {

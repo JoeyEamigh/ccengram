@@ -1,8 +1,19 @@
-import { Clock, Brain, Activity } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Clock, Brain, Activity, ChevronDown, ChevronUp, Loader2, Zap } from "lucide-react";
 import { Card, CardContent, CardFooter, CardHeader } from "./ui/card.js";
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { cn } from "../lib/utils.js";
+import type { MemorySector, Memory } from "../../services/memory/types.js";
+
+type SessionMemory = {
+  id: string;
+  content: string;
+  summary?: string;
+  sector: MemorySector;
+  salience: number;
+  createdAt: number;
+};
 
 type Session = {
   id: string;
@@ -13,24 +24,92 @@ type Session = {
   lastActivity?: number;
 };
 
+type WebSocketMessage = {
+  type: string;
+  memory?: Memory;
+  sessionId?: string;
+  projectId?: string;
+};
+
 type SessionCardProps = {
   session: Session;
   onViewMemories: () => void;
   onViewTimeline: () => void;
+  onSelectMemory?: (memory: SessionMemory) => void;
+  messages?: WebSocketMessage[];
+};
+
+const sectorColors: Record<MemorySector, string> = {
+  episodic: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  semantic: "bg-green-500/10 text-green-700 dark:text-green-400",
+  procedural: "bg-purple-500/10 text-purple-700 dark:text-purple-400",
+  emotional: "bg-red-500/10 text-red-700 dark:text-red-400",
+  reflective: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
 };
 
 export function SessionCard({
   session,
   onViewMemories,
   onViewTimeline,
+  onSelectMemory,
+  messages = [],
 }: SessionCardProps): JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+  const [memories, setMemories] = useState<SessionMemory[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [memoryCount, setMemoryCount] = useState(session.memoryCount ?? 0);
+  const [hasNewMemory, setHasNewMemory] = useState(false);
+
   const isActive = !session.endedAt;
   const duration = session.endedAt
     ? formatDuration(session.endedAt - session.startedAt)
     : formatDuration(Date.now() - session.startedAt) + " (active)";
 
+  useEffect(() => {
+    for (const msg of messages) {
+      if (msg.type === "memory:created" && msg.sessionId === session.id && msg.memory) {
+        const newMemory: SessionMemory = {
+          id: msg.memory.id,
+          content: msg.memory.content,
+          summary: msg.memory.summary,
+          sector: msg.memory.sector as MemorySector,
+          salience: msg.memory.salience,
+          createdAt: msg.memory.createdAt,
+        };
+
+        setMemories((prev) => {
+          if (prev.some((m) => m.id === newMemory.id)) return prev;
+          return [newMemory, ...prev].slice(0, 5);
+        });
+        setMemoryCount((prev) => prev + 1);
+        setHasNewMemory(true);
+
+        setTimeout(() => setHasNewMemory(false), 2000);
+      }
+    }
+  }, [messages, session.id]);
+
+  const toggleExpand = async (): Promise<void> => {
+    if (!expanded && !loaded) {
+      setLoading(true);
+      try {
+        const res = await fetch(`/api/sessions/${session.id}/memories?limit=5`);
+        const data = (await res.json()) as { memories: SessionMemory[] };
+        setMemories(data.memories);
+        setLoaded(true);
+      } finally {
+        setLoading(false);
+      }
+    }
+    setExpanded(!expanded);
+  };
+
   return (
-    <Card className={cn(isActive && "ring-2 ring-green-500/50")}>
+    <Card className={cn(
+      isActive && "ring-2 ring-green-500/50",
+      hasNewMemory && "ring-2 ring-yellow-500/50 transition-all"
+    )}>
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <span
@@ -39,11 +118,19 @@ export function SessionCard({
           >
             {session.id.slice(0, 8)}...
           </span>
-          {isActive && (
-            <Badge className="bg-green-500 text-white animate-pulse">
-              ACTIVE
-            </Badge>
-          )}
+          <div className="flex items-center gap-2">
+            {hasNewMemory && (
+              <Badge className="bg-yellow-500 text-white animate-pulse flex items-center gap-1">
+                <Zap className="h-3 w-3" />
+                NEW
+              </Badge>
+            )}
+            {isActive && (
+              <Badge className="bg-green-500 text-white animate-pulse">
+                ACTIVE
+              </Badge>
+            )}
+          </div>
         </div>
       </CardHeader>
 
@@ -55,7 +142,7 @@ export function SessionCard({
           </div>
           <div className="flex items-center gap-2">
             <Brain className="h-4 w-4 text-muted-foreground" />
-            <span>{session.memoryCount ?? 0} memories</span>
+            <span>{memoryCount} memories</span>
           </div>
         </div>
         {session.lastActivity && (
@@ -69,14 +156,71 @@ export function SessionCard({
             {session.summary}
           </p>
         )}
+
+        {expanded && (
+          <div className="mt-3 pt-3 border-t space-y-2">
+            {loading ? (
+              <div className="flex items-center justify-center py-4">
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              </div>
+            ) : memories.length === 0 ? (
+              <p className="text-xs text-muted-foreground text-center py-2">
+                No memories created yet
+              </p>
+            ) : (
+              <>
+                <p className="text-xs font-medium text-muted-foreground">
+                  Recent Memories
+                </p>
+                {memories.map((memory) => (
+                  <div
+                    key={memory.id}
+                    className={cn(
+                      "p-2 rounded-md text-xs cursor-pointer hover:bg-accent/50 transition-colors",
+                      sectorColors[memory.sector]
+                    )}
+                    onClick={() => onSelectMemory?.(memory as unknown as SessionMemory)}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <Badge variant="outline" className="text-[10px] px-1 py-0">
+                        {memory.sector}
+                      </Badge>
+                      <span className="text-[10px] opacity-70">
+                        {formatTime(memory.createdAt)}
+                      </span>
+                    </div>
+                    <p className="line-clamp-2">
+                      {memory.summary ?? memory.content}
+                    </p>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+        )}
       </CardContent>
 
-      <CardFooter className="gap-2">
+      <CardFooter className="gap-2 flex-wrap">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={toggleExpand}
+          className="gap-1"
+        >
+          {loading ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : expanded ? (
+            <ChevronUp className="h-3 w-3" />
+          ) : (
+            <ChevronDown className="h-3 w-3" />
+          )}
+          {expanded ? "Collapse" : "Expand"}
+        </Button>
         <Button variant="outline" size="sm" onClick={onViewMemories}>
-          View Memories
+          All Memories
         </Button>
         <Button variant="outline" size="sm" onClick={onViewTimeline}>
-          View Timeline
+          Timeline
         </Button>
       </CardFooter>
     </Card>
@@ -92,4 +236,18 @@ function formatDuration(ms: number): string {
 
 function formatDate(ts: number): string {
   return new Date(ts).toLocaleString();
+}
+
+function formatTime(ts: number): string {
+  const now = Date.now();
+  const diffMs = now - ts;
+  const diffMins = Math.floor(diffMs / 60000);
+
+  if (diffMins < 1) return "just now";
+  if (diffMins < 60) return `${diffMins}m ago`;
+
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `${diffHours}h ago`;
+
+  return new Date(ts).toLocaleDateString();
 }

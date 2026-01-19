@@ -1,8 +1,13 @@
 import { useState, useEffect } from "react";
-import { Users } from "lucide-react";
+import { Users, RefreshCw, Activity, ChevronDown, ChevronUp, Clock } from "lucide-react";
 import { SessionCard } from "./SessionCard.js";
+import { ActivityFeed } from "./ActivityFeed.js";
+import type { ActivityEvent } from "./ActivityFeed.js";
 import { Badge } from "./ui/badge.js";
+import { Button } from "./ui/button.js";
+import { Card, CardContent, CardHeader, CardTitle } from "./ui/card.js";
 import { cn } from "../lib/utils.js";
+import type { Memory } from "../../services/memory/types.js";
 
 type Session = {
   id: string;
@@ -14,10 +19,20 @@ type Session = {
   lastActivity?: number;
 };
 
+type WebSocketMessage = {
+  type: string;
+  memory?: Memory;
+  projectId?: string;
+  session?: Session;
+};
+
 type AgentViewProps = {
   initialSessions: unknown[];
   wsConnected: boolean;
   onNavigate: (path: string) => void;
+  messages?: WebSocketMessage[];
+  onSelectMemory?: (memory: Memory) => void;
+  initialActivity?: ActivityEvent[];
 };
 
 type ParallelGroup = {
@@ -30,9 +45,28 @@ export function AgentView({
   initialSessions,
   wsConnected,
   onNavigate,
+  messages = [],
+  onSelectMemory,
+  initialActivity = [],
 }: AgentViewProps): JSX.Element {
-  const [sessions] = useState(initialSessions as Session[]);
+  const [sessions, setSessions] = useState(initialSessions as Session[]);
   const [groups, setGroups] = useState<ParallelGroup[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [activityExpanded, setActivityExpanded] = useState(true);
+
+  useEffect(() => {
+    setSessions(initialSessions as Session[]);
+  }, [initialSessions]);
+
+  useEffect(() => {
+    for (const msg of messages) {
+      if (msg.type === "session:updated" && msg.session) {
+        setSessions((prev) =>
+          prev.map((s) => (s.id === msg.session!.id ? msg.session! : s))
+        );
+      }
+    }
+  }, [messages]);
 
   useEffect(() => {
     const sorted = [...sessions].sort((a, b) => b.startedAt - a.startedAt);
@@ -63,33 +97,99 @@ export function AgentView({
     setGroups(newGroups);
   }, [sessions]);
 
+  const refresh = async (): Promise<void> => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/sessions");
+      const data = (await res.json()) as { sessions: Session[] };
+      setSessions(data.sessions);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const activeSessions = sessions.filter((s) => !s.endedAt);
+  const totalMemories = sessions.reduce((sum, s) => sum + (s.memoryCount ?? 0), 0);
+
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Agent Sessions</h2>
-        <p className="text-muted-foreground">
-          View parallel and recent Claude Code sessions
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-semibold tracking-tight flex items-center gap-2">
+            <Users className="h-6 w-6" />
+            Agent Sessions
+          </h2>
+          <p className="text-muted-foreground">
+            {sessions.length} sessions ({activeSessions.length} active) with{" "}
+            {totalMemories} memories
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {wsConnected ? (
+            <span className="flex items-center gap-1.5 text-xs text-green-600 dark:text-green-400">
+              <span className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+              Live
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <span className="h-2 w-2 rounded-full bg-muted" />
+              Offline
+            </span>
+          )}
+          <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>
+            <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+          </Button>
+        </div>
       </div>
 
-      <div className="flex items-center gap-2 text-sm">
-        {wsConnected ? (
-          <span className="flex items-center gap-1.5 text-green-600 dark:text-green-400">
-            <span className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
-            Live updates enabled
-          </span>
-        ) : (
-          <span className="flex items-center gap-1.5 text-muted-foreground">
-            <span className="h-2 w-2 rounded-full bg-muted" />
-            Connecting...
-          </span>
+      <Card>
+        <CardHeader
+          className="cursor-pointer"
+          onClick={() => setActivityExpanded(!activityExpanded)}
+        >
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Activity className="h-5 w-5" />
+              Recent Activity
+              <span className="text-xs font-normal text-muted-foreground">
+                (last 24h)
+              </span>
+              {wsConnected && (
+                <span className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+              )}
+            </CardTitle>
+            <Button variant="ghost" size="icon">
+              {activityExpanded ? (
+                <ChevronUp className="h-4 w-4" />
+              ) : (
+                <ChevronDown className="h-4 w-4" />
+              )}
+            </Button>
+          </div>
+        </CardHeader>
+        {activityExpanded && (
+          <CardContent>
+            <ActivityFeed
+              messages={messages}
+              maxItems={15}
+              onSelectMemory={onSelectMemory}
+              compact
+              initialEvents={initialActivity}
+            />
+          </CardContent>
         )}
-      </div>
+      </Card>
 
       {groups.length === 0 ? (
-        <p className="text-center text-muted-foreground py-12">
-          No sessions in the last 24 hours.
-        </p>
+        <div className="text-center py-12">
+          <Clock className="h-12 w-12 mx-auto mb-4 text-muted-foreground opacity-50" />
+          <p className="text-muted-foreground mb-4">
+            No sessions in the last 24 hours.
+          </p>
+          <Button variant="outline" onClick={() => onNavigate("/timeline")}>
+            Browse Timeline
+          </Button>
+        </div>
       ) : (
         <div className="space-y-6">
           {groups.map((group, i) => (
@@ -110,6 +210,11 @@ export function AgentView({
                     {group.sessions.length} parallel agents
                   </Badge>
                 )}
+                {group.sessions.some((s) => !s.endedAt) && (
+                  <Badge className="bg-green-500 text-white animate-pulse">
+                    ACTIVE
+                  </Badge>
+                )}
               </div>
               <div
                 className={cn(
@@ -126,6 +231,8 @@ export function AgentView({
                     onViewTimeline={() =>
                       onNavigate(`/timeline?session=${session.id}`)
                     }
+                    onSelectMemory={onSelectMemory as (memory: unknown) => void}
+                    messages={messages}
                   />
                 ))}
               </div>

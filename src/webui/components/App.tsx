@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { Layout } from "./Layout.js";
+import { Projects } from "./Projects.js";
 import { Search } from "./Search.js";
 import { Timeline } from "./Timeline.js";
 import { AgentView } from "./AgentView.js";
@@ -8,12 +9,26 @@ import { MemoryDetail } from "./MemoryDetail.js";
 import { useWebSocket } from "../hooks/useWebSocket.js";
 import type { Memory } from "../../services/memory/types.js";
 import type { SearchResult } from "../../services/search/hybrid.js";
+import type { ActivityEvent } from "./ActivityFeed.js";
+
+type Project = {
+  id: string;
+  path: string;
+  name?: string;
+  memory_count: number;
+  session_count: number;
+  last_activity?: number;
+  created_at: number;
+};
 
 type InitialData = {
   type: string;
   results?: SearchResult[];
   sessions?: unknown[];
+  projects?: Project[];
+  memories?: unknown[];
   data?: unknown;
+  recentActivity?: unknown[];
 };
 
 type AppProps = {
@@ -22,7 +37,12 @@ type AppProps = {
 };
 
 export function App({ url, initialData }: AppProps): JSX.Element {
-  const [currentPath, setCurrentPath] = useState(url);
+  const [currentPath, setCurrentPath] = useState(() => {
+    if (typeof window !== "undefined") {
+      return window.location.pathname + window.location.search;
+    }
+    return url;
+  });
   const [selectedMemory, setSelectedMemory] = useState<Memory | null>(null);
   const [data, setData] = useState<InitialData>(initialData as InitialData);
 
@@ -32,11 +52,16 @@ export function App({ url, initialData }: AppProps): JSX.Element {
     if (typeof window === "undefined") return;
 
     const handlePopState = (): void => {
-      setCurrentPath(window.location.pathname);
+      setCurrentPath(window.location.pathname + window.location.search);
     };
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    fetchPageData(currentPath).then(setData);
+  }, [currentPath]);
 
   useEffect(() => {
     for (const msg of messages) {
@@ -86,11 +111,22 @@ export function App({ url, initialData }: AppProps): JSX.Element {
       window.history.pushState({}, "", path);
     }
     setCurrentPath(path);
-    fetchPageData(path).then(setData);
   };
 
   const renderPage = (): JSX.Element => {
-    if (currentPath === "/" || currentPath.startsWith("/search")) {
+    const pathname = currentPath.split("?")[0] ?? currentPath;
+
+    if (pathname === "/projects") {
+      return (
+        <Projects
+          initialProjects={(data.projects ?? []) as Project[]}
+          onSelectProject={(projectId) => navigate(`/search?project=${projectId}`)}
+          onNavigate={navigate}
+          wsConnected={connected}
+        />
+      );
+    }
+    if (pathname === "/" || pathname === "/search") {
       return (
         <Search
           initialResults={data.results ?? []}
@@ -99,32 +135,36 @@ export function App({ url, initialData }: AppProps): JSX.Element {
         />
       );
     }
-    if (currentPath === "/timeline") {
+    if (pathname === "/timeline") {
       return (
         <Timeline
-          initialData={data.data}
+          initialData={data}
           onSelectMemory={setSelectedMemory}
         />
       );
     }
-    if (currentPath === "/agents") {
+    if (pathname === "/agents") {
       return (
         <AgentView
           initialSessions={(data.sessions ?? []) as unknown[]}
           wsConnected={connected}
           onNavigate={navigate}
+          messages={messages}
+          onSelectMemory={setSelectedMemory}
+          initialActivity={(data.recentActivity ?? []) as ActivityEvent[]}
         />
       );
     }
-    if (currentPath === "/settings") {
+    if (pathname === "/settings") {
       return <Settings />;
     }
     return (
-      <Search
-        initialResults={[]}
-        onSelectMemory={setSelectedMemory}
-        wsConnected={connected}
-      />
+      <Projects
+          initialProjects={(data.projects ?? []) as Project[]}
+          onSelectProject={(projectId) => navigate(`/search?project=${projectId}`)}
+          onNavigate={navigate}
+          wsConnected={connected}
+        />
     );
   };
 
