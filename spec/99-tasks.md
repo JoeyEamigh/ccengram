@@ -165,23 +165,23 @@ After completing a task:
 ## Phase 5: Documents
 
 ### P5.1: Chunking
-- [ ] **T093** Implement `src/services/documents/chunk.ts`
-- [ ] **T094** Sentence/paragraph aware splitting
-- [ ] **T095** Overlap handling
-- [ ] **T096** Offset tracking
-- [ ] **T097** Write chunking tests (`src/services/documents/__test__/chunk.test.ts`)
+- [x] **T093** Implement `src/services/documents/chunk.ts`
+- [x] **T094** Sentence/paragraph aware splitting
+- [x] **T095** Overlap handling
+- [x] **T096** Offset tracking
+- [x] **T097** Write chunking tests (`src/services/documents/__test__/chunk.test.ts`)
 
 ### P5.2: Document Service
-- [ ] **T098** Implement `src/services/documents/ingest.ts`
-- [ ] **T099** File path ingestion
-- [ ] **T100** URL fetching
-- [ ] **T101** Raw content ingestion
-- [ ] **T102** Title extraction (markdown H1)
-- [ ] **T103** Checksum for change detection
-- [ ] **T104** Chunk embedding
-- [ ] **T105** Document search
-- [ ] **T106** Update detection
-- [ ] **T107** Write document tests (`src/services/documents/__test__/ingest.test.ts`)
+- [x] **T098** Implement `src/services/documents/ingest.ts`
+- [x] **T099** File path ingestion
+- [x] **T100** URL fetching
+- [x] **T101** Raw content ingestion
+- [x] **T102** Title extraction (markdown H1)
+- [x] **T103** Checksum for change detection
+- [x] **T104** Chunk embedding
+- [x] **T105** Document search
+- [x] **T106** Update detection
+- [x] **T107** Write document tests (`src/services/documents/__test__/ingest.test.ts`)
 
 ---
 
