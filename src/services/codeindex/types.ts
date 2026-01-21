@@ -88,12 +88,18 @@ export type ScannedFile = {
 };
 
 export type IndexProgress = {
-  phase: 'scanning' | 'indexing' | 'complete';
+  phase: 'scanning' | 'indexing' | 'complete' | 'paused';
   scannedFiles: number;
   indexedFiles: number;
   totalFiles: number;
   currentFile?: string;
   errors: string[];
+  startedAt?: number;
+  bytesProcessed?: number;
+  totalBytes?: number;
+  tokensProcessed?: number;
+  filesPerSecond?: number;
+  estimatedTimeRemaining?: number;
 };
 
 export type WatcherEvent = {
@@ -115,6 +121,32 @@ export type CodeIndexOptions = {
   force?: boolean;
   dryRun?: boolean;
   onProgress?: (progress: IndexProgress) => void;
+  includePaths?: string[];
+  excludePaths?: string[];
+  resumeFromCheckpoint?: boolean;
+};
+
+export type IndexStatistics = {
+  projectId: string;
+  totalFiles: number;
+  totalChunks: number;
+  totalBytes: number;
+  totalTokens: number;
+  languageBreakdown: Record<CodeLanguage, number>;
+  lastIndexedAt: number;
+  averageChunksPerFile: number;
+  indexHealthScore: number;
+};
+
+export type IndexCheckpoint = {
+  id: string;
+  projectId: string;
+  phase: IndexProgress['phase'];
+  processedFiles: string[];
+  pendingFiles: string[];
+  progress: IndexProgress;
+  createdAt: number;
+  updatedAt: number;
 };
 
 export type CodeSearchOptions = {

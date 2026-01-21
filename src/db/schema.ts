@@ -36,6 +36,7 @@ export const SCHEMA_STATEMENTS = [
     importance REAL DEFAULT 0.5,
     categories_json TEXT,
     simhash TEXT,
+    simhash_prefix TEXT,
     salience REAL DEFAULT 1.0,
     access_count INTEGER DEFAULT 0,
     created_at INTEGER NOT NULL,
@@ -49,6 +50,8 @@ export const SCHEMA_STATEMENTS = [
     tags_json TEXT,
     concepts_json TEXT,
     files_json TEXT,
+    next_decay_at INTEGER,
+    decay_rate REAL,
     FOREIGN KEY (project_id) REFERENCES projects(id),
     FOREIGN KEY (embedding_model_id) REFERENCES embedding_models(id)
 )`,

@@ -115,51 +115,52 @@ export async function userPromptHook(): Promise<void> {
     process.exit(0);
   }, TIMEOUT_MS);
 
-  const inputText = await Bun.stdin.text();
-  const input = parseInput<UserPromptInput>(inputText, ['session_id', 'cwd', 'prompt']);
+  try {
+    const inputText = await Bun.stdin.text();
+    const input = parseInput<UserPromptInput>(inputText, ['session_id', 'cwd', 'prompt']);
 
-  if (!input) {
-    log.warn('hooks', 'Invalid user prompt hook input');
+    if (!input) {
+      log.warn('hooks', 'Invalid user prompt hook input');
+      process.exit(0);
+    }
+
+    const { session_id, cwd, prompt } = input;
+    log.debug('hooks', 'Processing user prompt', { session_id });
+
+    await registerSessionClient(session_id);
+
+    const project = await getOrCreateProject(cwd);
+    await getOrCreateSession(session_id, project.id);
+
+    const accumulator = await getAccumulator(session_id);
+
+    if (accumulator && accumulator.toolCallCount > 0) {
+      log.info('hooks', 'Spawning background extraction for previous segment', {
+        session_id,
+        toolCallCount: accumulator.toolCallCount,
+      });
+
+      spawnBackgroundExtraction(session_id, cwd, 'user_prompt');
+    }
+
+    const embeddingService = await createEmbeddingServiceOptional();
+    const extractionService = createExtractionService(embeddingService);
+
+    const signal = await extractionService.classifySignal(prompt);
+
+    const userPrompt = {
+      content: prompt,
+      timestamp: Date.now(),
+      signal: signal ?? undefined,
+    };
+
+    await extractionService.startSegment(session_id, project.id, userPrompt);
+
+    log.debug('hooks', 'User prompt processed, new segment started', { session_id });
+  } finally {
     clearTimeout(timeoutId);
-    process.exit(0);
+    closeDatabase();
   }
-
-  const { session_id, cwd, prompt } = input;
-  log.debug('hooks', 'Processing user prompt', { session_id });
-
-  await registerSessionClient(session_id);
-
-  const project = await getOrCreateProject(cwd);
-  await getOrCreateSession(session_id, project.id);
-
-  const accumulator = await getAccumulator(session_id);
-
-  if (accumulator && accumulator.toolCallCount > 0) {
-    log.info('hooks', 'Spawning background extraction for previous segment', {
-      session_id,
-      toolCallCount: accumulator.toolCallCount,
-    });
-
-    spawnBackgroundExtraction(session_id, cwd, 'user_prompt');
-  }
-
-  const embeddingService = await createEmbeddingServiceOptional();
-  const extractionService = createExtractionService(embeddingService);
-
-  const signal = await extractionService.classifySignal(prompt);
-
-  const userPrompt = {
-    content: prompt,
-    timestamp: Date.now(),
-    signal: signal ?? undefined,
-  };
-
-  await extractionService.startSegment(session_id, project.id, userPrompt);
-
-  log.debug('hooks', 'User prompt processed, new segment started', { session_id });
-
-  clearTimeout(timeoutId);
-  closeDatabase();
   process.exit(0);
 }
 

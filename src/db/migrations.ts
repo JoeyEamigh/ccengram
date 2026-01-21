@@ -100,6 +100,50 @@ export const migrations: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_documents_language ON documents(language) WHERE language IS NOT NULL`,
     ],
   },
+  {
+    version: 8,
+    name: 'dedup_and_decay_optimization',
+    statements: [
+      `UPDATE memories SET simhash_prefix = substr(simhash, 1, 4) WHERE simhash IS NOT NULL AND simhash_prefix IS NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_memories_simhash_prefix
+        ON memories(project_id, simhash_prefix) WHERE simhash_prefix IS NOT NULL AND is_deleted = 0`,
+      `CREATE INDEX IF NOT EXISTS idx_memories_next_decay
+        ON memories(next_decay_at) WHERE next_decay_at IS NOT NULL AND is_deleted = 0`,
+      `CREATE INDEX IF NOT EXISTS idx_memories_content_hash
+        ON memories(project_id, content_hash) WHERE content_hash IS NOT NULL AND is_deleted = 0`,
+    ],
+  },
+  {
+    version: 9,
+    name: 'index_checkpoints',
+    statements: [
+      `CREATE TABLE IF NOT EXISTS index_checkpoints (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        processed_files_json TEXT NOT NULL DEFAULT '[]',
+        pending_files_json TEXT NOT NULL DEFAULT '[]',
+        progress_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+        FOREIGN KEY (project_id) REFERENCES projects(id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_checkpoints_project ON index_checkpoints(project_id)`,
+      `ALTER TABLE code_index_state ADD COLUMN total_bytes INTEGER DEFAULT 0`,
+      `ALTER TABLE code_index_state ADD COLUMN total_tokens INTEGER DEFAULT 0`,
+      `ALTER TABLE code_index_state ADD COLUMN total_chunks INTEGER DEFAULT 0`,
+    ],
+  },
+  {
+    version: 10,
+    name: 'scoped_memories',
+    statements: [
+      `ALTER TABLE memories ADD COLUMN scope_path TEXT`,
+      `ALTER TABLE memories ADD COLUMN scope_module TEXT`,
+      `CREATE INDEX IF NOT EXISTS idx_memories_scope_path ON memories(project_id, scope_path) WHERE scope_path IS NOT NULL AND is_deleted = 0`,
+      `CREATE INDEX IF NOT EXISTS idx_memories_scope_module ON memories(project_id, scope_module) WHERE scope_module IS NOT NULL AND is_deleted = 0`,
+    ],
+  },
 ];
 
 export async function getCurrentVersion(client: Client): Promise<number> {

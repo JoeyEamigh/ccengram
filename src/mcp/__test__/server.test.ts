@@ -5,6 +5,7 @@ import type { EmbeddingResult, EmbeddingService } from '../../services/embedding
 import { supersede } from '../../services/memory/relationships.js';
 import { createMemoryStore } from '../../services/memory/store.js';
 import { createSearchService } from '../../services/search/hybrid.js';
+import { ValidationError } from '../../utils/validate.js';
 
 function createMockEmbeddingService(): EmbeddingService {
   const mockVector = Array(128).fill(0.1);
@@ -545,5 +546,79 @@ export function formatOutput(value: number): string {
       expect(state?.projectId).toBe('codeproj');
       expect(state?.lastIndexedAt).toBeGreaterThan(0);
     });
+  });
+});
+
+describe('MCP Input Validation', () => {
+  test('ValidationError has field property', () => {
+    const error = new ValidationError('test error', 'testField');
+    expect(error.field).toBe('testField');
+    expect(error.message).toBe('test error');
+    expect(error.name).toBe('ValidationError');
+  });
+
+  test('validateString validates required string fields', async () => {
+    const { validateString } = await import('../../utils/validate.js');
+
+    expect(() => validateString(undefined, 'query')).toThrow(ValidationError);
+    expect(() => validateString(null, 'query')).toThrow(ValidationError);
+    expect(() => validateString(123, 'query')).toThrow(ValidationError);
+    expect(() => validateString('', 'query')).toThrow(ValidationError);
+    expect(validateString('valid', 'query')).toBe('valid');
+  });
+
+  test('validateString enforces maxLength', async () => {
+    const { validateString } = await import('../../utils/validate.js');
+
+    const longString = 'a'.repeat(100);
+    expect(() => validateString(longString, 'field', { maxLength: 50 })).toThrow(ValidationError);
+    expect(validateString(longString, 'field', { maxLength: 200 })).toBe(longString);
+  });
+
+  test('validateNumber validates numeric ranges', async () => {
+    const { validateNumber } = await import('../../utils/validate.js');
+
+    expect(() => validateNumber('5', 'limit')).toThrow(ValidationError);
+    expect(() => validateNumber(NaN, 'limit')).toThrow(ValidationError);
+    expect(() => validateNumber(-1, 'limit', { min: 0 })).toThrow(ValidationError);
+    expect(() => validateNumber(2000, 'limit', { max: 1000 })).toThrow(ValidationError);
+    expect(validateNumber(50, 'limit', { min: 1, max: 100 })).toBe(50);
+  });
+
+  test('validateEnum validates allowed values', async () => {
+    const { validateEnum } = await import('../../utils/validate.js');
+    const sectors = ['episodic', 'semantic', 'procedural', 'emotional', 'reflective'] as const;
+
+    expect(() => validateEnum('invalid', 'sector', sectors)).toThrow(ValidationError);
+    expect(validateEnum('semantic', 'sector', sectors)).toBe('semantic');
+  });
+
+  test('validateOptional functions return undefined for null/undefined', async () => {
+    const {
+      validateOptionalString,
+      validateOptionalNumber,
+      validateOptionalEnum,
+    } = await import('../../utils/validate.js');
+    const sectors = ['episodic', 'semantic'] as const;
+
+    expect(validateOptionalString(undefined, 'field')).toBeUndefined();
+    expect(validateOptionalString(null, 'field')).toBeUndefined();
+    expect(validateOptionalNumber(undefined, 'field')).toBeUndefined();
+    expect(validateOptionalNumber(null, 'field')).toBeUndefined();
+    expect(validateOptionalEnum(undefined, 'field', sectors)).toBeUndefined();
+    expect(validateOptionalEnum(null, 'field', sectors)).toBeUndefined();
+  });
+
+  test('validateArray validates array items', async () => {
+    const { validateArray, validateString } = await import('../../utils/validate.js');
+
+    const result = validateArray(['a', 'b', 'c'], 'tags', (item, i) =>
+      validateString(item, `tags[${i}]`),
+    );
+    expect(result).toEqual(['a', 'b', 'c']);
+
+    expect(() =>
+      validateArray([1, 2, 3], 'tags', (item, i) => validateString(item, `tags[${i}]`)),
+    ).toThrow(ValidationError);
   });
 });

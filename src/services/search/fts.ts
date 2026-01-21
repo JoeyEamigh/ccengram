@@ -7,11 +7,20 @@ export type FTSResult = {
   snippet: string;
 };
 
+const MAX_QUERY_LENGTH = 10000;
+const FTS5_SPECIAL_CHARS = /[*^:(){}[\]\-+'"\\]/g;
+
+function sanitizeToken(token: string): string {
+  return token.replace(FTS5_SPECIAL_CHARS, '');
+}
+
 function prepareQuery(query: string): string {
-  const tokens = query
+  const truncated = query.length > MAX_QUERY_LENGTH ? query.slice(0, MAX_QUERY_LENGTH) : query;
+
+  const tokens = truncated
     .split(/\s+/)
+    .map(t => sanitizeToken(t))
     .filter(t => t.length > 1)
-    .map(t => t.replace(/['"]/g, ''))
     .map(t => `"${t}"*`)
     .join(' OR ');
 

@@ -1,5 +1,8 @@
+import { fetchWithRetry } from '../../utils/fetch-resilient.js';
 import { log } from '../../utils/log.js';
 import type { EmbeddingProvider, OllamaConfig } from './types.js';
+
+const OLLAMA_TIMEOUT = 60000;
 
 type OllamaModel = {
   name: string;
@@ -38,7 +41,7 @@ export class OllamaProvider implements EmbeddingProvider {
     try {
       log.debug('embedding', 'Checking Ollama availability', { url: this.baseUrl });
 
-      const response = await fetch(`${this.baseUrl}/api/tags`);
+      const response = await fetchWithRetry(`${this.baseUrl}/api/tags`, {}, { timeout: 5000, maxRetries: 1 });
       if (!response.ok) {
         log.debug('embedding', 'Ollama not responding', { status: response.status });
         return false;
@@ -73,14 +76,27 @@ export class OllamaProvider implements EmbeddingProvider {
   }
 
   private async embedRaw(text: string): Promise<number[]> {
-    const response = await fetch(`${this.baseUrl}/api/embeddings`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: this.model,
-        prompt: text,
-      }),
-    });
+    const response = await fetchWithRetry(
+      `${this.baseUrl}/api/embeddings`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: this.model,
+          prompt: text,
+        }),
+      },
+      {
+        timeout: OLLAMA_TIMEOUT,
+        onRetry: (attempt, error) => {
+          log.warn('embedding', 'Ollama request retry', {
+            attempt,
+            error: error.message,
+            model: this.model,
+          });
+        },
+      },
+    );
 
     if (!response.ok) {
       throw new Error(`Ollama embed failed: ${response.statusText}`);
@@ -100,8 +116,37 @@ export class OllamaProvider implements EmbeddingProvider {
   async embedBatch(texts: string[]): Promise<number[][]> {
     const start = Date.now();
     log.debug('embedding', 'Batch embedding', { count: texts.length });
-    const results = await Promise.all(texts.map(t => this.embed(t)));
-    log.info('embedding', 'Batch complete', { count: texts.length, ms: Date.now() - start });
+
+    const settled = await Promise.allSettled(texts.map(t => this.embed(t)));
+    const results: number[][] = [];
+    let failures = 0;
+
+    for (let i = 0; i < settled.length; i++) {
+      const result = settled[i];
+      if (result && result.status === 'fulfilled') {
+        results.push(result.value);
+      } else if (result && result.status === 'rejected') {
+        failures++;
+        const reason = result.reason;
+        log.warn('embedding', 'Batch item failed', {
+          index: i,
+          error: reason instanceof Error ? reason.message : String(reason),
+        });
+        results.push([]);
+      }
+    }
+
+    if (failures > 0) {
+      log.warn('embedding', 'Batch completed with failures', {
+        total: texts.length,
+        failures,
+        succeeded: texts.length - failures,
+        ms: Date.now() - start,
+      });
+    } else {
+      log.info('embedding', 'Batch complete', { count: texts.length, ms: Date.now() - start });
+    }
+
     return results;
   }
 }

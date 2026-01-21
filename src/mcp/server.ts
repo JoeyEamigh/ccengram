@@ -11,6 +11,13 @@ import { getOrCreateProject } from '../services/project.js';
 import type { TimelineResult } from '../services/search/hybrid.js';
 import { createSearchService, type SearchResult } from '../services/search/hybrid.js';
 import { log } from '../utils/log.js';
+import {
+  validateArray,
+  validateOptionalEnum,
+  validateOptionalNumber,
+  validateOptionalString,
+  validateString,
+} from '../utils/validate.js';
 
 console.log = console.error;
 
@@ -29,9 +36,21 @@ const TOOLS = [
           description: 'Filter by memory sector',
         },
         limit: { type: 'number', description: 'Max results (default: 10)' },
-include_superseded: {
+        include_superseded: {
           type: 'boolean',
           description: 'Include memories that have been superseded (default: false)',
+        },
+        scope_path: { type: 'string', description: 'Filter by scope path (e.g., "src/services")' },
+        scope_module: { type: 'string', description: 'Filter by scope module (e.g., "auth")' },
+        memory_type: {
+          type: 'string',
+          enum: ['preference', 'codebase', 'decision', 'gotcha', 'pattern', 'turn_summary', 'task_completion'],
+          description: 'Filter by extracted memory type',
+        },
+        mode: {
+          type: 'string',
+          enum: ['hybrid', 'semantic', 'keyword'],
+          description: 'Search mode',
         },
       },
       required: ['query'],
@@ -62,7 +81,7 @@ include_superseded: {
   },
   {
     name: 'memory_add',
-    description: 'Manually add a memory. Use for explicit notes, decisions, or procedures.',
+    description: 'Manually add a memory. Use for explicit notes, decisions, preferences, or procedures.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -71,6 +90,11 @@ include_superseded: {
           type: 'string',
           enum: ['episodic', 'semantic', 'procedural', 'emotional', 'reflective'],
           description: 'Memory sector (auto-classified if not provided)',
+        },
+        type: {
+          type: 'string',
+          enum: ['preference', 'codebase', 'decision', 'gotcha', 'pattern', 'turn_summary', 'task_completion'],
+          description: 'Memory type (determines sector automatically)',
         },
         tags: {
           type: 'array',
@@ -81,6 +105,9 @@ include_superseded: {
           type: 'number',
           description: 'Base importance 0-1 (default: 0.5)',
         },
+        context: { type: 'string', description: 'Context of how this was discovered or why it matters' },
+        scope_path: { type: 'string', description: 'Scope path for this memory (e.g., "src/services")' },
+        scope_module: { type: 'string', description: 'Scope module for this memory (e.g., "auth")' },
       },
       required: ['content'],
     },
@@ -210,12 +237,18 @@ type ToolArgs = {
   sector?: string;
   limit?: number;
   include_superseded?: boolean;
+  scope_path?: string;
+  scope_module?: string;
+  memory_type?: string;
+  mode?: string;
   anchor_id?: string;
   depth_before?: number;
   depth_after?: number;
   content?: string;
+  type?: string;
   tags?: string[];
   importance?: number;
+  context?: string;
   memory_id?: string;
   amount?: number;
   hard?: boolean;
@@ -229,9 +262,139 @@ type ToolArgs = {
   dry_run?: boolean;
 };
 
+const MEMORY_SECTORS = ['episodic', 'semantic', 'procedural', 'emotional', 'reflective'] as const;
+type MemorySector = (typeof MEMORY_SECTORS)[number];
+
+const MEMORY_TYPES = ['preference', 'codebase', 'decision', 'gotcha', 'pattern', 'turn_summary', 'task_completion'] as const;
+type MemoryType = (typeof MEMORY_TYPES)[number];
+
+const SEARCH_MODES = ['hybrid', 'semantic', 'keyword'] as const;
+type SearchMode = (typeof SEARCH_MODES)[number];
+
+const MAX_QUERY_LENGTH = 10000;
+const MAX_CONTENT_LENGTH = 100000;
+const MAX_LIMIT = 1000;
+const MAX_DEPTH = 100;
+
+type ValidatedArgs = {
+  query?: string;
+  sector?: MemorySector;
+  limit?: number;
+  includeSuperseded?: boolean;
+  scopePath?: string;
+  scopeModule?: string;
+  memoryTypeFilter?: MemoryType;
+  mode?: SearchMode;
+  anchorId?: string;
+  depthBefore?: number;
+  depthAfter?: number;
+  content?: string;
+  memoryType?: MemoryType;
+  context?: string;
+  tags?: string[];
+  importance?: number;
+  memoryId?: string;
+  amount?: number;
+  hard?: boolean;
+  oldMemoryId?: string;
+  newMemoryId?: string;
+  path?: string;
+  url?: string;
+  title?: string;
+  language?: string;
+  force?: boolean;
+  dryRun?: boolean;
+};
+
+function validateToolArgs(name: string, args: ToolArgs): ValidatedArgs {
+  const validated: ValidatedArgs = {};
+
+  switch (name) {
+    case 'memory_search':
+      validated.query = validateString(args.query, 'query', { maxLength: MAX_QUERY_LENGTH });
+      validated.sector = validateOptionalEnum(args.sector, 'sector', MEMORY_SECTORS);
+      validated.limit = validateOptionalNumber(args.limit, 'limit', { min: 1, max: MAX_LIMIT });
+      validated.includeSuperseded = args.include_superseded ?? false;
+      validated.scopePath = validateOptionalString(args.scope_path, 'scope_path', { maxLength: 500 });
+      validated.scopeModule = validateOptionalString(args.scope_module, 'scope_module', { maxLength: 100 });
+      validated.memoryTypeFilter = validateOptionalEnum(args.memory_type, 'memory_type', MEMORY_TYPES);
+      validated.mode = validateOptionalEnum(args.mode, 'mode', SEARCH_MODES);
+      break;
+
+    case 'memory_timeline':
+      validated.anchorId = validateString(args.anchor_id, 'anchor_id');
+      validated.depthBefore = validateOptionalNumber(args.depth_before, 'depth_before', { min: 0, max: MAX_DEPTH });
+      validated.depthAfter = validateOptionalNumber(args.depth_after, 'depth_after', { min: 0, max: MAX_DEPTH });
+      break;
+
+    case 'memory_add':
+      validated.content = validateString(args.content, 'content', { maxLength: MAX_CONTENT_LENGTH });
+      validated.sector = validateOptionalEnum(args.sector, 'sector', MEMORY_SECTORS);
+      validated.memoryType = validateOptionalEnum(args.type, 'type', MEMORY_TYPES);
+      validated.tags = args.tags
+        ? validateArray(args.tags, 'tags', (item, i) => validateString(item, `tags[${i}]`, { maxLength: 100 }))
+        : undefined;
+      validated.importance = validateOptionalNumber(args.importance, 'importance', { min: 0, max: 1 });
+      validated.context = validateOptionalString(args.context, 'context', { maxLength: MAX_CONTENT_LENGTH });
+      validated.scopePath = validateOptionalString(args.scope_path, 'scope_path', { maxLength: 500 });
+      validated.scopeModule = validateOptionalString(args.scope_module, 'scope_module', { maxLength: 100 });
+      break;
+
+    case 'memory_reinforce':
+      validated.memoryId = validateString(args.memory_id, 'memory_id');
+      validated.amount = validateOptionalNumber(args.amount, 'amount', { min: 0, max: 1 });
+      break;
+
+    case 'memory_deemphasize':
+      validated.memoryId = validateString(args.memory_id, 'memory_id');
+      validated.amount = validateOptionalNumber(args.amount, 'amount', { min: 0, max: 1 });
+      break;
+
+    case 'memory_delete':
+      validated.memoryId = validateString(args.memory_id, 'memory_id');
+      validated.hard = args.hard ?? false;
+      break;
+
+    case 'memory_supersede':
+      validated.oldMemoryId = validateString(args.old_memory_id, 'old_memory_id');
+      validated.newMemoryId = validateString(args.new_memory_id, 'new_memory_id');
+      break;
+
+    case 'docs_search':
+      validated.query = validateString(args.query, 'query', { maxLength: MAX_QUERY_LENGTH });
+      validated.limit = validateOptionalNumber(args.limit, 'limit', { min: 1, max: MAX_LIMIT });
+      break;
+
+    case 'docs_ingest':
+      validated.path = validateOptionalString(args.path, 'path', { maxLength: 4096 });
+      validated.url = validateOptionalString(args.url, 'url', { maxLength: 4096 });
+      validated.content = validateOptionalString(args.content, 'content', { maxLength: MAX_CONTENT_LENGTH });
+      validated.title = validateOptionalString(args.title, 'title', { maxLength: 500 });
+      break;
+
+    case 'code_search':
+      validated.query = validateString(args.query, 'query', { maxLength: MAX_QUERY_LENGTH });
+      validated.language = validateOptionalString(args.language, 'language', { maxLength: 20 });
+      validated.limit = validateOptionalNumber(args.limit, 'limit', { min: 1, max: MAX_LIMIT });
+      break;
+
+    case 'code_index':
+      validated.force = args.force ?? false;
+      validated.dryRun = args.dry_run ?? false;
+      break;
+
+    default:
+      throw new Error(`Unknown tool: ${name}`);
+  }
+
+  return validated;
+}
+
 async function handleToolCall(name: string, args: ToolArgs, cwd: string): Promise<string> {
   const start = Date.now();
   log.debug('mcp', 'Tool call received', { name, cwd });
+
+  const validated = validateToolArgs(name, args);
 
   const project = await getOrCreateProject(cwd);
   const embeddingService = await createEmbeddingService();
@@ -241,34 +404,42 @@ async function handleToolCall(name: string, args: ToolArgs, cwd: string): Promis
 
   switch (name) {
     case 'memory_search': {
-      if (!args.query) throw new Error('query is required');
       const results = await search.search({
-        query: args.query,
+        query: validated.query!,
         projectId: project.id,
-        sector: args.sector as 'episodic' | 'semantic' | 'procedural' | 'emotional' | 'reflective' | undefined,
-        limit: args.limit ?? 10,
-        mode: 'semantic',
-        includeSuperseded: args.include_superseded ?? false,
+        sector: validated.sector,
+        memoryType: validated.memoryTypeFilter,
+        limit: validated.limit ?? 10,
+        mode: validated.mode ?? 'hybrid',
+        includeSuperseded: validated.includeSuperseded ?? false,
+        scopePath: validated.scopePath,
+        scopeModule: validated.scopeModule,
       });
       log.info('mcp', 'Tool call completed', { name, ms: Date.now() - start });
       return formatSearchResults(results);
     }
 
     case 'memory_timeline': {
-      if (!args.anchor_id) throw new Error('anchor_id is required');
-      const timeline = await search.timeline(args.anchor_id, args.depth_before ?? 5, args.depth_after ?? 5);
+      const timeline = await search.timeline(
+        validated.anchorId!,
+        validated.depthBefore ?? 5,
+        validated.depthAfter ?? 5,
+      );
       log.info('mcp', 'Tool call completed', { name, ms: Date.now() - start });
       return formatTimeline(timeline);
     }
 
     case 'memory_add': {
-      if (!args.content) throw new Error('content is required');
       const memory = await store.create(
         {
-          content: args.content,
-          sector: args.sector as 'episodic' | 'semantic' | 'procedural' | 'emotional' | 'reflective' | undefined,
-          tags: args.tags,
-          importance: args.importance,
+          content: validated.content!,
+          sector: validated.sector,
+          memoryType: validated.memoryType,
+          tags: validated.tags,
+          importance: validated.importance,
+          context: validated.context,
+          scopePath: validated.scopePath,
+          scopeModule: validated.scopeModule,
           tier: 'project',
         },
         project.id,
@@ -278,39 +449,33 @@ async function handleToolCall(name: string, args: ToolArgs, cwd: string): Promis
     }
 
     case 'memory_reinforce': {
-      if (!args.memory_id) throw new Error('memory_id is required');
-      const memory = await store.reinforce(args.memory_id, args.amount ?? 0.1);
+      const memory = await store.reinforce(validated.memoryId!, validated.amount ?? 0.1);
       log.info('mcp', 'Tool call completed', { name, ms: Date.now() - start });
       return `Memory reinforced: ${memory.id} (new salience: ${memory.salience.toFixed(2)})`;
     }
 
     case 'memory_deemphasize': {
-      if (!args.memory_id) throw new Error('memory_id is required');
-      const memory = await store.deemphasize(args.memory_id, args.amount ?? 0.2);
+      const memory = await store.deemphasize(validated.memoryId!, validated.amount ?? 0.2);
       log.info('mcp', 'Tool call completed', { name, ms: Date.now() - start });
       return `Memory de-emphasized: ${memory.id} (new salience: ${memory.salience.toFixed(2)})`;
     }
 
     case 'memory_delete': {
-      if (!args.memory_id) throw new Error('memory_id is required');
-      await store.delete(args.memory_id, args.hard ?? false);
+      await store.delete(validated.memoryId!, validated.hard ?? false);
       log.info('mcp', 'Tool call completed', { name, ms: Date.now() - start });
-      return args.hard
-        ? `Memory permanently deleted: ${args.memory_id}`
-        : `Memory soft-deleted: ${args.memory_id} (can be restored)`;
+      return validated.hard
+        ? `Memory permanently deleted: ${validated.memoryId}`
+        : `Memory soft-deleted: ${validated.memoryId} (can be restored)`;
     }
 
     case 'memory_supersede': {
-      if (!args.old_memory_id) throw new Error('old_memory_id is required');
-      if (!args.new_memory_id) throw new Error('new_memory_id is required');
-      await supersede(args.old_memory_id, args.new_memory_id);
+      await supersede(validated.oldMemoryId!, validated.newMemoryId!);
       log.info('mcp', 'Tool call completed', { name, ms: Date.now() - start });
-      return `Memory ${args.old_memory_id} marked as superseded by ${args.new_memory_id}`;
+      return `Memory ${validated.oldMemoryId} marked as superseded by ${validated.newMemoryId}`;
     }
 
     case 'docs_search': {
-      if (!args.query) throw new Error('query is required');
-      const results = await docs.search(args.query, project.id, args.limit ?? 5);
+      const results = await docs.search(validated.query!, project.id, validated.limit ?? 5);
       log.info('mcp', 'Tool call completed', { name, ms: Date.now() - start });
       return formatDocResults(results);
     }
@@ -318,17 +483,16 @@ async function handleToolCall(name: string, args: ToolArgs, cwd: string): Promis
     case 'docs_ingest': {
       const doc = await docs.ingest({
         projectId: project.id,
-        path: args.path,
-        url: args.url,
-        content: args.content,
-        title: args.title,
+        path: validated.path,
+        url: validated.url,
+        content: validated.content,
+        title: validated.title,
       });
       log.info('mcp', 'Tool call completed', { name, ms: Date.now() - start });
       return `Document ingested: ${doc.title ?? doc.id}`;
     }
 
     case 'code_search': {
-      if (!args.query) throw new Error('query is required');
       const codeIndex = createCodeIndexService(embeddingService);
       const state = await codeIndex.getState(project.id);
 
@@ -348,10 +512,10 @@ No indexed code to search.`;
       }
 
       const results = await codeIndex.search({
-        query: args.query,
+        query: validated.query!,
         projectId: project.id,
-        language: args.language as CodeLanguage | undefined,
-        limit: args.limit ?? 10,
+        language: validated.language as CodeLanguage | undefined,
+        limit: validated.limit ?? 10,
       });
       log.info('mcp', 'Tool call completed', { name, ms: Date.now() - start });
       return formatCodeSearchResults(results) + staleWarning;
@@ -360,12 +524,12 @@ No indexed code to search.`;
     case 'code_index': {
       const codeIndex = createCodeIndexService(embeddingService);
       const progress = await codeIndex.index(cwd, project.id, {
-        force: args.force ?? false,
-        dryRun: args.dry_run ?? false,
+        force: validated.force ?? false,
+        dryRun: validated.dryRun ?? false,
       });
       log.info('mcp', 'Tool call completed', { name, ms: Date.now() - start });
 
-      if (args.dry_run) {
+      if (validated.dryRun) {
         return `Dry run complete: Found ${progress.totalFiles} code files to index.`;
       }
 

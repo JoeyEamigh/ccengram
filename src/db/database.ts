@@ -199,8 +199,18 @@ export async function recoverDatabase(dbPath: string): Promise<RecoveryResult> {
     sourceClient.close();
     recoveryClient.close();
 
-    await copyFile(recoveryPath, dbPath);
-    await unlink(recoveryPath);
+    try {
+      await copyFile(recoveryPath, dbPath);
+    } finally {
+      try {
+        await unlink(recoveryPath);
+      } catch (cleanupError) {
+        log.warn('db', 'Failed to clean up recovery file', {
+          path: recoveryPath,
+          error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+        });
+      }
+    }
 
     log.info('db', 'Database recovery completed', { recoveredRows, failedTables });
 
@@ -224,7 +234,9 @@ export async function recoverDatabase(dbPath: string): Promise<RecoveryResult> {
   }
 }
 
-export async function createDatabaseWithRecovery(dbPath?: string): Promise<Database> {
+const MAX_BUSY_RETRIES = 5;
+
+export async function createDatabaseWithRecovery(dbPath?: string, retryCount = 0): Promise<Database> {
   const paths = getPaths();
   const actualPath = dbPath ?? paths.db;
 
@@ -253,9 +265,21 @@ export async function createDatabaseWithRecovery(dbPath?: string): Promise<Datab
     return db;
   } catch (error) {
     if (error instanceof Error && error.message.includes('SQLITE_BUSY')) {
-      log.error('db', 'Database is locked, waiting for availability', { path: actualPath });
+      if (retryCount >= MAX_BUSY_RETRIES) {
+        log.error('db', 'Database still locked after max retries', {
+          path: actualPath,
+          retries: retryCount,
+        });
+        throw new Error(`Database locked after ${MAX_BUSY_RETRIES} retries: ${actualPath}`);
+      }
+
+      log.warn('db', 'Database is locked, waiting for availability', {
+        path: actualPath,
+        retry: retryCount + 1,
+        maxRetries: MAX_BUSY_RETRIES,
+      });
       await new Promise(r => setTimeout(r, 1000));
-      return createDatabaseWithRecovery(dbPath);
+      return createDatabaseWithRecovery(dbPath, retryCount + 1);
     }
 
     throw error;

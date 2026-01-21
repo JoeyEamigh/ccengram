@@ -22,6 +22,8 @@ export type SearchOptions = {
   sessionId?: string;
   mode?: SearchMode;
   weights?: RankingWeights;
+  scopePath?: string;
+  scopeModule?: string;
 };
 
 export type SessionSummary = {
@@ -251,6 +253,8 @@ export function createSearchService(embeddingService: EmbeddingService | null): 
         includeSuperseded = false,
         sessionId,
         weights = DEFAULT_WEIGHTS,
+        scopePath,
+        scopeModule,
       } = options;
 
       let { mode = 'hybrid' } = options;
@@ -305,7 +309,21 @@ export function createSearchService(embeddingService: EmbeddingService | null): 
       }
 
       const memoryIds = Array.from(resultMap.keys());
-      const memories = await Promise.all(memoryIds.map(getMemoryById));
+      const settledMemories = await Promise.allSettled(memoryIds.map(getMemoryById));
+      const memories: (Memory | null)[] = [];
+
+      for (let i = 0; i < settledMemories.length; i++) {
+        const result = settledMemories[i];
+        if (result && result.status === 'fulfilled') {
+          memories.push(result.value);
+        } else if (result && result.status === 'rejected') {
+          memories.push(null);
+          log.debug('search', 'Failed to resolve memory', {
+            memoryId: memoryIds[i],
+            error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+          });
+        }
+      }
 
       type CandidateResult = {
         memory: Memory;
@@ -314,17 +332,23 @@ export function createSearchService(embeddingService: EmbeddingService | null): 
         matchType: 'semantic' | 'keyword' | 'both';
       };
       const candidates: CandidateResult[] = [];
+      let droppedCount = 0;
 
       for (let i = 0; i < memories.length; i++) {
         const memory = memories[i];
         const memoryId = memoryIds[i];
-        if (!memory || memory.isDeleted || !memoryId) continue;
+        if (!memory || memory.isDeleted || !memoryId) {
+          if (!memory && memoryId) droppedCount++;
+          continue;
+        }
 
         if (sector && memory.sector !== sector) continue;
         if (tier && memory.tier !== tier) continue;
         if (memoryType && memory.memoryType !== memoryType) continue;
         if (memory.salience < minSalience) continue;
         if (!includeSuperseded && memory.validUntil) continue;
+        if (scopePath && memory.scopePath !== scopePath) continue;
+        if (scopeModule && memory.scopeModule !== scopeModule) continue;
 
         if (sessionId) {
           const hasLink = await checkSessionLink(memory.id, sessionId);
@@ -372,6 +396,10 @@ export function createSearchService(embeddingService: EmbeddingService | null): 
         if (sessionId) {
           await linkToSession(result.memory.id, sessionId, 'recalled');
         }
+      }
+
+      if (droppedCount > 0) {
+        log.debug('search', 'Dropped unresolved memories from results', { count: droppedCount });
       }
 
       log.info('search', 'Hybrid search complete', {

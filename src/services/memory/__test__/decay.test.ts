@@ -2,11 +2,16 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { closeDatabase, createDatabase, setDatabase, type Database } from '../../../db/database.js';
 import {
   applyDecay,
+  applyDecayOptimized,
   calculateDecay,
+  calculateEffectiveDecayRate,
+  calculateNextDecayAt,
   calculateSalienceBoost,
   estimateTimeToDecay,
   getDecayRateForSector,
+  getMemoriesDueForDecay,
   getMemoriesForDecay,
+  initializeDecayScheduling,
   startDecayProcess,
 } from '../decay.js';
 import type { Memory } from '../types.js';
@@ -305,5 +310,195 @@ describe('estimateTimeToDecay', () => {
     const timeHigh = estimateTimeToDecay(highAccess, 0.1);
 
     expect(timeHigh).toBeGreaterThan(timeLow);
+  });
+});
+
+describe('calculateEffectiveDecayRate', () => {
+  test('returns base rate divided by importance factor', () => {
+    const rate = calculateEffectiveDecayRate('semantic', 0.5);
+    const expectedRate = SECTOR_DECAY_RATES.semantic / (0.5 + 0.1);
+    expect(rate).toBeCloseTo(expectedRate, 5);
+  });
+
+  test('higher importance means lower effective decay rate', () => {
+    const lowImportanceRate = calculateEffectiveDecayRate('semantic', 0.2);
+    const highImportanceRate = calculateEffectiveDecayRate('semantic', 0.9);
+    expect(highImportanceRate).toBeLessThan(lowImportanceRate);
+  });
+
+  test('different sectors have different rates', () => {
+    const emotionalRate = calculateEffectiveDecayRate('emotional', 0.5);
+    const episodicRate = calculateEffectiveDecayRate('episodic', 0.5);
+    expect(emotionalRate).toBeLessThan(episodicRate);
+  });
+});
+
+describe('calculateNextDecayAt', () => {
+  test('returns future timestamp', () => {
+    const now = Date.now();
+    const nextDecay = calculateNextDecayAt(1.0, 0.01, 0);
+    expect(nextDecay).toBeGreaterThan(now);
+  });
+
+  test('very low salience returns far future', () => {
+    const nextDecay = calculateNextDecayAt(0.05, 0.01, 0);
+    const oneYear = 365 * 24 * 60 * 60 * 1000;
+    expect(nextDecay - Date.now()).toBeGreaterThanOrEqual(oneYear - 1000);
+  });
+
+  test('high access count affects next decay time', () => {
+    const lowAccess = calculateNextDecayAt(0.5, 0.01, 1);
+    const highAccess = calculateNextDecayAt(0.5, 0.01, 100);
+    expect(highAccess).toBeGreaterThanOrEqual(lowAccess);
+  });
+});
+
+describe('Optimized Decay with Database', () => {
+  let db: Database;
+
+  beforeEach(async () => {
+    db = await createDatabase(':memory:');
+    setDatabase(db);
+
+    const now = Date.now();
+    await db.execute(`INSERT INTO projects (id, path, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, [
+      'proj1',
+      '/test/path',
+      'Test Project',
+      now,
+      now,
+    ]);
+  });
+
+  afterEach(() => {
+    closeDatabase();
+  });
+
+  async function insertMemory(
+    id: string,
+    salience: number,
+    lastAccessed: number,
+    nextDecayAt?: number,
+  ): Promise<void> {
+    const now = Date.now();
+    await db.execute(
+      `INSERT INTO memories (
+        id, project_id, content, sector, tier, importance,
+        salience, access_count, created_at, updated_at, last_accessed,
+        is_deleted, tags_json, concepts_json, files_json, categories_json,
+        next_decay_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        'proj1',
+        'Test content',
+        'semantic',
+        'project',
+        0.5,
+        salience,
+        0,
+        now,
+        now,
+        lastAccessed,
+        0,
+        '[]',
+        '[]',
+        '[]',
+        '[]',
+        nextDecayAt ?? null,
+      ],
+    );
+  }
+
+  test('applyDecayOptimized processes due memories', async () => {
+    const oneMonthAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    const pastDue = Date.now() - 1000;
+    await insertMemory('mem1', 1.0, oneMonthAgo, pastDue);
+
+    const processed = await applyDecayOptimized(10);
+
+    expect(processed).toBe(1);
+
+    const result = await db.execute('SELECT salience, next_decay_at, decay_rate FROM memories WHERE id = ?', ['mem1']);
+    const row = result.rows[0];
+    expect(Number(row?.['salience'])).toBeLessThan(1.0);
+    expect(row?.['next_decay_at']).not.toBeNull();
+    expect(row?.['decay_rate']).not.toBeNull();
+  });
+
+  test('applyDecayOptimized skips memories not due', async () => {
+    const now = Date.now();
+    const futureDecay = now + 24 * 60 * 60 * 1000;
+    await insertMemory('mem1', 1.0, now, futureDecay);
+
+    const processed = await applyDecayOptimized(10);
+
+    expect(processed).toBe(0);
+  });
+
+  test('applyDecayOptimized processes memories with null next_decay_at', async () => {
+    const oneMonthAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    await insertMemory('mem1', 1.0, oneMonthAgo);
+
+    const processed = await applyDecayOptimized(10);
+
+    expect(processed).toBe(1);
+  });
+
+  test('applyDecayOptimized respects batch size', async () => {
+    const oneMonthAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    for (let i = 0; i < 5; i++) {
+      await insertMemory(`mem${i}`, 1.0, oneMonthAgo);
+    }
+
+    const processed = await applyDecayOptimized(3);
+
+    expect(processed).toBe(3);
+  });
+
+  test('initializeDecayScheduling sets next_decay_at for unscheduled memories', async () => {
+    const now = Date.now();
+    await insertMemory('mem1', 1.0, now);
+    await insertMemory('mem2', 0.5, now);
+
+    const initialized = await initializeDecayScheduling('proj1');
+
+    expect(initialized).toBe(2);
+
+    const result = await db.execute('SELECT next_decay_at, decay_rate FROM memories WHERE id = ?', ['mem1']);
+    const row = result.rows[0];
+    expect(row?.['next_decay_at']).not.toBeNull();
+    expect(row?.['decay_rate']).not.toBeNull();
+  });
+
+  test('getMemoriesDueForDecay counts due memories', async () => {
+    const pastDue = Date.now() - 1000;
+    const futureDue = Date.now() + 24 * 60 * 60 * 1000;
+    await insertMemory('mem1', 1.0, Date.now(), pastDue);
+    await insertMemory('mem2', 1.0, Date.now(), futureDue);
+    await insertMemory('mem3', 1.0, Date.now());
+
+    const count = await getMemoriesDueForDecay();
+
+    expect(count).toBe(2);
+  });
+
+  test('applyDecayOptimized excludes deleted memories', async () => {
+    const oneMonthAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    await insertMemory('mem1', 1.0, oneMonthAgo);
+    await db.execute('UPDATE memories SET is_deleted = 1 WHERE id = ?', ['mem1']);
+
+    const processed = await applyDecayOptimized(10);
+
+    expect(processed).toBe(0);
+  });
+
+  test('applyDecayOptimized excludes floor salience memories', async () => {
+    const oneMonthAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+    await insertMemory('mem1', 0.05, oneMonthAgo);
+
+    const processed = await applyDecayOptimized(10);
+
+    expect(processed).toBe(0);
   });
 });

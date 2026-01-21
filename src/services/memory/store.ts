@@ -1,7 +1,7 @@
 import { getDatabase } from '../../db/database.js';
 import { log } from '../../utils/log.js';
 import { publishEvent } from '../events/pubsub.js';
-import { computeMD5, computeSimhash, findSimilarMemory } from './dedup.js';
+import { computeMD5, computeSimhash, findSimilarMemory, getSimhashPrefix } from './dedup.js';
 import type { ListOptions, Memory, MemoryInput, UsageType } from './types.js';
 import { classifyMemorySector, MEMORY_TYPE_TO_SECTOR } from './types.js';
 import { rowToMemory } from './utils.js';
@@ -89,14 +89,16 @@ export function createMemoryStore(): MemoryStore {
       const confidence = input.confidence ?? 0.5;
       const summary = input.summary ?? null;
 
+      const simhashPrefix = getSimhashPrefix(simhash);
+
       await db.execute(
         `INSERT INTO memories (
           id, project_id, content, summary, content_hash, sector, tier, importance,
-          simhash, salience, access_count, created_at, updated_at,
+          simhash, simhash_prefix, salience, access_count, created_at, updated_at,
           last_accessed, valid_from, is_deleted,
           tags_json, concepts_json, files_json, categories_json,
-          memory_type, context, confidence, segment_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          memory_type, context, confidence, segment_id, scope_path, scope_module
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           projectId,
@@ -107,6 +109,7 @@ export function createMemoryStore(): MemoryStore {
           tier,
           importance,
           simhash,
+          simhashPrefix,
           1.0,
           0,
           now,
@@ -122,6 +125,8 @@ export function createMemoryStore(): MemoryStore {
           input.context ?? null,
           confidence,
           input.segmentId ?? null,
+          input.scopePath ?? null,
+          input.scopeModule ?? null,
         ],
       );
 
@@ -146,7 +151,12 @@ export function createMemoryStore(): MemoryStore {
         memoryId: id,
         projectId,
         timestamp: now,
-      }).catch(() => {});
+      }).catch((err: unknown) => {
+        log.debug('memory', 'Failed to publish memory:created event', {
+          memoryId: id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
 
       return created;
     },
@@ -216,6 +226,16 @@ export function createMemoryStore(): MemoryStore {
         args.push(updates.validFrom);
       }
 
+      if (updates.scopePath !== undefined) {
+        setClauses.push('scope_path = ?');
+        args.push(updates.scopePath);
+      }
+
+      if (updates.scopeModule !== undefined) {
+        setClauses.push('scope_module = ?');
+        args.push(updates.scopeModule);
+      }
+
       setClauses.push('updated_at = ?');
       args.push(now);
       args.push(id);
@@ -255,7 +275,12 @@ export function createMemoryStore(): MemoryStore {
           memoryId: id,
           projectId,
           timestamp: Date.now(),
-        }).catch(() => {});
+        }).catch((err: unknown) => {
+          log.debug('memory', 'Failed to publish memory:deleted event', {
+            memoryId: id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
       }
     },
 
@@ -306,6 +331,16 @@ export function createMemoryStore(): MemoryStore {
       if (options.minSalience !== undefined) {
         sql += ' AND salience >= ?';
         args.push(options.minSalience);
+      }
+
+      if (options.scopePath) {
+        sql += ' AND scope_path = ?';
+        args.push(options.scopePath);
+      }
+
+      if (options.scopeModule) {
+        sql += ' AND scope_module = ?';
+        args.push(options.scopeModule);
       }
 
       const orderBy = options.orderBy || 'created_at';
@@ -364,7 +399,12 @@ export function createMemoryStore(): MemoryStore {
         memoryId: id,
         projectId: reinforced.projectId,
         timestamp: now,
-      }).catch(() => {});
+      }).catch((err: unknown) => {
+        log.debug('memory', 'Failed to publish memory:reinforced event', {
+          memoryId: id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
 
       return reinforced;
     },

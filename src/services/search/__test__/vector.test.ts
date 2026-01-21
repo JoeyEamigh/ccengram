@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { closeDatabase, createDatabase, setDatabase, type Database } from '../../../db/database.js';
 import type { EmbeddingResult, EmbeddingService } from '../../embedding/types.js';
-import { searchVector } from '../vector.js';
+import { getCandidateIdsFromFTS, searchVector, searchVectorBatched, searchVectorOptimized } from '../vector.js';
 
 function createMockEmbeddingService(): EmbeddingService {
   const mockVectors: Record<string, number[]> = {
@@ -187,5 +187,337 @@ describe('Vector Search', () => {
 
     expect(results[0]?.memoryId).toBe('mem2');
     expect(results[0]?.similarity).toBeGreaterThan(results[1]?.similarity ?? 0);
+  });
+});
+
+describe('Batched Vector Search', () => {
+  let db: Database;
+  let embeddingService: EmbeddingService;
+
+  beforeEach(async () => {
+    db = await createDatabase(':memory:');
+    setDatabase(db);
+    embeddingService = createMockEmbeddingService();
+
+    const now = Date.now();
+    await db.execute(`INSERT INTO projects (id, path, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, [
+      'proj1',
+      '/test/path',
+      'Test Project',
+      now,
+      now,
+    ]);
+
+    await db.execute(
+      `INSERT INTO embedding_models (id, name, provider, dimensions, is_active, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      ['mock:test-model', 'test-model', 'mock', 128, 1, now],
+    );
+  });
+
+  afterEach(() => {
+    closeDatabase();
+  });
+
+  async function insertMemoryWithVector(
+    id: string,
+    content: string,
+    projectId: string,
+    vector: number[],
+  ): Promise<void> {
+    const now = Date.now();
+    await db.execute(
+      `INSERT INTO memories (
+        id, project_id, content, sector, tier, importance,
+        salience, access_count, created_at, updated_at, last_accessed,
+        is_deleted, tags_json, concepts_json, files_json, categories_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, projectId, content, 'semantic', 'project', 0.5, 1.0, 0, now, now, now, 0, '[]', '[]', '[]', '[]'],
+    );
+
+    const vectorBuffer = new Float32Array(vector).buffer;
+    await db.execute(
+      `INSERT INTO memory_vectors (memory_id, model_id, vector, dim, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      [id, 'mock:test-model', new Uint8Array(vectorBuffer), vector.length, now],
+    );
+  }
+
+  test('processes vectors in batches', async () => {
+    const vector = [0.5, 0.5, ...Array(126).fill(0.1)];
+    for (let i = 0; i < 5; i++) {
+      await insertMemoryWithVector(`mem${i}`, `Memory ${i}`, 'proj1', vector);
+    }
+
+    const results = await searchVectorBatched('authentication', embeddingService, 'proj1', 10, {
+      batchSize: 2,
+    });
+
+    expect(results.length).toBe(5);
+  });
+
+  test('respects batch size limit', async () => {
+    const vector = [0.5, 0.5, ...Array(126).fill(0.1)];
+    for (let i = 0; i < 10; i++) {
+      await insertMemoryWithVector(`mem${i}`, `Memory ${i}`, 'proj1', vector);
+    }
+
+    const results = await searchVectorBatched('authentication', embeddingService, 'proj1', 5, {
+      batchSize: 3,
+    });
+
+    expect(results.length).toBe(5);
+  });
+
+  test('early termination triggers on high quality result', async () => {
+    const defaultQueryVector = Array(128).fill(0.1);
+    const orthogonalVector = Array(64).fill(1).concat(Array(64).fill(-1));
+
+    await insertMemoryWithVector('mem_high', 'High match', 'proj1', defaultQueryVector);
+    for (let i = 0; i < 20; i++) {
+      await insertMemoryWithVector(`mem_low_${i}`, `Low match ${i}`, 'proj1', orthogonalVector);
+    }
+
+    const results = await searchVectorBatched('authentication', embeddingService, 'proj1', 5, {
+      batchSize: 5,
+      earlyTerminationThreshold: 0.9,
+    });
+
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    expect(results[0]?.memoryId).toBe('mem_high');
+    expect(results[0]?.similarity).toBeGreaterThanOrEqual(0.9);
+  });
+
+  test('respects maxBatches limit', async () => {
+    const vector = [0.5, 0.5, ...Array(126).fill(0.1)];
+    for (let i = 0; i < 100; i++) {
+      await insertMemoryWithVector(`mem${i}`, `Memory ${i}`, 'proj1', vector);
+    }
+
+    const results = await searchVectorBatched('authentication', embeddingService, 'proj1', 50, {
+      batchSize: 10,
+      maxBatches: 3,
+    });
+
+    expect(results.length).toBeLessThanOrEqual(30);
+  });
+
+  test('filters by candidate IDs when provided', async () => {
+    const vector = [0.5, 0.5, ...Array(126).fill(0.1)];
+    await insertMemoryWithVector('mem1', 'Memory 1', 'proj1', vector);
+    await insertMemoryWithVector('mem2', 'Memory 2', 'proj1', vector);
+    await insertMemoryWithVector('mem3', 'Memory 3', 'proj1', vector);
+
+    const results = await searchVectorBatched('authentication', embeddingService, 'proj1', 10, {
+      candidateIds: ['mem1', 'mem3'],
+    });
+
+    expect(results.length).toBe(2);
+    const memoryIds = results.map(r => r.memoryId);
+    expect(memoryIds).toContain('mem1');
+    expect(memoryIds).toContain('mem3');
+    expect(memoryIds).not.toContain('mem2');
+  });
+
+  test('returns same results as non-batched search', async () => {
+    const vectors = [
+      [0.6, 0.7, 0.2, ...Array(125).fill(0.1)],
+      [0.1, 0.2, 0.9, ...Array(125).fill(0.1)],
+      [0.5, 0.5, 0.5, ...Array(125).fill(0.1)],
+    ];
+
+    await insertMemoryWithVector('mem1', 'Auth memory', 'proj1', vectors[0]!);
+    await insertMemoryWithVector('mem2', 'DB memory', 'proj1', vectors[1]!);
+    await insertMemoryWithVector('mem3', 'Mixed memory', 'proj1', vectors[2]!);
+
+    const regularResults = await searchVector('authentication', embeddingService, 'proj1', 3);
+    const batchedResults = await searchVectorBatched('authentication', embeddingService, 'proj1', 3);
+
+    expect(batchedResults.map(r => r.memoryId)).toEqual(regularResults.map(r => r.memoryId));
+  });
+});
+
+describe('FTS Pre-filtering', () => {
+  let db: Database;
+
+  beforeEach(async () => {
+    db = await createDatabase(':memory:');
+    setDatabase(db);
+
+    const now = Date.now();
+    await db.execute(`INSERT INTO projects (id, path, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, [
+      'proj1',
+      '/test/path',
+      'Test Project',
+      now,
+      now,
+    ]);
+  });
+
+  afterEach(() => {
+    closeDatabase();
+  });
+
+  async function insertMemory(id: string, content: string, projectId: string): Promise<void> {
+    const now = Date.now();
+    await db.execute(
+      `INSERT INTO memories (
+        id, project_id, content, sector, tier, importance,
+        salience, access_count, created_at, updated_at, last_accessed,
+        is_deleted, tags_json, concepts_json, files_json, categories_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, projectId, content, 'semantic', 'project', 0.5, 1.0, 0, now, now, now, 0, '[]', '[]', '[]', '[]'],
+    );
+  }
+
+  test('returns matching memory IDs from FTS', async () => {
+    await insertMemory('mem1', 'User authentication with JWT tokens', 'proj1');
+    await insertMemory('mem2', 'Database schema design patterns', 'proj1');
+    await insertMemory('mem3', 'Authentication security best practices', 'proj1');
+
+    const candidates = await getCandidateIdsFromFTS('authentication', 'proj1');
+
+    expect(candidates).toContain('mem1');
+    expect(candidates).toContain('mem3');
+    expect(candidates).not.toContain('mem2');
+  });
+
+  test('returns empty array for query with no matches', async () => {
+    await insertMemory('mem1', 'User authentication with JWT tokens', 'proj1');
+
+    const candidates = await getCandidateIdsFromFTS('nonexistent', 'proj1');
+
+    expect(candidates).toEqual([]);
+  });
+
+  test('respects maxCandidates limit', async () => {
+    for (let i = 0; i < 10; i++) {
+      await insertMemory(`mem${i}`, `Authentication method ${i}`, 'proj1');
+    }
+
+    const candidates = await getCandidateIdsFromFTS('authentication', 'proj1', 5);
+
+    expect(candidates.length).toBeLessThanOrEqual(5);
+  });
+
+  test('filters by project', async () => {
+    const now = Date.now();
+    await db.execute(`INSERT INTO projects (id, path, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, [
+      'proj2',
+      '/test/path2',
+      'Test Project 2',
+      now,
+      now,
+    ]);
+
+    await insertMemory('mem1', 'Authentication in project 1', 'proj1');
+    await insertMemory('mem2', 'Authentication in project 2', 'proj2');
+
+    const candidates = await getCandidateIdsFromFTS('authentication', 'proj1');
+
+    expect(candidates).toContain('mem1');
+    expect(candidates).not.toContain('mem2');
+  });
+
+  test('returns empty for short query words only', async () => {
+    await insertMemory('mem1', 'User authentication', 'proj1');
+
+    const candidates = await getCandidateIdsFromFTS('a to', 'proj1');
+
+    expect(candidates).toEqual([]);
+  });
+});
+
+describe('Optimized Vector Search', () => {
+  let db: Database;
+  let embeddingService: EmbeddingService;
+
+  beforeEach(async () => {
+    db = await createDatabase(':memory:');
+    setDatabase(db);
+    embeddingService = createMockEmbeddingService();
+
+    const now = Date.now();
+    await db.execute(`INSERT INTO projects (id, path, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, [
+      'proj1',
+      '/test/path',
+      'Test Project',
+      now,
+      now,
+    ]);
+
+    await db.execute(
+      `INSERT INTO embedding_models (id, name, provider, dimensions, is_active, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      ['mock:test-model', 'test-model', 'mock', 128, 1, now],
+    );
+  });
+
+  afterEach(() => {
+    closeDatabase();
+  });
+
+  async function insertMemoryWithVector(
+    id: string,
+    content: string,
+    projectId: string,
+    vector: number[],
+  ): Promise<void> {
+    const now = Date.now();
+    await db.execute(
+      `INSERT INTO memories (
+        id, project_id, content, sector, tier, importance,
+        salience, access_count, created_at, updated_at, last_accessed,
+        is_deleted, tags_json, concepts_json, files_json, categories_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, projectId, content, 'semantic', 'project', 0.5, 1.0, 0, now, now, now, 0, '[]', '[]', '[]', '[]'],
+    );
+
+    const vectorBuffer = new Float32Array(vector).buffer;
+    await db.execute(
+      `INSERT INTO memory_vectors (memory_id, model_id, vector, dim, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      [id, 'mock:test-model', new Uint8Array(vectorBuffer), vector.length, now],
+    );
+  }
+
+  test('uses FTS pre-filtering when candidates available', async () => {
+    const authVector = [0.6, 0.7, 0.2, ...Array(125).fill(0.1)];
+    const dbVector = [0.1, 0.2, 0.9, ...Array(125).fill(0.1)];
+
+    await insertMemoryWithVector('mem1', 'User authentication module', 'proj1', authVector);
+    await insertMemoryWithVector('mem2', 'Database optimization guide', 'proj1', dbVector);
+
+    const results = await searchVectorOptimized('authentication', embeddingService, 'proj1');
+
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    expect(results[0]?.memoryId).toBe('mem1');
+  });
+
+  test('falls back to full batched search when no FTS matches', async () => {
+    const vector = [0.5, 0.5, ...Array(126).fill(0.1)];
+    await insertMemoryWithVector('mem1', 'Some content here', 'proj1', vector);
+
+    const results = await searchVectorOptimized('completely different query', embeddingService, 'proj1');
+
+    expect(results.length).toBe(1);
+  });
+
+  test('returns accurate results for mixed queries', async () => {
+    const vectors = [
+      [0.6, 0.7, 0.2, ...Array(125).fill(0.1)],
+      [0.5, 0.6, 0.3, ...Array(125).fill(0.1)],
+      [0.1, 0.2, 0.9, ...Array(125).fill(0.1)],
+    ];
+
+    await insertMemoryWithVector('mem1', 'User login authentication flow', 'proj1', vectors[0]!);
+    await insertMemoryWithVector('mem2', 'Session authentication tokens', 'proj1', vectors[1]!);
+    await insertMemoryWithVector('mem3', 'Database design patterns', 'proj1', vectors[2]!);
+
+    const results = await searchVectorOptimized('authentication', embeddingService, 'proj1', 3);
+
+    const memoryIds = results.map(r => r.memoryId);
+    expect(memoryIds).toContain('mem1');
+    expect(memoryIds).toContain('mem2');
   });
 });

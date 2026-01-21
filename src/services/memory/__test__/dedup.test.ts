@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-import { computeMD5, computeSimhash, hammingDistance, isDuplicate } from '../dedup.js';
+import {
+  computeJaccardSimilarity,
+  computeMD5,
+  computeSimhash,
+  getSimhashPrefix,
+  hammingDistance,
+  isDuplicate,
+} from '../dedup.js';
 
 describe('Simhash Computation', () => {
   test('identical text produces identical hash', () => {
@@ -172,5 +179,88 @@ describe('Practical Simhash Scenarios', () => {
 
     expect(hammingDistance(h1, h2)).toBe(0);
     expect(isDuplicate(h1, h2)).toBe(true);
+  });
+});
+
+describe('getSimhashPrefix', () => {
+  test('extracts first 4 characters', () => {
+    expect(getSimhashPrefix('1234567890abcdef')).toBe('1234');
+    expect(getSimhashPrefix('abcdef1234567890')).toBe('abcd');
+    expect(getSimhashPrefix('0000000000000000')).toBe('0000');
+  });
+
+  test('handles minimum length hashes', () => {
+    expect(getSimhashPrefix('abcd')).toBe('abcd');
+  });
+});
+
+describe('computeJaccardSimilarity', () => {
+  test('identical texts have similarity of 1', () => {
+    const text = 'The quick brown fox jumps over the lazy dog';
+    expect(computeJaccardSimilarity(text, text)).toBe(1);
+  });
+
+  test('completely different texts have low similarity', () => {
+    const text1 = 'The authentication module handles login requests';
+    const text2 = 'Database migrations run schema updates today';
+    const similarity = computeJaccardSimilarity(text1, text2);
+    expect(similarity).toBeLessThan(0.2);
+  });
+
+  test('similar texts have moderate to high similarity', () => {
+    const text1 = 'The authentication module handles user login requests';
+    const text2 = 'The authentication module handles user login sessions';
+    const similarity = computeJaccardSimilarity(text1, text2);
+    expect(similarity).toBeGreaterThan(0.5);
+  });
+
+  test('handles empty texts', () => {
+    expect(computeJaccardSimilarity('', '')).toBe(1);
+    expect(computeJaccardSimilarity('text', '')).toBe(0);
+    expect(computeJaccardSimilarity('', 'text')).toBe(0);
+  });
+
+  test('is symmetric', () => {
+    const text1 = 'Hello world example';
+    const text2 = 'World hello test';
+    expect(computeJaccardSimilarity(text1, text2)).toBe(computeJaccardSimilarity(text2, text1));
+  });
+
+  test('filters short words', () => {
+    const text1 = 'a an to the database';
+    const text2 = 'a an to the database';
+    expect(computeJaccardSimilarity(text1, text2)).toBe(1);
+  });
+
+  test('is case insensitive', () => {
+    const text1 = 'THE QUICK BROWN FOX';
+    const text2 = 'the quick brown fox';
+    expect(computeJaccardSimilarity(text1, text2)).toBe(1);
+  });
+});
+
+describe('Simhash Prefix Bucketing', () => {
+  test('nearly identical texts have low hamming distance', () => {
+    const text1 = 'The quick brown fox jumps over the lazy dog';
+    const text2 = 'The quick brown fox leaps over the lazy dog';
+    const hash1 = computeSimhash(text1);
+    const hash2 = computeSimhash(text2);
+
+    const distance = hammingDistance(hash1, hash2);
+    expect(distance).toBeLessThan(15);
+  });
+
+  test('very different content has different prefixes usually', () => {
+    const texts = [
+      'React component rendering lifecycle methods',
+      'Database SQL query optimization techniques',
+      'Python machine learning neural networks',
+      'Kubernetes container orchestration deployment',
+    ];
+
+    const prefixes = texts.map(t => getSimhashPrefix(computeSimhash(t)));
+    const uniquePrefixes = new Set(prefixes);
+
+    expect(uniquePrefixes.size).toBeGreaterThanOrEqual(2);
   });
 });

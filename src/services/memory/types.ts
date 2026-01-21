@@ -39,6 +39,9 @@ export type Memory = {
   tags: string[];
   concepts: string[];
   files: string[];
+
+  scopePath?: string;
+  scopeModule?: string;
 };
 
 export type MemoryInput = {
@@ -55,6 +58,8 @@ export type MemoryInput = {
   context?: string;
   confidence?: number;
   segmentId?: string;
+  scopePath?: string;
+  scopeModule?: string;
 };
 
 export type ListOptions = {
@@ -68,6 +73,8 @@ export type ListOptions = {
   includeDeleted?: boolean;
   orderBy?: 'created_at' | 'salience' | 'last_accessed';
   order?: 'asc' | 'desc';
+  scopePath?: string;
+  scopeModule?: string;
 };
 
 export type UsageType = 'created' | 'recalled' | 'updated' | 'reinforced';

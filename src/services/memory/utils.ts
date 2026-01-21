@@ -66,5 +66,7 @@ export function rowToMemory(row: Row): Memory {
     tags: parseJsonArray(row['tags_json']),
     concepts: parseJsonArray(row['concepts_json']),
     files: parseJsonArray(row['files_json']),
+    scopePath: asOptionalString(row['scope_path']),
+    scopeModule: asOptionalString(row['scope_module']),
   };
 }

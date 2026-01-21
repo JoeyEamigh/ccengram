@@ -13,9 +13,11 @@ import type {
   CodeLanguage,
   CodeSearchOptions,
   CodeSearchResult,
+  IndexCheckpoint,
   IndexedFile,
   IndexedFileExport,
   IndexProgress,
+  IndexStatistics,
   ScannedFile,
   WatcherEvent,
 } from './types.js';
@@ -27,11 +29,15 @@ export type CodeIndexService = {
   index(projectPath: string, projectId: string, options?: CodeIndexOptions): Promise<IndexProgress>;
   search(options: CodeSearchOptions): Promise<CodeSearchResult[]>;
   getState(projectId: string): Promise<CodeIndexState | null>;
+  getStatistics(projectId: string): Promise<IndexStatistics | null>;
   processFileChanges(projectPath: string, projectId: string, events: WatcherEvent[]): Promise<void>;
   cleanupDeletedFiles(projectId: string): Promise<number>;
   deleteFile(projectId: string, filePath: string): Promise<boolean>;
   exportIndex(projectPath: string, projectId: string): Promise<CodeIndexExport | null>;
   importIndex(projectPath: string, projectId: string, data: CodeIndexExport): Promise<{ imported: number; skipped: number }>;
+  saveCheckpoint(projectId: string, checkpoint: Omit<IndexCheckpoint, 'id' | 'createdAt' | 'updatedAt'>): Promise<string>;
+  loadCheckpoint(projectId: string): Promise<IndexCheckpoint | null>;
+  clearCheckpoint(projectId: string): Promise<void>;
 };
 
 function rowToIndexedFile(row: Record<string, unknown>): IndexedFile {
@@ -182,13 +188,34 @@ async function indexFile(
   return { chunks: chunks.length };
 }
 
+function shouldIncludeFile(file: ScannedFile, includePaths?: string[], excludePaths?: string[]): boolean {
+  if (excludePaths && excludePaths.length > 0) {
+    for (const pattern of excludePaths) {
+      if (file.relativePath.includes(pattern) || file.path.includes(pattern)) {
+        return false;
+      }
+    }
+  }
+
+  if (includePaths && includePaths.length > 0) {
+    for (const pattern of includePaths) {
+      if (file.relativePath.includes(pattern) || file.path.includes(pattern)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  return true;
+}
+
 export function createCodeIndexService(embeddingService: EmbeddingService): CodeIndexService {
   return {
     async index(projectPath: string, projectId: string, options?: CodeIndexOptions): Promise<IndexProgress> {
-      const { force = false, dryRun = false, onProgress } = options ?? {};
+      const { force = false, dryRun = false, onProgress, includePaths, excludePaths, resumeFromCheckpoint } = options ?? {};
       const start = Date.now();
 
-      log.info('codeindex', 'Starting code indexing', { projectPath, projectId, force, dryRun });
+      log.info('codeindex', 'Starting code indexing', { projectPath, projectId, force, dryRun, includePaths, excludePaths });
 
       const progress: IndexProgress = {
         phase: 'scanning',
@@ -196,21 +223,46 @@ export function createCodeIndexService(embeddingService: EmbeddingService): Code
         indexedFiles: 0,
         totalFiles: 0,
         errors: [],
+        startedAt: start,
+        bytesProcessed: 0,
+        totalBytes: 0,
+        tokensProcessed: 0,
       };
+
+      let checkpoint: IndexCheckpoint | null = null;
+      if (resumeFromCheckpoint) {
+        checkpoint = await this.loadCheckpoint(projectId);
+        if (checkpoint) {
+          log.info('codeindex', 'Resuming from checkpoint', {
+            processedFiles: checkpoint.processedFiles.length,
+            pendingFiles: checkpoint.pendingFiles.length,
+          });
+          progress.indexedFiles = checkpoint.processedFiles.length;
+        }
+      }
 
       const scanResult = await scanDirectory(projectPath, scanned => {
         progress.scannedFiles = scanned;
         onProgress?.(progress);
       });
 
+      let filteredFiles = scanResult.files.filter(f => shouldIncludeFile(f, includePaths, excludePaths));
+
+      if (checkpoint) {
+        const processedSet = new Set(checkpoint.processedFiles);
+        filteredFiles = filteredFiles.filter(f => !processedSet.has(f.path));
+      }
+
       progress.phase = 'indexing';
-      progress.totalFiles = scanResult.files.length;
+      progress.totalFiles = filteredFiles.length + (checkpoint?.processedFiles.length ?? 0);
+      progress.totalBytes = filteredFiles.reduce((sum, f) => sum + f.size, 0);
       onProgress?.(progress);
 
       if (dryRun) {
         log.info('codeindex', 'Dry run complete', {
-          files: scanResult.files.length,
+          files: filteredFiles.length,
           skipped: scanResult.skippedCount,
+          filtered: scanResult.files.length - filteredFiles.length,
         });
         progress.phase = 'complete';
         return progress;
@@ -219,7 +271,7 @@ export function createCodeIndexService(embeddingService: EmbeddingService): Code
       const db = await getDatabase();
 
       const filesToIndex: ScannedFile[] = [];
-      for (const file of scanResult.files) {
+      for (const file of filteredFiles) {
         if (force) {
           filesToIndex.push(file);
           continue;
@@ -232,9 +284,15 @@ export function createCodeIndexService(embeddingService: EmbeddingService): Code
       }
 
       log.info('codeindex', 'Files to index', {
-        total: scanResult.files.length,
+        total: filteredFiles.length,
         toIndex: filesToIndex.length,
+        filtered: scanResult.files.length - filteredFiles.length,
       });
+
+      const processedFiles: string[] = checkpoint?.processedFiles ?? [];
+      let totalChunks = 0;
+      let lastCheckpointTime = Date.now();
+      const CHECKPOINT_INTERVAL = 30000;
 
       for (let i = 0; i < filesToIndex.length; i += BATCH_SIZE) {
         const batch = filesToIndex.slice(i, i + BATCH_SIZE);
@@ -257,12 +315,37 @@ export function createCodeIndexService(embeddingService: EmbeddingService): Code
                 progress.errors.push(`${file.relativePath}: ${result.error}`);
               } else if (result.chunks > 0) {
                 progress.indexedFiles++;
+                totalChunks += result.chunks;
+                processedFiles.push(file.path);
+                progress.bytesProcessed = (progress.bytesProcessed ?? 0) + file.size;
+                progress.tokensProcessed = (progress.tokensProcessed ?? 0) + Math.ceil(file.size / 4);
               }
             } else {
               const err = settled.reason as Error;
               progress.errors.push(`Unknown file: ${err.message}`);
               log.error('codeindex', 'Failed to index file', { error: err.message });
             }
+          }
+
+          const elapsed = Date.now() - start;
+          if (progress.indexedFiles > 0 && elapsed > 0) {
+            progress.filesPerSecond = (progress.indexedFiles / elapsed) * 1000;
+            const remaining = progress.totalFiles - progress.indexedFiles;
+            progress.estimatedTimeRemaining = remaining / progress.filesPerSecond * 1000;
+          }
+
+          onProgress?.(progress);
+
+          if (Date.now() - lastCheckpointTime > CHECKPOINT_INTERVAL && processedFiles.length > 0) {
+            const pendingFiles = filesToIndex.slice(i + j + parallelBatch.length).map(f => f.path);
+            await this.saveCheckpoint(projectId, {
+              projectId,
+              phase: 'indexing',
+              processedFiles,
+              pendingFiles,
+              progress,
+            });
+            lastCheckpointTime = Date.now();
           }
         }
       }
@@ -271,10 +354,12 @@ export function createCodeIndexService(embeddingService: EmbeddingService): Code
       const gitignoreHash = gitignore.hash;
 
       await db.execute(
-        `INSERT OR REPLACE INTO code_index_state (project_id, last_indexed_at, indexed_files, gitignore_hash)
-         VALUES (?, ?, ?, ?)`,
-        [projectId, Date.now(), progress.indexedFiles, gitignoreHash],
+        `INSERT OR REPLACE INTO code_index_state (project_id, last_indexed_at, indexed_files, gitignore_hash, total_bytes, total_tokens, total_chunks)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [projectId, Date.now(), progress.indexedFiles, gitignoreHash, progress.bytesProcessed ?? 0, progress.tokensProcessed ?? 0, totalChunks],
       );
+
+      await this.clearCheckpoint(projectId);
 
       progress.phase = 'complete';
       progress.currentFile = undefined;
@@ -282,6 +367,8 @@ export function createCodeIndexService(embeddingService: EmbeddingService): Code
 
       log.info('codeindex', 'Code indexing complete', {
         indexed: progress.indexedFiles,
+        chunks: totalChunks,
+        bytes: progress.bytesProcessed,
         errors: progress.errors.length,
         ms: Date.now() - start,
       });
@@ -641,6 +728,147 @@ export function createCodeIndexService(embeddingService: EmbeddingService): Code
       log.info('codeindex', 'Index imported', { projectId, imported, skipped });
 
       return { imported, skipped };
+    },
+
+    async getStatistics(projectId: string): Promise<IndexStatistics | null> {
+      const db = await getDatabase();
+
+      const state = await this.getState(projectId);
+      if (!state) return null;
+
+      const stateResult = await db.execute(
+        `SELECT total_bytes, total_tokens, total_chunks FROM code_index_state WHERE project_id = ?`,
+        [projectId],
+      );
+      const stateRow = stateResult.rows[0];
+      const totalBytes = Number(stateRow?.['total_bytes'] ?? 0);
+      const totalTokens = Number(stateRow?.['total_tokens'] ?? 0);
+      const totalChunks = Number(stateRow?.['total_chunks'] ?? 0);
+
+      const languageResult = await db.execute(
+        `SELECT language, COUNT(*) as count FROM documents
+         WHERE project_id = ? AND is_code = 1
+         GROUP BY language`,
+        [projectId],
+      );
+
+      const languageBreakdown: Record<CodeLanguage, number> = {} as Record<CodeLanguage, number>;
+      for (const row of languageResult.rows) {
+        const lang = String(row['language']) as CodeLanguage;
+        languageBreakdown[lang] = Number(row['count']);
+      }
+
+      const avgChunks = state.indexedFiles > 0 ? totalChunks / state.indexedFiles : 0;
+
+      let healthScore = 100;
+      if (state.indexedFiles === 0) healthScore = 0;
+      else if (avgChunks < 1) healthScore -= 20;
+      if (totalBytes === 0) healthScore -= 30;
+
+      return {
+        projectId,
+        totalFiles: state.indexedFiles,
+        totalChunks,
+        totalBytes,
+        totalTokens,
+        languageBreakdown,
+        lastIndexedAt: state.lastIndexedAt,
+        averageChunksPerFile: avgChunks,
+        indexHealthScore: Math.max(0, healthScore),
+      };
+    },
+
+    async saveCheckpoint(
+      projectId: string,
+      checkpoint: Omit<IndexCheckpoint, 'id' | 'createdAt' | 'updatedAt'>,
+    ): Promise<string> {
+      const db = await getDatabase();
+      const id = crypto.randomUUID();
+      const now = Date.now();
+
+      await db.execute(
+        `DELETE FROM index_checkpoints WHERE project_id = ?`,
+        [projectId],
+      );
+
+      await db.execute(
+        `INSERT INTO index_checkpoints (id, project_id, phase, processed_files_json, pending_files_json, progress_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          projectId,
+          checkpoint.phase,
+          JSON.stringify(checkpoint.processedFiles),
+          JSON.stringify(checkpoint.pendingFiles),
+          JSON.stringify(checkpoint.progress),
+          now,
+          now,
+        ],
+      );
+
+      log.debug('codeindex', 'Checkpoint saved', { projectId, processedFiles: checkpoint.processedFiles.length });
+      return id;
+    },
+
+    async loadCheckpoint(projectId: string): Promise<IndexCheckpoint | null> {
+      const db = await getDatabase();
+
+      const result = await db.execute(
+        `SELECT * FROM index_checkpoints WHERE project_id = ? ORDER BY created_at DESC LIMIT 1`,
+        [projectId],
+      );
+
+      if (result.rows.length === 0) return null;
+      const row = result.rows[0];
+      if (!row) return null;
+
+      let processedFiles: string[] = [];
+      let pendingFiles: string[] = [];
+      let progress: IndexProgress = {
+        phase: 'scanning',
+        scannedFiles: 0,
+        indexedFiles: 0,
+        totalFiles: 0,
+        errors: [],
+      };
+
+      try {
+        const processedJson = row['processed_files_json'];
+        if (typeof processedJson === 'string') {
+          processedFiles = JSON.parse(processedJson) as string[];
+        }
+      } catch {}
+
+      try {
+        const pendingJson = row['pending_files_json'];
+        if (typeof pendingJson === 'string') {
+          pendingFiles = JSON.parse(pendingJson) as string[];
+        }
+      } catch {}
+
+      try {
+        const progressJson = row['progress_json'];
+        if (typeof progressJson === 'string') {
+          progress = JSON.parse(progressJson) as IndexProgress;
+        }
+      } catch {}
+
+      return {
+        id: String(row['id']),
+        projectId: String(row['project_id']),
+        phase: String(row['phase']) as IndexProgress['phase'],
+        processedFiles,
+        pendingFiles,
+        progress,
+        createdAt: Number(row['created_at']),
+        updatedAt: Number(row['updated_at']),
+      };
+    },
+
+    async clearCheckpoint(projectId: string): Promise<void> {
+      const db = await getDatabase();
+      await db.execute(`DELETE FROM index_checkpoints WHERE project_id = ?`, [projectId]);
+      log.debug('codeindex', 'Checkpoint cleared', { projectId });
     },
   };
 }
