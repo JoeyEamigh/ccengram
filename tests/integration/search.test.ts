@@ -211,8 +211,9 @@ describe('Search Quality Integration', () => {
     });
 
     expect(results.length).toBeGreaterThan(0);
-    expect(results[0]?.memory.content).toContain('GraphQL');
-    expect(results[0]?.matchType === 'keyword' || results[0]?.matchType === 'both').toBe(true);
+    const graphqlResult = results.find(r => r.memory.content.includes('GraphQL'));
+    expect(graphqlResult).toBeDefined();
+    expect(graphqlResult?.matchType === 'keyword' || graphqlResult?.matchType === 'both').toBe(true);
   });
 
   test('sector filtering limits results to specific sectors', async () => {

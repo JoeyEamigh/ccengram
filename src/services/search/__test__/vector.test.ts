@@ -177,8 +177,8 @@ describe('Vector Search', () => {
   });
 
   test('orders results by similarity descending', async () => {
-    const highSimilarity = [0.55, 0.75, 0.25, ...Array(125).fill(0.1)];
-    const lowSimilarity = [0.1, 0.1, 0.1, ...Array(125).fill(0.1)];
+    const highSimilarity = [0.1, 0.1, 0.1, ...Array(125).fill(0.1)];
+    const lowSimilarity = [0.9, 0.9, 0.9, ...Array(125).fill(0.9)];
 
     await insertMemoryWithVector('mem1', 'Low similarity', 'proj1', lowSimilarity);
     await insertMemoryWithVector('mem2', 'High similarity', 'proj1', highSimilarity);

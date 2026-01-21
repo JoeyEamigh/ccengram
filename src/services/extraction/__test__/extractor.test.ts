@@ -66,6 +66,7 @@ describe('saveExtractionSegment', () => {
       commandsRun: [],
       errorsEncountered: [],
       searchesPerformed: [],
+      completedTasks: [],
       toolCallCount: 5,
       ...overrides,
     };
