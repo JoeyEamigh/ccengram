@@ -33,7 +33,8 @@ src/
 │   ├── embedding/ → Ollama/OpenRouter vector providers
 │   ├── memory/    → Memory store, dedup, decay, sessions
 │   ├── search/    → FTS5, vector search, hybrid ranking
-│   └── documents/ → Chunking, ingestion
+│   ├── documents/ → Chunking, ingestion
+│   └── codeindex/ → Semantic code search (scanner, chunker, watcher)
 ├── mcp/           → MCP server for Claude Code integration
 ├── cli/           → CLI commands (search, show, serve, etc.)
 ├── hooks/         → Hook handlers (capture, summarize, cleanup)
@@ -93,22 +94,38 @@ Control via `LOG_LEVEL` env var: `debug`, `info`, `warn`, `error` (default: `inf
 ## CLI Commands
 
 ```bash
+# Memory commands
 ccmemory search "query"          # Search memories
 ccmemory show <id>               # Show memory details
 ccmemory delete <id>             # Soft delete memory
-ccmemory serve                   # Start WebUI
-ccmemory shutdown                # Shutdown WebUI
 ccmemory stats                   # Show statistics
 ccmemory health                  # Check system health
 ccmemory config get <key>        # View configuration
 ccmemory import <file>           # Import memories
 ccmemory export <file>           # Export memories
+
+# Code indexing commands
+ccmemory watch [dir]             # Start file watcher daemon
+ccmemory watch --stop [dir]      # Stop watcher for directory
+ccmemory watch --status          # Show active watchers
+ccmemory code-index [dir]        # One-shot index of code files
+ccmemory code-index --force      # Re-index all files
+ccmemory code-index --dry-run    # Scan only, no indexing
+ccmemory code-search <query>     # Semantic code search
+ccmemory code-search -l ts       # Filter by language
+ccmemory code-index-export       # Export index to JSON
+ccmemory code-index-import       # Import index from JSON
+
+# Server commands
+ccmemory serve                   # Start WebUI
+ccmemory shutdown                # Shutdown WebUI
 ```
 
 ## MCP Tools
 
 When used as a Claude Code plugin, these tools are available:
 
+**Memory tools:**
 - `memory_search` - Search memories by query
 - `memory_timeline` - View memories around a point in time
 - `memory_add` - Create new memory
@@ -116,14 +133,23 @@ When used as a Claude Code plugin, these tools are available:
 - `memory_deemphasize` - Decrease memory salience
 - `memory_delete` - Soft delete memory
 - `memory_supersede` - Mark memory as superseded
+
+**Document tools:**
 - `docs_search` - Search ingested documents
 - `docs_ingest` - Ingest document for search
+
+**Code indexing tools:**
+- `code_search` - Semantic code search with file paths and line numbers
+- `code_index` - Trigger indexing/re-indexing of project code
 
 ## Hooks
 
 The plugin uses Claude Code hooks:
 
+- **SessionStart**: Initializes session, auto-starts code index watcher if index exists
+- **UserPromptSubmit**: Starts new memory extraction segment
 - **PostToolUse**: Captures tool observations as episodic memories
+- **PreCompact**: Triggers memory extraction before context compaction
 - **Stop**: Generates session summary as reflective memory
 - **SessionEnd**: Promotes high-salience session memories to project tier
 

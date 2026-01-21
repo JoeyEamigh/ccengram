@@ -6,11 +6,13 @@ Self-contained memory plugin for Claude Code. Provides persistent, searchable me
 
 - **5-Sector Memory Model**: Episodic, semantic, procedural, emotional, and reflective memory types
 - **Hybrid Search**: Combined FTS5 full-text and vector similarity search
+- **Semantic Code Search**: Index and search project code by meaning, not just keywords
 - **Automatic Capture**: PostToolUse hooks capture tool observations
 - **Session Summaries**: Stop hooks generate reflective summaries
 - **Salience Decay**: Time-based memory decay with reinforcement on access
 - **Deduplication**: SimHash-based duplicate detection with automatic boosting
 - **Document Ingestion**: Chunk and vectorize files/URLs for RAG
+- **File Watcher**: Background daemon keeps code index updated on file changes
 - **WebUI**: Real-time browser interface with WebSocket updates
 - **Multi-Agent Support**: Track memories across concurrent Claude Code instances
 - **Single Binary**: No runtime dependencies - just download and run
@@ -163,6 +165,18 @@ ccmemory import document.md --title "Project Docs"
 
 # Export memories
 ccmemory export --output memories.json
+
+# Code indexing
+ccmemory watch                    # Start file watcher daemon
+ccmemory watch --stop             # Stop watcher
+ccmemory watch --status           # Show active watchers
+ccmemory code-index               # One-shot index project
+ccmemory code-index --force       # Re-index all files
+ccmemory code-index --dry-run     # Scan without indexing
+ccmemory code-search "auth flow"  # Semantic code search
+ccmemory code-search -l ts "api"  # Filter by language
+ccmemory code-index-export        # Export index to JSON
+ccmemory code-index-import file   # Import index
 ```
 
 ## MCP Tools
@@ -180,6 +194,8 @@ When used as a Claude Code plugin, these tools are available:
 | `memory_supersede`   | Replace old memory with new version        |
 | `docs_search`        | Search ingested documents                  |
 | `docs_ingest`        | Ingest file, URL, or raw content           |
+| `code_search`        | Semantic code search with line numbers     |
+| `code_index`         | Index/re-index project code files          |
 
 ### Tool Modes
 
@@ -227,6 +243,50 @@ tools:
     - docs_search
 ---
 ```
+
+## Code Indexing
+
+CCMemory includes semantic code search that lets Claude find relevant code by meaning, not just keywords.
+
+### Quick Start
+
+```bash
+# Index your project (one-time)
+ccmemory code-index /path/to/project
+
+# Start background watcher for automatic updates
+ccmemory watch /path/to/project
+
+# Search code semantically
+ccmemory code-search "authentication middleware"
+ccmemory code-search -l ts "database connection"  # filter by language
+```
+
+### How It Works
+
+1. **Scanning**: Recursively scans project, respecting `.gitignore` patterns (including nested)
+2. **Chunking**: Splits code into semantic chunks at function/class boundaries (50-100 lines)
+3. **Embedding**: Creates vector embeddings for each chunk
+4. **Searching**: Finds relevant code by semantic similarity to your query
+
+### Features
+
+- **Language Support**: TypeScript, JavaScript, Python, Go, Rust, Java, C/C++, and 20+ more
+- **Incremental Updates**: Only re-indexes changed files (based on checksum)
+- **Gitignore Support**: Respects root and nested `.gitignore` files
+- **Auto-Start Watcher**: Watcher automatically starts on session start if index exists
+- **Symbol Extraction**: Extracts function/class names for filtering
+- **Export/Import**: Share indexes via `code-index-export` and `code-index-import`
+- **Parallel Processing**: Indexes 5 files concurrently for speed
+
+### MCP Tools for Code
+
+| Tool          | Description                                      |
+| ------------- | ------------------------------------------------ |
+| `code_search` | Search indexed code semantically                 |
+| `code_index`  | Trigger indexing (with `force` and `dry_run` options) |
+
+When the index is empty or stale, `code_search` will prompt you to run the indexer.
 
 ## Architecture
 
@@ -352,7 +412,7 @@ bun install
 # Type check
 bun run typecheck
 
-# Run all tests (396 tests)
+# Run all tests (641 tests)
 bun run test
 
 # Run specific test file
@@ -398,6 +458,7 @@ src/
 ├── hooks/            # Hook handlers (capture, summarize, cleanup)
 ├── mcp/              # MCP server (stdio transport)
 ├── services/
+│   ├── codeindex/    # Code indexing (scanner, chunker, watcher, coordination)
 │   ├── documents/    # Chunking, ingestion
 │   ├── embedding/    # Ollama/OpenRouter providers
 │   ├── memory/       # Store, sectors, decay, dedup
@@ -407,7 +468,7 @@ src/
 
 scripts/              # Build scripts
 plugin/               # Claude Code plugin (ready to copy)
-spec/                 # Design specifications
+spec/                 # Design specifications (including Indexer.md)
 tests/                # Integration tests
 ```
 
