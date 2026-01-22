@@ -1,7 +1,7 @@
 {
-  "ccmemory": {
+  "ccengram": {
     "type": "stdio",
-    "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ccmemory-wrapper.sh",
-    "args": ["mcp-server"]
+    "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ccengram-wrapper.sh",
+    "args": ["mcp"]
   }
 }

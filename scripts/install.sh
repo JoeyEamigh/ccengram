@@ -1,12 +1,12 @@
 #!/bin/bash
-# CCMemory Installation Script
-# Usage: curl -fsSL https://raw.githubusercontent.com/JoeyEamigh/ccmemory/main/scripts/install.sh | bash
+# CCEngram Installation Script
+# Usage: curl -fsSL https://raw.githubusercontent.com/JoeyEamigh/ccengram/main/scripts/install.sh | bash
 
 set -e
 
-REPO="JoeyEamigh/ccmemory"
-INSTALL_DIR="${CCMEMORY_INSTALL_DIR:-$HOME/.local/bin}"
-DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/ccmemory"
+REPO="JoeyEamigh/ccengram"
+INSTALL_DIR="${CCENGRAM_INSTALL_DIR:-$HOME/.local/bin}"
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/ccengram"
 VERSION_FILE="$DATA_DIR/.version"
 
 # Colors for output
@@ -72,17 +72,17 @@ get_latest_version() {
 download_binary() {
     local version="$1"
     local platform="$2"
-    local filename="ccmemory-${platform}"
-    local binary_name="ccmemory"
+    local filename="ccengram-${platform}"
+    local binary_name="ccengram"
 
     if [[ "$platform" == windows-* ]]; then
         filename="${filename}.exe"
-        binary_name="ccmemory.exe"
+        binary_name="ccengram.exe"
     fi
 
     local url="https://github.com/$REPO/releases/download/${version}/${filename}"
 
-    info "Downloading CCMemory ${version} for ${platform}..."
+    info "Downloading CCEngram ${version} for ${platform}..."
 
     mkdir -p "$INSTALL_DIR"
 
@@ -97,7 +97,7 @@ download_binary() {
     mkdir -p "$DATA_DIR"
     echo "$version" > "$VERSION_FILE"
 
-    info "Installed CCMemory ${version} to $INSTALL_DIR/$binary_name"
+    info "Installed CCEngram ${version} to $INSTALL_DIR/$binary_name"
 }
 
 check_path() {
@@ -127,22 +127,22 @@ install_plugin() {
     if ! command -v claude &>/dev/null; then
         warn "Claude Code CLI not found. Install manually with:"
         echo "  /plugin marketplace add $REPO"
-        echo "  /plugin install ccmemory@ccmemory-marketplace"
+        echo "  /plugin install ccengram@ccengram-marketplace"
         return
     fi
 
     # The plugin can be installed via marketplace
     echo ""
-    info "To install the CCMemory plugin in Claude Code, run:"
+    info "To install the CCEngram plugin in Claude Code, run:"
     echo "  /plugin marketplace add $REPO"
-    echo "  /plugin install ccmemory@ccmemory-marketplace"
+    echo "  /plugin install ccengram@ccengram-marketplace"
     echo ""
 }
 
 main() {
     echo ""
     echo "╔══════════════════════════════════════╗"
-    echo "║       CCMemory Installation          ║"
+    echo "║       CCEngram Installation          ║"
     echo "╚══════════════════════════════════════╝"
     echo ""
 
@@ -159,7 +159,7 @@ main() {
         local installed_version
         installed_version=$(cat "$VERSION_FILE")
         if [ "$installed_version" = "$version" ]; then
-            info "CCMemory $version is already installed"
+            info "CCEngram $version is already installed"
             echo ""
             return
         fi
@@ -174,9 +174,10 @@ main() {
     info "Installation complete!"
     echo ""
     echo "Quick start:"
-    echo "  ccmemory health       # Check system health"
-    echo "  ccmemory serve        # Start WebUI at localhost:37778"
-    echo "  ccmemory --help       # Show all commands"
+    echo "  ccengram health       # Check system health"
+    echo "  ccengram daemon       # Start daemon"
+    echo "  ccengram tui          # Launch TUI"
+    echo "  ccengram --help       # Show all commands"
     echo ""
 }
 

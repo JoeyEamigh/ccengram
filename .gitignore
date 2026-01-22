@@ -1,49 +1,27 @@
-# dependencies (bun install)
-node_modules
+# Rust
+/target/
+**/*.rs.bk
 
-# output
-out
-dist
-*.tgz
+# IDE
+.idea/
+.vscode/
+*.swp
 
-# generated files
-src/webui/assets.generated.ts
-
-# plugin binary (downloaded from releases, not stored in git)
-plugin/bin/ccmemory
-plugin/bin/ccmemory.exe
-plugin/bin/.version
-plugin/bin/.last-update-check
-
-# code coverage
-coverage
-*.lcov
-
-# logs
-logs
-_.log
-report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
-
-# dotenv environment variable files
-.env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
-
-# caches
-.eslintcache
-.cache
-*.tsbuildinfo
-
-# IntelliJ based IDEs
-.idea
-
-# Finder (MacOS) folder config
+# OS
 .DS_Store
 
-# claude locals
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+
+# Claude Code locals
 **/.claude/**/*.local.*
 
-# rust
-target/
+# Plugin binary
+plugin/bin/
+
+# Coverage
+coverage/

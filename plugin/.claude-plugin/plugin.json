@@ -1,19 +1,19 @@
 {
-  "name": "ccmemory",
+  "name": "ccengram",
   "version": "1.0.0",
-  "description": "Self-contained memory system for Claude Code with vector search",
+  "description": "Intelligent memory and code search for Claude Code",
   "author": {
     "name": "JoeyEamigh"
   },
-  "homepage": "https://github.com/JoeyEamigh/ccmemory",
-  "repository": "https://github.com/JoeyEamigh/ccmemory",
+  "homepage": "https://github.com/JoeyEamigh/ccengram",
+  "repository": "https://github.com/JoeyEamigh/ccengram",
   "hooks": {
     "UserPromptSubmit": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ccmemory-wrapper.sh hook user-prompt",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ccengram-wrapper.sh hook user-prompt",
             "timeout": 30
           }
         ]
@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ccmemory-wrapper.sh hook post-tool",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ccengram-wrapper.sh hook post-tool",
             "timeout": 5
           }
         ]
@@ -36,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ccmemory-wrapper.sh hook pre-compact",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ccengram-wrapper.sh hook pre-compact",
             "timeout": 60
           }
         ]
@@ -47,7 +47,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ccmemory-wrapper.sh hook stop",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ccengram-wrapper.sh hook stop",
             "timeout": 60
           }
         ]
@@ -58,7 +58,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ccmemory-wrapper.sh hook session-start",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ccengram-wrapper.sh hook session-start",
             "timeout": 10
           }
         ]
@@ -69,7 +69,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ccmemory-wrapper.sh hook session-end",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ccengram-wrapper.sh hook session-end",
             "timeout": 10
           }
         ]

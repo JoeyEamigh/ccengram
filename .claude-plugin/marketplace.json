@@ -1,20 +1,20 @@
 {
-  "name": "ccmemory-marketplace",
+  "name": "ccengram-marketplace",
   "owner": {
-    "name": "CCMemory"
+    "name": "CCEngram"
   },
   "metadata": {
-    "description": "CCMemory plugin marketplace - Self-contained memory system for Claude Code",
+    "description": "CCEngram plugin marketplace - Intelligent memory and code search for Claude Code",
     "version": "1.0.0"
   },
   "plugins": [
     {
-      "name": "ccmemory",
+      "name": "ccengram",
       "source": "./plugin",
-      "description": "Self-contained memory system with vector search, automatic capture, and WebUI",
+      "description": "Intelligent memory and code search with vector embeddings, automatic capture, and TUI",
       "version": "1.0.0",
       "category": "memory",
-      "tags": ["memory", "vector-search", "rag", "embeddings", "webui"]
+      "tags": ["memory", "vector-search", "rag", "embeddings", "code-search", "tui"]
     }
   ]
 }
