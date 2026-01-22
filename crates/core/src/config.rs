@@ -245,6 +245,42 @@ impl Default for IndexConfig {
 }
 
 // ============================================================================
+// Documents Configuration
+// ============================================================================
+
+/// Document indexing configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DocsConfig {
+  /// Directory to watch for documents (relative to project root)
+  /// When set, the file watcher will auto-index files in this directory
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub directory: Option<String>,
+
+  /// File extensions to treat as documents (default: md, txt, rst, adoc)
+  pub extensions: Vec<String>,
+
+  /// Maximum document file size in bytes (default: 5MB)
+  pub max_file_size: usize,
+}
+
+impl Default for DocsConfig {
+  fn default() -> Self {
+    Self {
+      directory: None,
+      extensions: vec![
+        "md".to_string(),
+        "txt".to_string(),
+        "rst".to_string(),
+        "adoc".to_string(),
+        "org".to_string(),
+      ],
+      max_file_size: 5 * 1024 * 1024, // 5MB
+    }
+  }
+}
+
+// ============================================================================
 // Main Configuration
 // ============================================================================
 
@@ -271,6 +307,10 @@ pub struct Config {
   /// Indexing settings
   #[serde(default)]
   pub index: IndexConfig,
+
+  /// Document indexing settings
+  #[serde(default)]
+  pub docs: DocsConfig,
 }
 
 /// Tool filtering configuration
@@ -472,6 +512,21 @@ max_file_size = 1048576  # 1MB
 
 # Maximum chunk size (characters)
 max_chunk_chars = 2000
+
+# ============================================================================
+# Document Indexing
+# ============================================================================
+
+[docs]
+# Directory to watch for documents (relative to project root)
+# When set, file watcher will auto-index files in this directory
+# directory = "docs"
+
+# File extensions to treat as documents
+extensions = ["md", "txt", "rst", "adoc", "org"]
+
+# Maximum document file size (bytes)
+max_file_size = 5242880  # 5MB
 "#,
       tool_count = ALL_TOOLS.len(),
       preset_name = preset_name

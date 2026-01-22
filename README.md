@@ -139,7 +139,17 @@ reflective_rate = 0.01
 [search]
 default_limit = 10
 min_similarity = 0.3
+
+[docs]
+# Directory to watch for documents (file watcher auto-indexes on change)
+directory = "docs"
+# File extensions to treat as documents
+extensions = ["md", "txt", "rst", "adoc", "org"]
+# Maximum document file size (bytes)
+max_file_size = 5242880  # 5MB
 ```
+
+The config file is watched for changes. Docs settings are reloaded automatically; embedding changes require a daemon restart.
 
 ## Memory Sectors
 
@@ -168,12 +178,16 @@ ccengram search-code "database connection" --language rust
 # Search documents
 ccengram search-docs "architecture decisions"
 
-# Manage code index
-ccengram index                    # Index project
-ccengram index --force            # Re-index all files
-ccengram index --stats            # Show index statistics
-ccengram index --export index.json  # Export index
-ccengram index --import index.json  # Import index
+# Index management (subcommands)
+ccengram index                       # Index code (default)
+ccengram index code                  # Index code files
+ccengram index code --force          # Re-index all code
+ccengram index code --stats          # Show code index stats
+ccengram index code --export f.json  # Export code index
+ccengram index code --load f.json    # Load code index
+ccengram index docs                  # Index docs from configured dir
+ccengram index docs -d ./docs        # Index docs from specific dir
+ccengram index file README.md        # Index a single file
 
 # File watcher
 ccengram watch                    # Start file watcher

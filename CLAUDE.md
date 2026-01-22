@@ -97,17 +97,42 @@ Use for:
 ## CLI Commands
 
 ```bash
-ccengram daemon                 # Start daemon (required)
-ccengram search "query"         # Search memories
-ccengram search-code "query"    # Search code
-ccengram search-docs "query"    # Search documents
-ccengram index                  # Index project
-ccengram index --force          # Re-index all
-ccengram index --stats          # Show statistics
-ccengram watch                  # Start file watcher
-ccengram tui                    # Launch TUI
-ccengram mcp                    # MCP server (for plugin)
-ccengram hook <name>            # Handle hook event
-ccengram migrate                # Migrate embeddings
-ccengram agent                  # Generate MemExplore agent
+ccengram daemon                     # Start daemon (required)
+ccengram search "query"             # Search memories
+ccengram search-code "query"        # Search code
+ccengram search-docs "query"        # Search documents
+
+# Index subcommands
+ccengram index                      # Index code (default)
+ccengram index code                 # Index code files
+ccengram index code --force         # Re-index all code
+ccengram index code --stats         # Show code index stats
+ccengram index docs                 # Index documents from configured directory
+ccengram index docs --directory ./  # Index docs from specific directory
+ccengram index file <path>          # Index a single file (auto-detects type)
+
+ccengram watch                      # Start file watcher
+ccengram tui                        # Launch TUI
+ccengram mcp                        # MCP server (for plugin)
+ccengram hook <name>                # Handle hook event
+ccengram migrate                    # Migrate embeddings
+ccengram agent                      # Generate MemExplore agent
 ```
+
+## Document Indexing
+
+Configure document auto-indexing in `.claude/ccengram.toml`:
+
+```toml
+[docs]
+# Directory to watch for documents (relative to project root)
+directory = "docs"
+
+# File extensions to treat as documents
+extensions = ["md", "txt", "rst", "adoc", "org"]
+
+# Maximum document file size (bytes)
+max_file_size = 5242880  # 5MB
+```
+
+When `docs.directory` is set, the file watcher will automatically index documents when they change. The config file is also watched and reloaded on changes.
