@@ -307,6 +307,13 @@ mod tests {
         file_hash: "abc123".to_string(),
         indexed_at: chrono::Utc::now(),
         tokens_estimate: 10,
+        definition_kind: None,
+        definition_name: None,
+        visibility: None,
+        signature: None,
+        docstring: None,
+        parent_definition: None,
+        embedding_text: None,
       };
       db.add_code_chunk(&chunk, None).await.unwrap();
     }

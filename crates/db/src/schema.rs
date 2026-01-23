@@ -61,6 +61,14 @@ pub fn code_chunks_schema(vector_dim: usize) -> Arc<Schema> {
     Field::new("end_line", DataType::UInt32, false),
     Field::new("file_hash", DataType::Utf8, false),
     Field::new("indexed_at", DataType::Int64, false),
+    // Definition metadata for AST-level chunking
+    Field::new("definition_kind", DataType::Utf8, true), // function, struct, impl, trait, etc.
+    Field::new("definition_name", DataType::Utf8, true), // Primary symbol name
+    Field::new("visibility", DataType::Utf8, true),      // pub, pub(crate), private
+    Field::new("signature", DataType::Utf8, true),       // Full signature for display
+    Field::new("docstring", DataType::Utf8, true),       // Documentation comments
+    Field::new("parent_definition", DataType::Utf8, true), // Parent for nested items
+    Field::new("embedding_text", DataType::Utf8, true),  // Enriched text for embedding
     Field::new(
       "vector",
       DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), vector_dim as i32),

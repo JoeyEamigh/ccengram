@@ -229,6 +229,15 @@ fn code_chunk_to_batch(chunk: &CodeChunk, vector: Option<&[f32]>, vector_dim: us
   let file_hash = StringArray::from(vec![chunk.file_hash.clone()]);
   let indexed_at = Int64Array::from(vec![chunk.indexed_at.timestamp_millis()]);
 
+  // Definition metadata fields
+  let definition_kind = StringArray::from(vec![chunk.definition_kind.clone()]);
+  let definition_name = StringArray::from(vec![chunk.definition_name.clone()]);
+  let visibility = StringArray::from(vec![chunk.visibility.clone()]);
+  let signature = StringArray::from(vec![chunk.signature.clone()]);
+  let docstring = StringArray::from(vec![chunk.docstring.clone()]);
+  let parent_definition = StringArray::from(vec![chunk.parent_definition.clone()]);
+  let embedding_text = StringArray::from(vec![chunk.embedding_text.clone()]);
+
   // Handle vector - pad or truncate to match expected dimensions
   let vector_arr = if let Some(v) = vector {
     let mut vec_padded = v.to_vec();
@@ -264,6 +273,13 @@ fn code_chunk_to_batch(chunk: &CodeChunk, vector: Option<&[f32]>, vector_dim: us
       Arc::new(end_line),
       Arc::new(file_hash),
       Arc::new(indexed_at),
+      Arc::new(definition_kind),
+      Arc::new(definition_name),
+      Arc::new(visibility),
+      Arc::new(signature),
+      Arc::new(docstring),
+      Arc::new(parent_definition),
+      Arc::new(embedding_text),
       Arc::new(vector_list),
     ],
   )?;
@@ -356,6 +372,15 @@ fn batch_to_code_chunk(batch: &RecordBatch, row: usize) -> Result<CodeChunk> {
     .and_then(|j| serde_json::from_str(&j).ok())
     .unwrap_or_default();
 
+  // Definition metadata (all optional, for backwards compatibility)
+  let definition_kind = get_string_opt("definition_kind").filter(|s| !s.is_empty());
+  let definition_name = get_string_opt("definition_name").filter(|s| !s.is_empty());
+  let visibility = get_string_opt("visibility").filter(|s| !s.is_empty());
+  let signature = get_string_opt("signature").filter(|s| !s.is_empty());
+  let docstring = get_string_opt("docstring").filter(|s| !s.is_empty());
+  let parent_definition = get_string_opt("parent_definition").filter(|s| !s.is_empty());
+  let embedding_text = get_string_opt("embedding_text").filter(|s| !s.is_empty());
+
   Ok(CodeChunk {
     id: Uuid::parse_str(&id_str).map_err(|_| DbError::NotFound("invalid id".into()))?,
     file_path: get_string("file_path")?,
@@ -370,6 +395,13 @@ fn batch_to_code_chunk(batch: &RecordBatch, row: usize) -> Result<CodeChunk> {
     file_hash: get_string("file_hash")?,
     indexed_at,
     tokens_estimate,
+    definition_kind,
+    definition_name,
+    visibility,
+    signature,
+    docstring,
+    parent_definition,
+    embedding_text,
   })
 }
 
@@ -405,6 +437,13 @@ mod tests {
       end_line: 1,
       file_hash: "abc123".to_string(),
       indexed_at: Utc::now(),
+      definition_kind: None,
+      definition_name: None,
+      visibility: None,
+      signature: None,
+      docstring: None,
+      parent_definition: None,
+      embedding_text: None,
     }
   }
 

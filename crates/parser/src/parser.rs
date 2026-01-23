@@ -728,8 +728,16 @@ import { clsx } from 'clsx';
 
     // Alias imports
     assert!(imports.contains(&"@/api".to_string()), "imports: {:?}", imports);
-    assert!(imports.contains(&"@hooks/useAuth".to_string()), "imports: {:?}", imports);
-    assert!(imports.contains(&"~/components/Button".to_string()), "imports: {:?}", imports);
+    assert!(
+      imports.contains(&"@hooks/useAuth".to_string()),
+      "imports: {:?}",
+      imports
+    );
+    assert!(
+      imports.contains(&"~/components/Button".to_string()),
+      "imports: {:?}",
+      imports
+    );
 
     // External packages
     assert!(imports.contains(&"react".to_string()), "imports: {:?}", imports);
@@ -783,7 +791,11 @@ import './polyfills';
     assert!(imports.contains(&"path".to_string()), "imports: {:?}", imports);
 
     // Side effect imports
-    assert!(imports.contains(&"reflect-metadata".to_string()), "imports: {:?}", imports);
+    assert!(
+      imports.contains(&"reflect-metadata".to_string()),
+      "imports: {:?}",
+      imports
+    );
     assert!(imports.contains(&"./polyfills".to_string()), "imports: {:?}", imports);
   }
 
@@ -882,11 +894,7 @@ import static org.junit.Assert.assertEquals;
     let imports = parser.extract_imports(content, Language::Java);
 
     // Static imports should be captured
-    assert!(
-      imports.iter().any(|i| i.contains("Math")),
-      "imports: {:?}",
-      imports
-    );
+    assert!(imports.iter().any(|i| i.contains("Math")), "imports: {:?}", imports);
   }
 
   #[test]

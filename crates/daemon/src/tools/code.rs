@@ -7,9 +7,476 @@ use engram_core::{CodeChunk, MemoryType};
 use index::{Chunker, Scanner, compute_gitignore_hash};
 use parser::import_matches_file;
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use tracing::{debug, warn};
+
+// ============================================================================
+// QUERY EXPANSION FOR CODE EXPLORATION
+// ============================================================================
+
+/// Expand exploration queries with related terms
+///
+/// When exploring a codebase, users often have vague queries. This expands
+/// common concepts into multiple related terms to improve recall.
+fn expand_query(query: &str) -> String {
+  // Common expansion maps for code exploration
+  let expansions: HashMap<&str, &[&str]> = HashMap::from([
+    // Authentication & Authorization
+    (
+      "auth",
+      &[
+        "authentication",
+        "authorization",
+        "login",
+        "session",
+        "token",
+        "jwt",
+        "oauth",
+        "credential",
+        "password",
+        "user",
+      ][..],
+    ),
+    (
+      "authentication",
+      &[
+        "auth",
+        "login",
+        "session",
+        "token",
+        "jwt",
+        "oauth",
+        "credential",
+        "password",
+      ][..],
+    ),
+    (
+      "login",
+      &["auth", "authentication", "signin", "session", "credential"][..],
+    ),
+    // Error Handling
+    (
+      "error",
+      &[
+        "Error",
+        "Result",
+        "Err",
+        "Ok",
+        "unwrap",
+        "expect",
+        "anyhow",
+        "thiserror",
+        "exception",
+        "try",
+        "catch",
+        "panic",
+      ][..],
+    ),
+    (
+      "errors",
+      &["error", "Error", "Result", "Err", "exception", "handling"][..],
+    ),
+    // Database & Storage
+    (
+      "database",
+      &[
+        "db",
+        "sql",
+        "query",
+        "connection",
+        "pool",
+        "migrate",
+        "schema",
+        "table",
+        "postgres",
+        "sqlite",
+        "mysql",
+      ][..],
+    ),
+    ("db", &["database", "sql", "query", "connection", "storage"][..]),
+    (
+      "storage",
+      &["database", "db", "file", "persist", "save", "store", "cache"][..],
+    ),
+    // Testing
+    (
+      "test",
+      &[
+        "#[test]",
+        "#[cfg(test)]",
+        "assert",
+        "mock",
+        "fixture",
+        "expect",
+        "spec",
+        "unit",
+        "integration",
+      ][..],
+    ),
+    ("tests", &["test", "#[test]", "assert", "mock", "spec"][..]),
+    // Configuration
+    (
+      "config",
+      &[
+        "configuration",
+        "settings",
+        "env",
+        "environment",
+        "options",
+        "Config",
+        "configure",
+      ][..],
+    ),
+    (
+      "configuration",
+      &["config", "settings", "env", "setup", "initialize"][..],
+    ),
+    // API & HTTP
+    (
+      "api",
+      &[
+        "endpoint",
+        "route",
+        "handler",
+        "request",
+        "response",
+        "http",
+        "rest",
+        "controller",
+      ][..],
+    ),
+    (
+      "http",
+      &[
+        "api", "request", "response", "endpoint", "route", "handler", "server", "client",
+      ][..],
+    ),
+    ("endpoint", &["api", "route", "handler", "path"][..]),
+    // Async & Concurrency
+    (
+      "async",
+      &["await", "Future", "spawn", "tokio", "async_trait", "concurrent"][..],
+    ),
+    (
+      "concurrent",
+      &["async", "thread", "spawn", "parallel", "mutex", "lock", "channel"][..],
+    ),
+    // Parsing & Serialization
+    (
+      "parse",
+      &["parser", "parsing", "deserialize", "decode", "read", "extract"][..],
+    ),
+    (
+      "serialize",
+      &["serialization", "encode", "json", "serde", "write", "format"][..],
+    ),
+    // Validation
+    (
+      "validate",
+      &["validation", "check", "verify", "assert", "constraint", "rule"][..],
+    ),
+    ("validation", &["validate", "check", "verify", "constraint"][..]),
+    // Logging & Monitoring
+    (
+      "log",
+      &["logging", "tracing", "debug", "info", "warn", "error", "trace", "span"][..],
+    ),
+    ("logging", &["log", "tracing", "debug", "info", "warn"][..]),
+    // Cache
+    (
+      "cache",
+      &["caching", "memoize", "store", "ttl", "expire", "invalidate"][..],
+    ),
+    // Search & Index
+    ("search", &["find", "query", "lookup", "index", "match", "filter"][..]),
+    ("index", &["indexing", "search", "lookup", "scan"][..]),
+    // Memory & State
+    (
+      "memory",
+      &["Memory", "state", "store", "persist", "salience", "recall"][..],
+    ),
+    ("state", &["memory", "store", "context", "session", "persist"][..]),
+    // Embedding & Vector
+    (
+      "embedding",
+      &["embed", "vector", "similarity", "semantic", "encode"][..],
+    ),
+    ("vector", &["embedding", "similarity", "cosine", "distance"][..]),
+  ]);
+
+  let query_lower = query.to_lowercase();
+  let mut expanded_terms: HashSet<String> = HashSet::new();
+
+  // Always include original query terms
+  for term in query.split_whitespace() {
+    expanded_terms.insert(term.to_string());
+  }
+
+  // Add expansions for matching terms
+  for (key, related) in &expansions {
+    if query_lower.contains(key) {
+      for term in *related {
+        expanded_terms.insert((*term).to_string());
+      }
+    }
+  }
+
+  // Combine into a single query string
+  expanded_terms.into_iter().collect::<Vec<_>>().join(" ")
+}
+
+/// Detect query intent and return adjusted query + hints
+fn detect_query_intent(query: &str) -> (String, Option<&'static str>) {
+  let lower = query.to_lowercase();
+
+  // "how does X work" -> focus on X implementation
+  if lower.starts_with("how does") || lower.starts_with("how do") {
+    let cleaned = lower
+      .trim_start_matches("how does")
+      .trim_start_matches("how do")
+      .trim_end_matches("work")
+      .trim_end_matches("?")
+      .trim();
+    return (cleaned.to_string(), Some("implementation"));
+  }
+
+  // "where is X used" / "what uses X" -> look for callers
+  if lower.starts_with("where is") && lower.contains("used")
+    || lower.starts_with("what uses")
+    || lower.starts_with("who uses")
+    || lower.starts_with("what calls")
+  {
+    let cleaned = lower
+      .trim_start_matches("where is")
+      .trim_start_matches("what uses")
+      .trim_start_matches("who uses")
+      .trim_start_matches("what calls")
+      .trim_end_matches("used")
+      .trim_end_matches("?")
+      .trim();
+    return (cleaned.to_string(), Some("callers"));
+  }
+
+  // "what is X" / "explain X" -> look for definition
+  if lower.starts_with("what is") || lower.starts_with("explain") {
+    let cleaned = lower
+      .trim_start_matches("what is")
+      .trim_start_matches("explain")
+      .trim_end_matches("?")
+      .trim();
+    return (cleaned.to_string(), Some("definition"));
+  }
+
+  (query.to_string(), None)
+}
+
+// ============================================================================
+// SYMBOL MATCH BOOSTING & RANKING
+// ============================================================================
+
+/// Calculate boost factor based on symbol/metadata matches
+fn calculate_symbol_boost(chunk: &CodeChunk, query_terms: &[&str]) -> f32 {
+  let mut boost = 0.0f32;
+
+  for term in query_terms {
+    let term_lower = term.to_lowercase();
+
+    // Symbol match (highest boost)
+    for symbol in &chunk.symbols {
+      if symbol.to_lowercase() == term_lower {
+        boost += 0.4; // Exact match
+      } else if symbol.to_lowercase().contains(&term_lower) {
+        boost += 0.2; // Partial match
+      }
+    }
+
+    // Definition name match
+    if let Some(ref name) = chunk.definition_name {
+      if name.to_lowercase() == term_lower {
+        boost += 0.35;
+      } else if name.to_lowercase().contains(&term_lower) {
+        boost += 0.15;
+      }
+    }
+
+    // Imports match (medium boost)
+    for import in &chunk.imports {
+      if import.to_lowercase().contains(&term_lower) {
+        boost += 0.1;
+        break; // Only count once per term
+      }
+    }
+
+    // Calls match (medium boost)
+    for call in &chunk.calls {
+      if call.to_lowercase() == term_lower {
+        boost += 0.15;
+        break;
+      }
+    }
+
+    // File path match (low boost)
+    if chunk.file_path.to_lowercase().contains(&term_lower) {
+      boost += 0.05;
+    }
+  }
+
+  // Cap the boost to avoid runaway scores
+  boost.min(1.0)
+}
+
+/// Calculate importance factor based on definition visibility
+fn calculate_importance(chunk: &CodeChunk) -> f32 {
+  match chunk.visibility.as_deref() {
+    Some("pub") | Some("export") | Some("export default") | Some("public") => 1.0,
+    Some("pub(crate)") | Some("protected") => 0.8,
+    Some("private") | Some("pub(super)") => 0.6,
+    _ => 0.7, // Unknown visibility
+  }
+}
+
+/// Rank code search results by combining multiple signals
+fn rank_results(results: Vec<(CodeChunk, f32)>, query: &str) -> Vec<(CodeChunk, f32)> {
+  let query_terms: Vec<&str> = query.split_whitespace().collect();
+
+  let mut scored: Vec<(CodeChunk, f32)> = results
+    .into_iter()
+    .map(|(chunk, distance)| {
+      let vector_similarity = 1.0 - distance.min(1.0);
+      let symbol_boost = calculate_symbol_boost(&chunk, &query_terms);
+      let importance = calculate_importance(&chunk);
+
+      // Weighted combination
+      // vector_similarity: 0.5 (semantic relevance)
+      // symbol_boost: 0.30 (exact matches matter a lot for exploration)
+      // importance: 0.20 (public APIs are usually more important)
+      let final_score = vector_similarity * 0.50 + symbol_boost * 0.30 + importance * 0.20;
+
+      (chunk, final_score)
+    })
+    .collect();
+
+  // Sort by final score descending
+  scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+  scored
+}
+
+// ============================================================================
+// CONTEXT EXPANSION
+// ============================================================================
+
+/// Result with expanded context for exploration
+#[derive(serde::Serialize)]
+struct EnrichedCodeResult {
+  // Core chunk info
+  id: String,
+  file_path: String,
+  content: String,
+  language: String,
+  chunk_type: String,
+  symbols: Vec<String>,
+  start_line: u32,
+  end_line: u32,
+  similarity: f32,
+
+  // Definition metadata
+  #[serde(skip_serializing_if = "Option::is_none")]
+  definition_kind: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  definition_name: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  visibility: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  signature: Option<String>,
+  #[serde(skip_serializing_if = "Option::is_none")]
+  docstring_preview: Option<String>,
+
+  // Context for exploration
+  #[serde(skip_serializing_if = "Vec::is_empty")]
+  file_imports: Vec<String>,
+  #[serde(skip_serializing_if = "Vec::is_empty")]
+  sibling_symbols: Vec<SiblingInfo>,
+}
+
+#[derive(serde::Serialize)]
+struct SiblingInfo {
+  symbol: String,
+  kind: Option<String>,
+  start_line: u32,
+}
+
+/// Create enriched result with file context
+async fn enrich_with_context(
+  chunk: CodeChunk,
+  score: f32,
+  db: &ProjectDb,
+  include_siblings: bool,
+) -> EnrichedCodeResult {
+  // Get siblings from same file for context
+  let mut sibling_symbols = Vec::new();
+  let mut file_imports = Vec::new();
+
+  if include_siblings && let Ok(siblings) = db.get_chunks_for_file(&chunk.file_path).await {
+    for sib in siblings {
+      if sib.id == chunk.id {
+        continue;
+      }
+
+      // Collect file-level imports from import chunks
+      if sib.chunk_type == engram_core::ChunkType::Import {
+        file_imports.extend(sib.imports.clone());
+      }
+
+      // Collect sibling symbol info
+      for symbol in &sib.symbols {
+        sibling_symbols.push(SiblingInfo {
+          symbol: symbol.clone(),
+          kind: sib.definition_kind.clone(),
+          start_line: sib.start_line,
+        });
+      }
+    }
+
+    // Limit siblings to avoid bloat
+    sibling_symbols.truncate(10);
+    file_imports.sort();
+    file_imports.dedup();
+  }
+
+  // If chunk doesn't have imports, use file-level imports
+  if chunk.imports.is_empty() && !file_imports.is_empty() {
+    // file_imports is already populated
+  } else {
+    file_imports = chunk.imports.clone();
+  }
+
+  EnrichedCodeResult {
+    id: chunk.id.to_string(),
+    file_path: chunk.file_path,
+    content: chunk.content,
+    language: format!("{:?}", chunk.language).to_lowercase(),
+    chunk_type: format!("{:?}", chunk.chunk_type).to_lowercase(),
+    symbols: chunk.symbols,
+    start_line: chunk.start_line,
+    end_line: chunk.end_line,
+    similarity: score,
+    definition_kind: chunk.definition_kind,
+    definition_name: chunk.definition_name,
+    visibility: chunk.visibility,
+    signature: chunk.signature.map(|s| {
+      // Clean up multi-line signatures
+      s.lines().map(|l| l.trim()).collect::<Vec<_>>().join(" ")
+    }),
+    docstring_preview: chunk.docstring.map(|d| {
+      // Truncate for preview
+      if d.len() > 200 { format!("{}...", &d[..200]) } else { d }
+    }),
+    file_imports,
+    sibling_symbols,
+  }
+}
 
 /// Helper to resolve a code chunk by ID or prefix
 ///
@@ -51,6 +518,12 @@ impl ToolHandler {
       language: Option<String>,
       #[serde(default)]
       limit: Option<usize>,
+      /// Disable query expansion for precise searches
+      #[serde(default)]
+      exact: Option<bool>,
+      /// Include file context (imports, siblings) - slightly slower but better for exploration
+      #[serde(default)]
+      include_context: Option<bool>,
     }
 
     let args: Args = match serde_json::from_value(request.params.clone()) {
@@ -75,31 +548,51 @@ impl ToolHandler {
       .map(|lang| format!("language = '{}'", lang.to_lowercase()));
 
     let limit = args.limit.unwrap_or(10);
+    let exact = args.exact.unwrap_or(false);
+    let include_context = args.include_context.unwrap_or(true); // Default to including context for exploration
+
+    // Query processing: detect intent and expand for exploration
+    let (processed_query, intent) = detect_query_intent(&args.query);
+    let search_query = if exact {
+      processed_query.clone()
+    } else {
+      expand_query(&processed_query)
+    };
+
+    debug!(
+      "Code search: original='{}', processed='{}', expanded='{}', intent={:?}",
+      args.query, processed_query, search_query, intent
+    );
 
     // Try vector search if embedding provider is available
-    if let Some(query_vec) = self.get_embedding(&args.query).await {
-      debug!("Using vector search for code query: {}", args.query);
-      match db.search_code_chunks(&query_vec, limit, filter.as_deref()).await {
-        Ok(results) => {
-          let results: Vec<_> = results
-            .into_iter()
-            .map(|(chunk, distance)| {
-              let similarity = 1.0 - distance.min(1.0);
-              serde_json::json!({
-                  "id": chunk.id.to_string(),
-                  "file_path": chunk.file_path,
-                  "content": chunk.content,
-                  "language": format!("{:?}", chunk.language).to_lowercase(),
-                  "chunk_type": format!("{:?}", chunk.chunk_type).to_lowercase(),
-                  "symbols": chunk.symbols,
-                  "start_line": chunk.start_line,
-                  "end_line": chunk.end_line,
-                  "similarity": similarity,
-              })
-            })
-            .collect();
+    // Oversample for ranking (fetch more, then rank and trim)
+    let oversample = (limit * 3).min(50);
 
-          return Response::success(request.id, serde_json::json!(results));
+    if let Some(query_vec) = self.get_embedding(&search_query).await {
+      debug!("Using vector search with ranking for code query");
+      match db.search_code_chunks(&query_vec, oversample, filter.as_deref()).await {
+        Ok(results) => {
+          // Apply ranking with symbol boost and importance
+          let ranked = rank_results(results, &args.query);
+
+          // Take top results and enrich with context
+          let mut enriched_results = Vec::new();
+          for (chunk, score) in ranked.into_iter().take(limit) {
+            let enriched = enrich_with_context(chunk, score, &db, include_context).await;
+            enriched_results.push(enriched);
+          }
+
+          return Response::success(
+            request.id,
+            serde_json::json!({
+              "results": enriched_results,
+              "query_info": {
+                "original": args.query,
+                "expanded": if exact { None } else { Some(&search_query) },
+                "intent": intent,
+              }
+            }),
+          );
         }
         Err(e) => {
           warn!("Vector code search failed, falling back to text: {}", e);
@@ -107,33 +600,61 @@ impl ToolHandler {
       }
     }
 
-    // Fallback: text-based search
-    debug!("Using text search for code query: {}", args.query);
-    match db.list_code_chunks(filter.as_deref(), Some(limit * 10)).await {
+    // Fallback: text-based search with symbol boosting
+    debug!("Using text search with ranking for code query");
+    match db.list_code_chunks(filter.as_deref(), Some(oversample)).await {
       Ok(chunks) => {
-        let query_lower = args.query.to_lowercase();
-        let results: Vec<_> = chunks
+        let query_terms: Vec<&str> = args.query.split_whitespace().collect();
+
+        // Score each chunk based on text matches and symbol boost
+        let mut scored: Vec<(CodeChunk, f32)> = chunks
           .into_iter()
-          .filter(|c| {
-            c.content.to_lowercase().contains(&query_lower)
-              || c.symbols.iter().any(|s| s.to_lowercase().contains(&query_lower))
-          })
-          .take(limit)
-          .map(|chunk| {
-            serde_json::json!({
-                "id": chunk.id.to_string(),
-                "file_path": chunk.file_path,
-                "content": chunk.content,
-                "language": format!("{:?}", chunk.language).to_lowercase(),
-                "chunk_type": format!("{:?}", chunk.chunk_type).to_lowercase(),
-                "symbols": chunk.symbols,
-                "start_line": chunk.start_line,
-                "end_line": chunk.end_line,
-            })
+          .filter_map(|chunk| {
+            let content_lower = chunk.content.to_lowercase();
+            let query_lower = args.query.to_lowercase();
+
+            // Must have some text match
+            let has_match = content_lower.contains(&query_lower)
+              || chunk.symbols.iter().any(|s| s.to_lowercase().contains(&query_lower))
+              || chunk
+                .definition_name
+                .as_ref()
+                .is_some_and(|n| n.to_lowercase().contains(&query_lower));
+
+            if !has_match {
+              return None;
+            }
+
+            let symbol_boost = calculate_symbol_boost(&chunk, &query_terms);
+            let importance = calculate_importance(&chunk);
+
+            // For text search, weight symbol matches more heavily
+            let score = symbol_boost * 0.5 + importance * 0.3 + 0.2; // Base score for having a match
+
+            Some((chunk, score))
           })
           .collect();
 
-        Response::success(request.id, serde_json::json!(results))
+        // Sort by score and take top results
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Enrich with context
+        let mut enriched_results = Vec::new();
+        for (chunk, score) in scored.into_iter().take(limit) {
+          let enriched = enrich_with_context(chunk, score, &db, include_context).await;
+          enriched_results.push(enriched);
+        }
+
+        Response::success(
+          request.id,
+          serde_json::json!({
+            "results": enriched_results,
+            "query_info": {
+              "original": args.query,
+              "search_mode": "text_fallback",
+            }
+          }),
+        )
       }
       Err(e) => Response::error(request.id, -32000, &format!("Code search error: {}", e)),
     }
@@ -499,6 +1020,13 @@ impl ToolHandler {
         .chunk
         .tokens_estimate
         .unwrap_or((args.chunk.content.len() / 4) as u32),
+      definition_kind: None,
+      definition_name: None,
+      visibility: None,
+      signature: None,
+      docstring: None,
+      parent_definition: None,
+      embedding_text: None,
     };
 
     // Generate embedding
@@ -828,7 +1356,11 @@ impl ToolHandler {
     } else if let Some(ref sym) = args.symbol {
       Ok(sym.clone())
     } else {
-      Err(Response::error(request.id.clone(), -32602, "Must provide chunk_id or symbol"))
+      Err(Response::error(
+        request.id.clone(),
+        -32602,
+        "Must provide chunk_id or symbol",
+      ))
     };
 
     let symbol = match symbol {
@@ -1039,10 +1571,9 @@ impl ToolHandler {
                   continue;
                 }
                 // Check if this import resolves to this chunk's file
-                if import_matches_file(import, &m.file_path)
-                  && seen_ids.insert(m.id) {
-                    related.push((m, 0.75, format!("imports:{} -> {}", import, chunk.file_path)));
-                  }
+                if import_matches_file(import, &m.file_path) && seen_ids.insert(m.id) {
+                  related.push((m, 0.75, format!("imports:{} -> {}", import, chunk.file_path)));
+                }
               }
             }
           }
@@ -1324,7 +1855,330 @@ impl ToolHandler {
 #[cfg(test)]
 mod tests {
   use super::super::create_test_handler;
+  use super::*;
   use crate::router::Request;
+  use engram_core::{ChunkType, Language};
+
+  // ============================================================================
+  // QUERY EXPANSION TESTS
+  // ============================================================================
+
+  #[test]
+  fn test_expand_query_auth() {
+    let expanded = expand_query("auth");
+    assert!(expanded.contains("authentication"));
+    assert!(expanded.contains("login"));
+    assert!(expanded.contains("token"));
+    assert!(expanded.contains("jwt"));
+    // Original term should be preserved
+    assert!(expanded.contains("auth"));
+  }
+
+  #[test]
+  fn test_expand_query_database() {
+    let expanded = expand_query("database queries");
+    assert!(expanded.contains("sql"));
+    assert!(expanded.contains("query"));
+    assert!(expanded.contains("connection"));
+  }
+
+  #[test]
+  fn test_expand_query_no_expansion() {
+    let expanded = expand_query("foobar baz");
+    // Should just contain original terms
+    let terms: HashSet<&str> = expanded.split_whitespace().collect();
+    assert!(terms.contains("foobar"));
+    assert!(terms.contains("baz"));
+  }
+
+  #[test]
+  fn test_expand_query_multiple_expansions() {
+    let expanded = expand_query("auth error");
+    assert!(expanded.contains("login"));
+    assert!(expanded.contains("Result"));
+    assert!(expanded.contains("unwrap"));
+  }
+
+  // ============================================================================
+  // INTENT DETECTION TESTS
+  // ============================================================================
+
+  #[test]
+  fn test_detect_intent_how_does() {
+    let (query, intent) = detect_query_intent("how does authentication work");
+    assert_eq!(query, "authentication");
+    assert_eq!(intent, Some("implementation"));
+  }
+
+  #[test]
+  fn test_detect_intent_how_do() {
+    let (query, intent) = detect_query_intent("how do errors get handled?");
+    assert_eq!(query, "errors get handled");
+    assert_eq!(intent, Some("implementation"));
+  }
+
+  #[test]
+  fn test_detect_intent_where_used() {
+    let (query, intent) = detect_query_intent("where is DatabasePool used");
+    assert_eq!(query, "databasepool");
+    assert_eq!(intent, Some("callers"));
+  }
+
+  #[test]
+  fn test_detect_intent_what_uses() {
+    let (query, intent) = detect_query_intent("what uses the Memory struct?");
+    assert_eq!(query, "the memory struct");
+    assert_eq!(intent, Some("callers"));
+  }
+
+  #[test]
+  fn test_detect_intent_what_is() {
+    let (query, intent) = detect_query_intent("what is CodeChunk?");
+    assert_eq!(query, "codechunk");
+    assert_eq!(intent, Some("definition"));
+  }
+
+  #[test]
+  fn test_detect_intent_plain_query() {
+    let (query, intent) = detect_query_intent("search for memory functions");
+    assert_eq!(query, "search for memory functions");
+    assert_eq!(intent, None);
+  }
+
+  // ============================================================================
+  // SYMBOL BOOST TESTS
+  // ============================================================================
+
+  fn create_test_chunk(
+    symbols: Vec<&str>,
+    imports: Vec<&str>,
+    calls: Vec<&str>,
+    file_path: &str,
+    definition_name: Option<&str>,
+    visibility: Option<&str>,
+  ) -> CodeChunk {
+    CodeChunk {
+      id: uuid::Uuid::new_v4(),
+      file_path: file_path.to_string(),
+      content: "test content".to_string(),
+      language: Language::Rust,
+      chunk_type: ChunkType::Function,
+      symbols: symbols.into_iter().map(String::from).collect(),
+      imports: imports.into_iter().map(String::from).collect(),
+      calls: calls.into_iter().map(String::from).collect(),
+      start_line: 1,
+      end_line: 10,
+      file_hash: "hash123".to_string(),
+      indexed_at: chrono::Utc::now(),
+      tokens_estimate: 50,
+      definition_kind: Some("function".to_string()),
+      definition_name: definition_name.map(String::from),
+      visibility: visibility.map(String::from),
+      signature: None,
+      docstring: None,
+      parent_definition: None,
+      embedding_text: None,
+    }
+  }
+
+  #[test]
+  fn test_symbol_boost_exact_match() {
+    let chunk = create_test_chunk(
+      vec!["authenticate"],
+      vec![],
+      vec![],
+      "auth.rs",
+      Some("authenticate"),
+      Some("pub"),
+    );
+
+    let boost = calculate_symbol_boost(&chunk, &["authenticate"]);
+    // Should get exact symbol match (0.4) + exact definition name match (0.35)
+    assert!(boost >= 0.7, "Expected >= 0.7, got {}", boost);
+  }
+
+  #[test]
+  fn test_symbol_boost_partial_match() {
+    let chunk = create_test_chunk(
+      vec!["authenticate_user"],
+      vec![],
+      vec![],
+      "auth.rs",
+      Some("authenticate_user"),
+      Some("pub"),
+    );
+
+    let boost = calculate_symbol_boost(&chunk, &["auth"]);
+    // Should get partial symbol match (0.2) + partial definition name match (0.15)
+    assert!(boost >= 0.35, "Expected >= 0.35, got {}", boost);
+  }
+
+  #[test]
+  fn test_symbol_boost_import_match() {
+    let chunk = create_test_chunk(
+      vec!["main"],
+      vec!["std::collections::HashMap"],
+      vec![],
+      "main.rs",
+      Some("main"),
+      Some("pub"),
+    );
+
+    let boost = calculate_symbol_boost(&chunk, &["HashMap"]);
+    // Should get import match (0.1)
+    assert!(boost >= 0.1, "Expected >= 0.1, got {}", boost);
+  }
+
+  #[test]
+  fn test_symbol_boost_call_match() {
+    let chunk = create_test_chunk(
+      vec!["process_data"],
+      vec![],
+      vec!["validate", "transform"],
+      "processor.rs",
+      Some("process_data"),
+      Some("pub"),
+    );
+
+    let boost = calculate_symbol_boost(&chunk, &["validate"]);
+    // Should get call match (0.15)
+    assert!(boost >= 0.15, "Expected >= 0.15, got {}", boost);
+  }
+
+  #[test]
+  fn test_symbol_boost_file_path_match() {
+    let chunk = create_test_chunk(
+      vec!["something"],
+      vec![],
+      vec![],
+      "authentication/handler.rs",
+      None,
+      None,
+    );
+
+    let boost = calculate_symbol_boost(&chunk, &["authentication"]);
+    // Should get file path match (0.05)
+    assert!(boost >= 0.05, "Expected >= 0.05, got {}", boost);
+  }
+
+  #[test]
+  fn test_symbol_boost_capped_at_one() {
+    let chunk = create_test_chunk(
+      vec!["auth", "authenticate", "authorization"],
+      vec!["auth_lib"],
+      vec!["auth_check"],
+      "auth/auth.rs",
+      Some("auth"),
+      Some("pub"),
+    );
+
+    let boost = calculate_symbol_boost(&chunk, &["auth"]);
+    assert!(boost <= 1.0, "Boost should be capped at 1.0, got {}", boost);
+  }
+
+  // ============================================================================
+  // IMPORTANCE TESTS
+  // ============================================================================
+
+  #[test]
+  fn test_importance_pub() {
+    let chunk = create_test_chunk(vec![], vec![], vec![], "test.rs", None, Some("pub"));
+    assert_eq!(calculate_importance(&chunk), 1.0);
+  }
+
+  #[test]
+  fn test_importance_export() {
+    let chunk = create_test_chunk(vec![], vec![], vec![], "test.ts", None, Some("export"));
+    assert_eq!(calculate_importance(&chunk), 1.0);
+  }
+
+  #[test]
+  fn test_importance_pub_crate() {
+    let chunk = create_test_chunk(vec![], vec![], vec![], "test.rs", None, Some("pub(crate)"));
+    assert_eq!(calculate_importance(&chunk), 0.8);
+  }
+
+  #[test]
+  fn test_importance_private() {
+    let chunk = create_test_chunk(vec![], vec![], vec![], "test.rs", None, Some("private"));
+    assert_eq!(calculate_importance(&chunk), 0.6);
+  }
+
+  #[test]
+  fn test_importance_unknown() {
+    let chunk = create_test_chunk(vec![], vec![], vec![], "test.rs", None, None);
+    assert_eq!(calculate_importance(&chunk), 0.7);
+  }
+
+  // ============================================================================
+  // RANKING TESTS
+  // ============================================================================
+
+  #[test]
+  fn test_rank_results_prefers_exact_matches() {
+    let chunk_exact = create_test_chunk(
+      vec!["authenticate"],
+      vec![],
+      vec![],
+      "auth.rs",
+      Some("authenticate"),
+      Some("pub"),
+    );
+
+    let chunk_partial = create_test_chunk(
+      vec!["user_auth_helper"],
+      vec![],
+      vec![],
+      "helpers.rs",
+      Some("user_auth_helper"),
+      Some("pub"),
+    );
+
+    let results = vec![
+      (chunk_partial.clone(), 0.1), // Better vector similarity
+      (chunk_exact.clone(), 0.3),   // Worse vector similarity but exact symbol match
+    ];
+
+    let ranked = rank_results(results, "authenticate");
+
+    // The exact match should be ranked higher despite worse vector similarity
+    assert_eq!(ranked[0].0.symbols[0], "authenticate", "Exact match should be first");
+  }
+
+  #[test]
+  fn test_rank_results_considers_visibility() {
+    let chunk_pub = create_test_chunk(vec!["helper"], vec![], vec![], "lib.rs", Some("helper"), Some("pub"));
+
+    let chunk_private = create_test_chunk(
+      vec!["helper"],
+      vec![],
+      vec![],
+      "internal.rs",
+      Some("helper"),
+      Some("private"),
+    );
+
+    let results = vec![
+      (chunk_private.clone(), 0.2),
+      (chunk_pub.clone(), 0.2), // Same vector similarity
+    ];
+
+    let ranked = rank_results(results, "helper");
+
+    // Public should be ranked higher due to visibility importance
+    assert_eq!(ranked[0].0.visibility.as_deref(), Some("pub"), "Public should be first");
+  }
+
+  #[test]
+  fn test_rank_results_empty() {
+    let results: Vec<(CodeChunk, f32)> = vec![];
+    let ranked = rank_results(results, "anything");
+    assert!(ranked.is_empty());
+  }
+
+  // ============================================================================
+  // INTEGRATION TEST
+  // ============================================================================
 
   #[tokio::test]
   async fn test_code_search_invalid_params() {

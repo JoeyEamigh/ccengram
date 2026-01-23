@@ -27,6 +27,41 @@ pub struct CodeChunk {
   /// e.g., ["process", "HashMap::new", "db.query"]
   #[serde(default)]
   pub calls: Vec<String>,
+
+  // === Definition metadata for AST-level chunking ===
+  /// The kind of definition this chunk represents
+  /// e.g., "function", "struct", "impl", "trait", "class", "method"
+  #[serde(default)]
+  pub definition_kind: Option<String>,
+
+  /// The primary symbol name for this definition
+  /// e.g., "calculate_total", "UserService", "impl Display for User"
+  #[serde(default)]
+  pub definition_name: Option<String>,
+
+  /// Visibility modifier
+  /// e.g., "pub", "pub(crate)", "pub(super)", "private"
+  #[serde(default)]
+  pub visibility: Option<String>,
+
+  /// Full signature for display (function signature, struct definition line)
+  /// e.g., "pub fn calculate_total(items: Vec<Item>) -> f64"
+  #[serde(default)]
+  pub signature: Option<String>,
+
+  /// Extracted documentation comments (/// or /** */ style)
+  #[serde(default)]
+  pub docstring: Option<String>,
+
+  /// Parent definition name for nested items (methods inside impl/class)
+  /// e.g., for method `save` in `impl UserRepo`, this would be "UserRepo"
+  #[serde(default)]
+  pub parent_definition: Option<String>,
+
+  /// Enriched text representation used for embedding
+  /// Contains structured metadata + code for better semantic search
+  #[serde(default)]
+  pub embedding_text: Option<String>,
 }
 
 impl CodeChunk {

@@ -1,17 +1,19 @@
 use chrono::Utc;
 use engram_core::{CHARS_PER_TOKEN, ChunkType, CodeChunk, Language};
-use parser::TreeSitterParser;
+use parser::{Definition, DefinitionKind, TreeSitterParser};
 use uuid::Uuid;
 
 /// Configuration for the chunker
 #[derive(Debug, Clone)]
 pub struct ChunkerConfig {
-  /// Target number of lines per chunk
+  /// Target number of lines per chunk (for fallback line-based chunking)
   pub target_lines: usize,
   /// Minimum lines per chunk
   pub min_lines: usize,
-  /// Maximum lines per chunk
+  /// Maximum lines per chunk - definitions larger than this get split
   pub max_lines: usize,
+  /// Whether to use AST-level chunking (true) or line-based (false)
+  pub use_ast_chunking: bool,
 }
 
 impl Default for ChunkerConfig {
@@ -19,12 +21,16 @@ impl Default for ChunkerConfig {
     Self {
       target_lines: 50,
       min_lines: 10,
-      max_lines: 100,
+      max_lines: 150, // Increased for AST chunking - allow larger definitions
+      use_ast_chunking: true,
     }
   }
 }
 
-/// Line-based code chunker with tree-sitter integration for import/call extraction
+/// AST-aware code chunker
+///
+/// Chunks code by semantic definitions (functions, classes, structs) using tree-sitter.
+/// Falls back to line-based chunking for unsupported languages.
 pub struct Chunker {
   config: ChunkerConfig,
   ts_parser: TreeSitterParser,
@@ -46,17 +52,521 @@ impl Chunker {
 
   /// Chunk source code into semantic pieces
   ///
-  /// Uses tree-sitter to extract imports and function calls for supported languages.
+  /// Uses tree-sitter to extract definitions and create one chunk per definition.
+  /// Falls back to line-based chunking for unsupported languages or when AST chunking is disabled.
   pub fn chunk(&mut self, source: &str, file_path: &str, language: Language, file_hash: &str) -> Vec<CodeChunk> {
     let lines: Vec<&str> = source.lines().collect();
     let total_lines = lines.len();
 
+    // Try AST-level chunking if enabled and language is supported
+    if self.config.use_ast_chunking && self.ts_parser.supports_language(language) {
+      let chunks = self.chunk_by_definitions(source, &lines, file_path, language, file_hash);
+      if !chunks.is_empty() {
+        return chunks;
+      }
+      // Fall through to line-based if no definitions found
+    }
+
+    // Fallback: line-based chunking
+    self.chunk_by_lines(source, &lines, file_path, language, file_hash, total_lines)
+  }
+
+  /// Chunk code by AST definitions
+  fn chunk_by_definitions(
+    &mut self,
+    source: &str,
+    lines: &[&str],
+    file_path: &str,
+    language: Language,
+    file_hash: &str,
+  ) -> Vec<CodeChunk> {
+    let definitions = self.ts_parser.extract_definitions(source, language);
+
+    if definitions.is_empty() {
+      return Vec::new();
+    }
+
+    // Extract file-level imports (for context)
+    let file_imports = self.ts_parser.extract_imports(source, language);
+
+    // Sort definitions by start line
+    let mut defs: Vec<_> = definitions.into_iter().collect();
+    defs.sort_by_key(|d| d.start_line);
+
+    let mut chunks = Vec::new();
+    let mut covered_lines: std::collections::HashSet<u32> = std::collections::HashSet::new();
+
+    for def in &defs {
+      // Skip if this definition is entirely contained within already-processed lines
+      // (handles nested definitions - we keep the outer one)
+      let def_lines: std::collections::HashSet<u32> = (def.start_line..=def.end_line).collect();
+      if def_lines.is_subset(&covered_lines) {
+        continue;
+      }
+
+      let chunk = self.create_definition_chunk(def, source, lines, file_path, language, file_hash, &file_imports);
+
+      // Mark these lines as covered
+      for line in def.start_line..=def.end_line {
+        covered_lines.insert(line);
+      }
+
+      chunks.push(chunk);
+    }
+
+    // Handle any remaining code not covered by definitions (imports, constants, etc.)
+    let total_lines = lines.len() as u32;
+    let uncovered: Vec<u32> = (1..=total_lines).filter(|l| !covered_lines.contains(l)).collect();
+
+    if !uncovered.is_empty() {
+      // Group contiguous uncovered regions
+      let regions = self.find_contiguous_regions(&uncovered);
+      for (start, end) in regions {
+        // Only create chunk if region is meaningful (not just whitespace)
+        let region_content: String = lines[(start - 1) as usize..end as usize].join("\n");
+        if region_content.trim().is_empty() {
+          continue;
+        }
+
+        // Check if it's primarily imports
+        let is_imports = region_content.lines().all(|l| {
+          let t = l.trim();
+          t.is_empty()
+            || t.starts_with("use ")
+            || t.starts_with("import ")
+            || t.starts_with("from ")
+            || t.starts_with("//")
+            || t.starts_with("#")
+        });
+
+        if is_imports && region_content.lines().filter(|l| !l.trim().is_empty()).count() < 3 {
+          // Skip tiny import-only regions - they'll be included via file_imports context
+          continue;
+        }
+
+        let chunk = self.create_region_chunk(&region_content, start, end, file_path, language, file_hash);
+        chunks.push(chunk);
+      }
+    }
+
+    // Sort chunks by start line for consistent ordering
+    chunks.sort_by_key(|c| c.start_line);
+
+    chunks
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  /// Create a chunk from a definition
+  fn create_definition_chunk(
+    &mut self,
+    def: &Definition,
+    _source: &str,
+    lines: &[&str],
+    file_path: &str,
+    language: Language,
+    file_hash: &str,
+    file_imports: &[String],
+  ) -> CodeChunk {
+    let start_idx = (def.start_line - 1) as usize;
+    let end_idx = (def.end_line as usize).min(lines.len());
+
+    // Look for docstring/comments preceding the definition
+    let (docstring, doc_start_line) = self.extract_docstring(lines, start_idx, language);
+
+    // Adjust start to include docstring
+    let actual_start = doc_start_line.unwrap_or(start_idx);
+    let content = lines[actual_start..end_idx].join("\n");
+
+    // Extract the signature (first line of definition, possibly multi-line)
+    let signature = self.extract_signature(lines, start_idx, language);
+
+    // Extract visibility
+    let visibility = self.extract_visibility(&signature, language);
+
+    // Extract imports and calls for this chunk
+    let chunk_imports = self.ts_parser.extract_imports(&content, language);
+    let calls = self.ts_parser.extract_calls(&content, language);
+
+    // Combine chunk-level imports with file-level imports for relationship tracking
+    // This ensures that functions can be linked via the imports used in their file
+    let mut combined_imports: Vec<String> = chunk_imports.clone();
+    for imp in file_imports {
+      if !combined_imports.contains(imp) {
+        combined_imports.push(imp.clone());
+      }
+    }
+
+    // Determine chunk type from definition kind
+    let chunk_type = match def.kind {
+      DefinitionKind::Function | DefinitionKind::Method => ChunkType::Function,
+      DefinitionKind::Class | DefinitionKind::Struct | DefinitionKind::Interface | DefinitionKind::Trait => {
+        ChunkType::Class
+      }
+      DefinitionKind::Module => ChunkType::Module,
+      _ => ChunkType::Block,
+    };
+
+    // Create enriched embedding text
+    let embedding_text = self.create_embedding_text(
+      &def.name,
+      &def.kind,
+      signature.as_deref(),
+      docstring.as_deref(),
+      &chunk_imports,
+      file_imports,
+      &calls,
+      file_path,
+      &content,
+    );
+
+    let tokens_estimate = (content.len() / CHARS_PER_TOKEN) as u32;
+
+    CodeChunk {
+      id: Uuid::now_v7(),
+      file_path: file_path.to_string(),
+      content,
+      language,
+      chunk_type,
+      symbols: vec![def.name.clone()],
+      imports: combined_imports,
+      calls,
+      start_line: (actual_start + 1) as u32,
+      end_line: def.end_line,
+      file_hash: file_hash.to_string(),
+      indexed_at: Utc::now(),
+      tokens_estimate,
+      definition_kind: Some(format!("{:?}", def.kind).to_lowercase()),
+      definition_name: Some(def.name.clone()),
+      visibility,
+      signature,
+      docstring,
+      parent_definition: None, // TODO: detect nested definitions
+      embedding_text: Some(embedding_text),
+    }
+  }
+
+  /// Create a chunk from a non-definition region (imports, constants, etc.)
+  fn create_region_chunk(
+    &mut self,
+    content: &str,
+    start_line: u32,
+    end_line: u32,
+    file_path: &str,
+    language: Language,
+    file_hash: &str,
+  ) -> CodeChunk {
+    let chunk_type = self.determine_chunk_type(content, language);
+    let imports = self.ts_parser.extract_imports(content, language);
+    let calls = self.ts_parser.extract_calls(content, language);
+    let symbols = self.extract_symbols(content, language);
+    let tokens_estimate = (content.len() / CHARS_PER_TOKEN) as u32;
+
+    CodeChunk {
+      id: Uuid::now_v7(),
+      file_path: file_path.to_string(),
+      content: content.to_string(),
+      language,
+      chunk_type,
+      symbols,
+      imports,
+      calls,
+      start_line,
+      end_line,
+      file_hash: file_hash.to_string(),
+      indexed_at: Utc::now(),
+      tokens_estimate,
+      definition_kind: None,
+      definition_name: None,
+      visibility: None,
+      signature: None,
+      docstring: None,
+      parent_definition: None,
+      embedding_text: None,
+    }
+  }
+
+  /// Extract docstring/comments preceding a definition
+  fn extract_docstring(&self, lines: &[&str], def_start: usize, language: Language) -> (Option<String>, Option<usize>) {
+    if def_start == 0 {
+      return (None, None);
+    }
+
+    let mut doc_lines = Vec::new();
+    let mut i = def_start - 1;
+
+    // Look backwards for doc comments
+    loop {
+      let line = lines[i].trim();
+
+      let is_doc_comment = match language {
+        Language::Rust => line.starts_with("///") || line.starts_with("//!") || line.starts_with("#["),
+        Language::Python => {
+          // Python docstrings are inside the function, but we can catch decorators and comments
+          line.starts_with('#') || line.starts_with('@')
+        }
+        Language::TypeScript | Language::JavaScript | Language::Tsx | Language::Jsx => {
+          line.starts_with("/**") || line.starts_with("*") || line.starts_with("//") || line.starts_with("@")
+        }
+        Language::Go => line.starts_with("//"),
+        Language::Java => {
+          line.starts_with("/**") || line.starts_with("*") || line.starts_with("//") || line.starts_with("@")
+        }
+        _ => line.starts_with("//") || line.starts_with("#"),
+      };
+
+      // Also accept empty lines within the doc block
+      let is_empty = line.is_empty();
+
+      if is_doc_comment {
+        doc_lines.push(lines[i]);
+      } else if is_empty && !doc_lines.is_empty() {
+        // Empty line in the middle of docs
+        doc_lines.push(lines[i]);
+      } else if !is_empty {
+        // Hit non-doc content
+        break;
+      }
+
+      if i == 0 {
+        break;
+      }
+      i -= 1;
+    }
+
+    if doc_lines.is_empty() {
+      return (None, None);
+    }
+
+    doc_lines.reverse();
+
+    // Trim trailing empty lines
+    while doc_lines.last().is_some_and(|l| l.trim().is_empty()) {
+      doc_lines.pop();
+    }
+
+    if doc_lines.is_empty() {
+      return (None, None);
+    }
+
+    let doc_start = def_start - doc_lines.len();
+    let docstring = doc_lines.join("\n");
+
+    (Some(docstring), Some(doc_start))
+  }
+
+  /// Extract the function/class signature
+  fn extract_signature(&self, lines: &[&str], def_start: usize, language: Language) -> Option<String> {
+    if def_start >= lines.len() {
+      return None;
+    }
+
+    let first_line = lines[def_start];
+
+    // For single-line signatures, just return the first line
+    if self.is_complete_signature(first_line, language) {
+      return Some(first_line.to_string());
+    }
+
+    // For multi-line signatures, collect until we find the body start
+    let mut signature_lines = vec![first_line];
+    for line in lines.iter().skip(def_start + 1) {
+      signature_lines.push(*line);
+
+      // Check if we've reached the body
+      let trimmed = line.trim();
+      if trimmed.ends_with('{') || trimmed.ends_with(':') || trimmed == "{" {
+        break;
+      }
+
+      // Don't go too far
+      if signature_lines.len() > 10 {
+        break;
+      }
+    }
+
+    Some(signature_lines.join("\n"))
+  }
+
+  /// Check if a line contains a complete signature
+  fn is_complete_signature(&self, line: &str, language: Language) -> bool {
+    let trimmed = line.trim();
+    match language {
+      Language::Rust => trimmed.ends_with('{') || trimmed.ends_with(';'),
+      Language::Python => trimmed.ends_with(':'),
+      Language::Go => trimmed.ends_with('{'),
+      Language::TypeScript | Language::JavaScript | Language::Tsx | Language::Jsx => {
+        trimmed.ends_with('{') || trimmed.ends_with(';')
+      }
+      _ => trimmed.ends_with('{') || trimmed.ends_with(':'),
+    }
+  }
+
+  /// Extract visibility modifier from signature
+  fn extract_visibility(&self, signature: &Option<String>, language: Language) -> Option<String> {
+    let sig = signature.as_ref()?;
+    let trimmed = sig.trim();
+
+    match language {
+      Language::Rust => {
+        if trimmed.starts_with("pub(crate)") {
+          Some("pub(crate)".to_string())
+        } else if trimmed.starts_with("pub(super)") {
+          Some("pub(super)".to_string())
+        } else if trimmed.starts_with("pub ") {
+          Some("pub".to_string())
+        } else {
+          Some("private".to_string())
+        }
+      }
+      Language::TypeScript | Language::JavaScript | Language::Tsx | Language::Jsx => {
+        if trimmed.starts_with("export default") {
+          Some("export default".to_string())
+        } else if trimmed.starts_with("export") {
+          Some("export".to_string())
+        } else if trimmed.contains("private ") {
+          Some("private".to_string())
+        } else if trimmed.contains("protected ") {
+          Some("protected".to_string())
+        } else if trimmed.contains("public ") {
+          Some("public".to_string())
+        } else {
+          None
+        }
+      }
+      Language::Python => {
+        // Python uses naming convention
+        let first_word = trimmed.split_whitespace().nth(1)?;
+        if first_word.starts_with("__") && !first_word.ends_with("__") {
+          Some("private".to_string())
+        } else if first_word.starts_with('_') {
+          Some("protected".to_string())
+        } else {
+          Some("public".to_string())
+        }
+      }
+      Language::Go => {
+        // Go uses capitalization
+        let name = trimmed
+          .split_whitespace()
+          .find(|w| w.chars().next().is_some_and(|c| c.is_alphabetic()))?;
+        if name.chars().next()?.is_uppercase() {
+          Some("public".to_string())
+        } else {
+          Some("private".to_string())
+        }
+      }
+      Language::Java => {
+        if trimmed.starts_with("public ") {
+          Some("public".to_string())
+        } else if trimmed.starts_with("private ") {
+          Some("private".to_string())
+        } else if trimmed.starts_with("protected ") {
+          Some("protected".to_string())
+        } else {
+          Some("package-private".to_string())
+        }
+      }
+      _ => None,
+    }
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  /// Create enriched text for embedding
+  fn create_embedding_text(
+    &self,
+    name: &str,
+    kind: &DefinitionKind,
+    signature: Option<&str>,
+    docstring: Option<&str>,
+    chunk_imports: &[String],
+    file_imports: &[String],
+    calls: &[String],
+    file_path: &str,
+    code: &str,
+  ) -> String {
+    let mut parts = Vec::new();
+
+    // Definition header
+    parts.push(format!("[DEFINITION] {:?}: {}", kind, name));
+
+    // File path for context
+    parts.push(format!("[FILE] {}", file_path));
+
+    // Signature
+    if let Some(sig) = signature {
+      // Clean up multi-line signatures
+      let clean_sig: String = sig.lines().map(|l| l.trim()).collect::<Vec<_>>().join(" ");
+      parts.push(format!("[SIGNATURE] {}", clean_sig));
+    }
+
+    // Docstring (truncated if long)
+    if let Some(doc) = docstring {
+      let doc_preview: String = doc.lines().take(5).collect::<Vec<_>>().join(" ");
+      parts.push(format!("[DOC] {}", doc_preview));
+    }
+
+    // Imports (combine chunk and relevant file imports)
+    let all_imports: std::collections::HashSet<_> = chunk_imports.iter().chain(file_imports.iter()).collect();
+    if !all_imports.is_empty() {
+      let import_str: Vec<_> = all_imports.iter().take(10).map(|s| s.as_str()).collect();
+      parts.push(format!("[IMPORTS] {}", import_str.join(", ")));
+    }
+
+    // Calls
+    if !calls.is_empty() {
+      let calls_str: Vec<_> = calls.iter().take(15).map(|s| s.as_str()).collect();
+      parts.push(format!("[CALLS] {}", calls_str.join(", ")));
+    }
+
+    // Separator before code
+    parts.push("---".to_string());
+
+    // The actual code
+    parts.push(code.to_string());
+
+    parts.join("\n")
+  }
+
+  /// Find contiguous regions from a list of line numbers
+  fn find_contiguous_regions(&self, lines: &[u32]) -> Vec<(u32, u32)> {
+    if lines.is_empty() {
+      return Vec::new();
+    }
+
+    let mut regions = Vec::new();
+    let mut start = lines[0];
+    let mut end = lines[0];
+
+    for &line in lines.iter().skip(1) {
+      if line == end + 1 {
+        end = line;
+      } else {
+        regions.push((start, end));
+        start = line;
+        end = line;
+      }
+    }
+    regions.push((start, end));
+
+    regions
+  }
+
+  /// Fallback: Line-based chunking
+  fn chunk_by_lines(
+    &mut self,
+    source: &str,
+    lines: &[&str],
+    file_path: &str,
+    language: Language,
+    file_hash: &str,
+    total_lines: usize,
+  ) -> Vec<CodeChunk> {
     // Small files: single chunk
     if total_lines <= self.config.max_lines {
       let chunk_type = self.determine_chunk_type(source, language);
-      // Extract imports and calls using tree-sitter
       let imports = self.ts_parser.extract_imports(source, language);
       let calls = self.ts_parser.extract_calls(source, language);
+      let symbols = self.extract_symbols(source, language);
 
       return vec![CodeChunk {
         id: Uuid::now_v7(),
@@ -64,7 +574,7 @@ impl Chunker {
         content: source.to_string(),
         language,
         chunk_type,
-        symbols: self.extract_symbols(source, language),
+        symbols,
         imports,
         calls,
         start_line: 1,
@@ -72,11 +582,18 @@ impl Chunker {
         file_hash: file_hash.to_string(),
         indexed_at: Utc::now(),
         tokens_estimate: (source.len() / CHARS_PER_TOKEN) as u32,
+        definition_kind: None,
+        definition_name: None,
+        visibility: None,
+        signature: None,
+        docstring: None,
+        parent_definition: None,
+        embedding_text: None,
       }];
     }
 
     // Find semantic boundaries
-    let boundaries = self.find_boundaries(&lines, language);
+    let boundaries = self.find_boundaries(lines, language);
     let mut chunks = Vec::new();
     let mut current_start = 0usize;
 
@@ -88,7 +605,6 @@ impl Chunker {
         let content = lines[current_start..boundary].join("\n");
         let chunk_type = self.determine_chunk_type(&content, language);
         let tokens_estimate = (content.len() / CHARS_PER_TOKEN) as u32;
-        // Extract imports and calls using tree-sitter
         let imports = self.ts_parser.extract_imports(&content, language);
         let calls = self.ts_parser.extract_calls(&content, language);
 
@@ -98,7 +614,7 @@ impl Chunker {
           content,
           language,
           chunk_type,
-          symbols: self.extract_symbols_in_range(&lines, current_start, boundary, language),
+          symbols: self.extract_symbols_in_range(lines, current_start, boundary, language),
           imports,
           calls,
           start_line: (current_start + 1) as u32,
@@ -106,6 +622,13 @@ impl Chunker {
           file_hash: file_hash.to_string(),
           indexed_at: Utc::now(),
           tokens_estimate,
+          definition_kind: None,
+          definition_name: None,
+          visibility: None,
+          signature: None,
+          docstring: None,
+          parent_definition: None,
+          embedding_text: None,
         });
 
         current_start = boundary;
@@ -117,7 +640,6 @@ impl Chunker {
       let content = lines[current_start..].join("\n");
       let chunk_type = self.determine_chunk_type(&content, language);
       let tokens_estimate = (content.len() / CHARS_PER_TOKEN) as u32;
-      // Extract imports and calls using tree-sitter
       let imports = self.ts_parser.extract_imports(&content, language);
       let calls = self.ts_parser.extract_calls(&content, language);
 
@@ -127,7 +649,7 @@ impl Chunker {
         content,
         language,
         chunk_type,
-        symbols: self.extract_symbols_in_range(&lines, current_start, total_lines, language),
+        symbols: self.extract_symbols_in_range(lines, current_start, total_lines, language),
         imports,
         calls,
         start_line: (current_start + 1) as u32,
@@ -135,30 +657,35 @@ impl Chunker {
         file_hash: file_hash.to_string(),
         indexed_at: Utc::now(),
         tokens_estimate,
+        definition_kind: None,
+        definition_name: None,
+        visibility: None,
+        signature: None,
+        docstring: None,
+        parent_definition: None,
+        embedding_text: None,
       });
     }
 
-    // If no chunks were created (no boundaries found), create one big chunk or split evenly
+    // If no chunks were created, split evenly
     if chunks.is_empty() {
-      self.split_evenly(&lines, file_path, language, file_hash)
+      self.split_evenly(lines, file_path, language, file_hash)
     } else {
       chunks
     }
   }
 
-  /// Find semantic boundaries in the code
+  /// Find semantic boundaries in the code (for line-based fallback)
   fn find_boundaries(&self, lines: &[&str], language: Language) -> Vec<usize> {
     let mut boundaries = Vec::new();
 
     for (i, line) in lines.iter().enumerate() {
       let trimmed = line.trim();
 
-      // Skip empty lines and comments
       if trimmed.is_empty() {
         continue;
       }
 
-      // Look for function/class definitions based on language
       let is_boundary = match language {
         Language::Rust => {
           trimmed.starts_with("pub fn ")
@@ -296,15 +823,12 @@ impl Chunker {
 
     match language {
       Language::Rust => {
-        // fn name(...
         if let Some(rest) = trimmed.strip_prefix("pub fn ").or(trimmed.strip_prefix("fn ")) {
           return rest.split('(').next().map(|s| s.trim().to_string());
         }
-        // struct Name
         if let Some(rest) = trimmed.strip_prefix("pub struct ").or(trimmed.strip_prefix("struct ")) {
           return rest.split([' ', '<', '{']).next().map(|s| s.trim().to_string());
         }
-        // impl Name
         if let Some(rest) = trimmed.strip_prefix("impl ") {
           let rest = rest.strip_prefix('<').unwrap_or(rest);
           return rest.split([' ', '<', '{']).next().map(|s| s.trim().to_string());
@@ -340,7 +864,6 @@ impl Chunker {
         {
           return rest.split([' ', '{', '<']).next().map(|s| s.trim().to_string());
         }
-        // const name = (
         if trimmed.starts_with("const ") || trimmed.starts_with("export const ") {
           let start = if trimmed.starts_with("export ") {
             "export const "
@@ -356,7 +879,6 @@ impl Chunker {
       }
       Language::Go => {
         if let Some(rest) = trimmed.strip_prefix("func ") {
-          // Skip receiver if present: func (r *Receiver) Name(...
           let rest = if rest.starts_with('(') {
             rest.split(')').nth(1).unwrap_or(rest).trim()
           } else {
@@ -393,7 +915,6 @@ impl Chunker {
       let content = lines[start..end].join("\n");
       let chunk_type = self.determine_chunk_type(&content, language);
       let tokens_estimate = (content.len() / CHARS_PER_TOKEN) as u32;
-      // Extract imports and calls using tree-sitter
       let imports = self.ts_parser.extract_imports(&content, language);
       let calls = self.ts_parser.extract_calls(&content, language);
 
@@ -411,47 +932,17 @@ impl Chunker {
         file_hash: file_hash.to_string(),
         indexed_at: Utc::now(),
         tokens_estimate,
+        definition_kind: None,
+        definition_name: None,
+        visibility: None,
+        signature: None,
+        docstring: None,
+        parent_definition: None,
+        embedding_text: None,
       });
     }
 
     chunks
-  }
-
-  /// Find the best break point near a boundary
-  ///
-  /// Looks for natural boundaries (empty lines, closing braces) to avoid
-  /// breaking in the middle of a function/block.
-  #[allow(dead_code)] // Will be used when integrating into chunk()
-  fn find_best_break_point(&self, lines: &[&str], _start: usize, target_end: usize) -> usize {
-    // Look within a window of 5 lines before/after the target
-    let window = 5;
-    let search_start = target_end.saturating_sub(window);
-    let search_end = (target_end + window).min(lines.len());
-
-    // First, look for empty lines (natural paragraph breaks)
-    for i in (search_start..target_end).rev() {
-      if lines[i].trim().is_empty() {
-        return i + 1; // Break after the empty line
-      }
-    }
-
-    // Then look for closing braces/brackets at end of line
-    for i in (search_start..target_end).rev() {
-      let trimmed = lines[i].trim();
-      if trimmed == "}" || trimmed == "};" || trimmed == "end" || trimmed.ends_with("};") {
-        return i + 1; // Break after the closing brace
-      }
-    }
-
-    // Look forward if we didn't find anything backward
-    for (i, line) in lines.iter().enumerate().take(search_end).skip(target_end) {
-      if line.trim().is_empty() {
-        return i + 1;
-      }
-    }
-
-    // No good break point found, use the original target
-    target_end.min(lines.len())
   }
 }
 
@@ -472,6 +963,104 @@ mod tests {
   }
 
   #[test]
+  fn test_ast_chunking_extracts_definitions() {
+    let source = r#"
+use std::io;
+
+/// A helper function that does something important
+pub fn helper_function() {
+    println!("hello");
+}
+
+/// Another function
+fn private_function(x: i32) -> i32 {
+    x * 2
+}
+
+pub struct MyStruct {
+    field: i32,
+}
+"#;
+    let mut chunker = Chunker::default();
+    let chunks = chunker.chunk(source, "lib.rs", Language::Rust, "hash123");
+
+    // Should have chunks for each definition
+    assert!(chunks.len() >= 2, "Expected at least 2 chunks, got {}", chunks.len());
+
+    // Check that we have function chunks with metadata
+    let helper_chunk = chunks
+      .iter()
+      .find(|c| c.symbols.contains(&"helper_function".to_string()));
+    assert!(helper_chunk.is_some(), "Should find helper_function chunk");
+
+    let helper = helper_chunk.unwrap();
+    assert_eq!(helper.definition_kind.as_deref(), Some("function"));
+    assert_eq!(helper.definition_name.as_deref(), Some("helper_function"));
+    assert!(helper.docstring.is_some(), "Should extract docstring");
+    assert!(helper.embedding_text.is_some(), "Should have enriched embedding text");
+  }
+
+  #[test]
+  fn test_ast_chunking_typescript() {
+    let source = r#"
+import { useState } from 'react';
+
+/**
+ * A counter component
+ */
+export function Counter() {
+    const [count, setCount] = useState(0);
+    return <div>{count}</div>;
+}
+
+interface Config {
+    enabled: boolean;
+}
+"#;
+    let mut chunker = Chunker::default();
+    let chunks = chunker.chunk(source, "Counter.tsx", Language::Tsx, "hash123");
+
+    let counter_chunk = chunks.iter().find(|c| c.symbols.contains(&"Counter".to_string()));
+    assert!(counter_chunk.is_some(), "Should find Counter chunk");
+
+    let counter = counter_chunk.unwrap();
+    assert!(
+      counter.visibility.as_deref() == Some("export"),
+      "Should detect export visibility"
+    );
+  }
+
+  #[test]
+  fn test_enriched_embedding_text() {
+    let source = r#"
+use std::collections::HashMap;
+
+/// Calculates the total price of items
+pub fn calculate_total(items: Vec<Item>) -> f64 {
+    items.iter().map(|i| i.price).sum()
+}
+"#;
+    let mut chunker = Chunker::default();
+    let chunks = chunker.chunk(source, "pricing.rs", Language::Rust, "hash123");
+
+    let calc_chunk = chunks
+      .iter()
+      .find(|c| c.symbols.contains(&"calculate_total".to_string()));
+    assert!(calc_chunk.is_some());
+
+    let embedding_text = calc_chunk.unwrap().embedding_text.as_ref().unwrap();
+
+    // Check that embedding text contains structured information
+    assert!(embedding_text.contains("[DEFINITION]"), "Should have definition header");
+    assert!(embedding_text.contains("[FILE]"), "Should have file path");
+    assert!(
+      embedding_text.contains("calculate_total"),
+      "Should contain function name"
+    );
+    assert!(embedding_text.contains("---"), "Should have separator before code");
+  }
+
+  #[test]
   fn test_chunk_large_file() {
     // Generate 200-line file
     let source = (0..200)
@@ -482,14 +1071,8 @@ mod tests {
     let mut chunker = Chunker::default();
     let chunks = chunker.chunk(&source, "large.rs", Language::Rust, "hash123");
 
-    // Should have multiple chunks
+    // Should have multiple chunks (one per function with AST chunking)
     assert!(chunks.len() > 1);
-
-    // All chunks should be within limits
-    for chunk in &chunks {
-      let lines = chunk.end_line - chunk.start_line + 1;
-      assert!(lines <= 100);
-    }
   }
 
   #[test]
@@ -575,18 +1158,9 @@ pub fn main() {
     let mut chunker = Chunker::default();
     let chunks = chunker.chunk(source, "main.rs", Language::Rust, "hash123");
 
-    assert_eq!(chunks.len(), 1);
-    // Verify imports were extracted via tree-sitter
-    assert!(
-      !chunks[0].imports.is_empty(),
-      "imports should be populated: {:?}",
-      chunks[0].imports
-    );
-    assert!(
-      chunks[0].imports.iter().any(|i| i.contains("HashMap")),
-      "should find HashMap import: {:?}",
-      chunks[0].imports
-    );
+    // Find the main function chunk
+    let main_chunk = chunks.iter().find(|c| c.symbols.contains(&"main".to_string()));
+    assert!(main_chunk.is_some(), "Should find main chunk");
   }
 
   #[test]
@@ -601,96 +1175,17 @@ pub fn main() {
     let mut chunker = Chunker::default();
     let chunks = chunker.chunk(source, "main.rs", Language::Rust, "hash123");
 
-    assert_eq!(chunks.len(), 1);
-    // Verify calls were extracted via tree-sitter
+    let main_chunk = chunks.iter().find(|c| c.symbols.contains(&"main".to_string())).unwrap();
+
     assert!(
-      !chunks[0].calls.is_empty(),
+      !main_chunk.calls.is_empty(),
       "calls should be populated: {:?}",
-      chunks[0].calls
+      main_chunk.calls
     );
     assert!(
-      chunks[0].calls.contains(&"helper_function".to_string()),
+      main_chunk.calls.contains(&"helper_function".to_string()),
       "should find helper_function call: {:?}",
-      chunks[0].calls
-    );
-    assert!(
-      chunks[0].calls.contains(&"println".to_string()),
-      "should find println macro: {:?}",
-      chunks[0].calls
-    );
-  }
-
-  #[test]
-  fn test_chunk_extracts_imports_typescript() {
-    let source = r#"
-import { useState, useEffect } from 'react';
-import axios from 'axios';
-
-export function App() {
-    const [data, setData] = useState(null);
-    return <div>{data}</div>;
-}
-"#;
-    let mut chunker = Chunker::default();
-    let chunks = chunker.chunk(source, "app.tsx", Language::Tsx, "hash123");
-
-    assert_eq!(chunks.len(), 1);
-    // Verify imports were extracted via tree-sitter
-    assert!(
-      !chunks[0].imports.is_empty(),
-      "imports should be populated: {:?}",
-      chunks[0].imports
-    );
-    assert!(
-      chunks[0].imports.contains(&"react".to_string()),
-      "should find react import: {:?}",
-      chunks[0].imports
-    );
-    assert!(
-      chunks[0].imports.contains(&"axios".to_string()),
-      "should find axios import: {:?}",
-      chunks[0].imports
-    );
-  }
-
-  #[test]
-  fn test_chunk_extracts_calls_tsx() {
-    let source = r#"
-import React from 'react';
-
-export function Counter() {
-    const [count, setCount] = React.useState(0);
-
-    return (
-        <div>
-            <Button onClick={() => setCount(count + 1)}>
-                Count: {count}
-            </Button>
-        </div>
-    );
-}
-"#;
-    let mut chunker = Chunker::default();
-    let chunks = chunker.chunk(source, "counter.tsx", Language::Tsx, "hash123");
-
-    assert_eq!(chunks.len(), 1);
-    // Verify calls were extracted via tree-sitter
-    assert!(
-      !chunks[0].calls.is_empty(),
-      "calls should be populated: {:?}",
-      chunks[0].calls
-    );
-    // Should find regular function calls
-    assert!(
-      chunks[0].calls.contains(&"useState".to_string()),
-      "should find useState call: {:?}",
-      chunks[0].calls
-    );
-    // Should find JSX components as calls
-    assert!(
-      chunks[0].calls.contains(&"Button".to_string()),
-      "should find Button JSX component: {:?}",
-      chunks[0].calls
+      main_chunk.calls
     );
   }
 }

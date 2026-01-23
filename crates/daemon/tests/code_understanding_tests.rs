@@ -81,7 +81,10 @@ fn main() {
   let result = memories_response.result.expect("Should have result");
   assert_eq!(result.get("file_path").and_then(|v| v.as_str()), Some("src/main.rs"));
 
-  let memories = result.get("memories").and_then(|v| v.as_array()).expect("Should have memories array");
+  let memories = result
+    .get("memories")
+    .and_then(|v| v.as_array())
+    .expect("Should have memories array");
   // Should find the memory we added
   assert!(
     !memories.is_empty() || memories.is_empty(), // May be empty if embedding doesn't match
@@ -112,7 +115,10 @@ async fn test_code_memories_empty_for_new_file() {
   );
 
   let result = memories_response.result.expect("Should have result");
-  let memories = result.get("memories").and_then(|v| v.as_array()).expect("Should have memories array");
+  let memories = result
+    .get("memories")
+    .and_then(|v| v.as_array())
+    .expect("Should have memories array");
   assert!(memories.is_empty(), "Should have no memories for unknown file");
 }
 
@@ -128,7 +134,10 @@ async fn test_code_memories_requires_identifier() {
     params: serde_json::json!({ "cwd": cwd }),
   };
   let memories_response = router.handle(memories_request).await;
-  assert!(memories_response.error.is_some(), "Should error without chunk_id or file_path");
+  assert!(
+    memories_response.error.is_some(),
+    "Should error without chunk_id or file_path"
+  );
 }
 
 // ============================================================================
@@ -200,7 +209,10 @@ pub fn caller_two() {
   let result = callers_response.result.expect("Should have result");
   assert_eq!(result.get("symbol").and_then(|v| v.as_str()), Some("target_function"));
 
-  let callers = result.get("callers").and_then(|v| v.as_array()).expect("Should have callers array");
+  let callers = result
+    .get("callers")
+    .and_then(|v| v.as_array())
+    .expect("Should have callers array");
   // Should find callers (if tree-sitter extraction worked)
   assert!(callers.iter().all(|c| c.is_object()), "All callers should be objects");
 }
@@ -242,7 +254,10 @@ pub fn unused_function() {
   assert!(callers_response.error.is_none(), "Should succeed even with no callers");
 
   let result = callers_response.result.expect("Should have result");
-  let callers = result.get("callers").and_then(|v| v.as_array()).expect("Should have callers array");
+  let callers = result
+    .get("callers")
+    .and_then(|v| v.as_array())
+    .expect("Should have callers array");
   assert!(callers.is_empty(), "Should have no callers for nonexistent function");
 }
 
@@ -319,7 +334,10 @@ fn main() {
     params: serde_json::json!({ "cwd": cwd }),
   };
   let list_response = router.handle(list_request).await;
-  let chunks = list_response.result.and_then(|r| r.as_array().cloned()).unwrap_or_default();
+  let chunks = list_response
+    .result
+    .and_then(|r| r.as_array().cloned())
+    .unwrap_or_default();
 
   let main_chunk = chunks.iter().find(|c| {
     c.get("file_path")
@@ -385,7 +403,10 @@ pub fn leaf_function() {
     params: serde_json::json!({ "cwd": cwd }),
   };
   let list_response = router.handle(list_request).await;
-  let chunks = list_response.result.and_then(|r| r.as_array().cloned()).unwrap_or_default();
+  let chunks = list_response
+    .result
+    .and_then(|r| r.as_array().cloned())
+    .unwrap_or_default();
 
   if let Some(chunk) = chunks.first() {
     let chunk_id = chunk.get("id").and_then(|v| v.as_str()).unwrap();
@@ -446,7 +467,10 @@ pub fn function_c() {
     params: serde_json::json!({ "cwd": cwd }),
   };
   let list_response = router.handle(list_request).await;
-  let chunks = list_response.result.and_then(|r| r.as_array().cloned()).unwrap_or_default();
+  let chunks = list_response
+    .result
+    .and_then(|r| r.as_array().cloned())
+    .unwrap_or_default();
 
   if let Some(chunk) = chunks.first() {
     let chunk_id = chunk.get("id").and_then(|v| v.as_str()).unwrap();
@@ -506,7 +530,10 @@ pub fn test_function() {
     params: serde_json::json!({ "cwd": cwd }),
   };
   let list_response = router.handle(list_request).await;
-  let chunks = list_response.result.and_then(|r| r.as_array().cloned()).unwrap_or_default();
+  let chunks = list_response
+    .result
+    .and_then(|r| r.as_array().cloned())
+    .unwrap_or_default();
 
   if let Some(chunk) = chunks.first() {
     let chunk_id = chunk.get("id").and_then(|v| v.as_str()).unwrap();
@@ -525,7 +552,10 @@ pub fn test_function() {
     assert!(related_response.error.is_none(), "Should succeed with all methods");
 
     let result = related_response.result.expect("Should have result");
-    let related = result.get("related").and_then(|v| v.as_array()).expect("Should have related array");
+    let related = result
+      .get("related")
+      .and_then(|v| v.as_array())
+      .expect("Should have related array");
 
     // All related items should have required fields
     for item in related {
@@ -579,7 +609,10 @@ pub fn main_function() {
     params: serde_json::json!({ "cwd": cwd }),
   };
   let list_response = router.handle(list_request).await;
-  let chunks = list_response.result.and_then(|r| r.as_array().cloned()).unwrap_or_default();
+  let chunks = list_response
+    .result
+    .and_then(|r| r.as_array().cloned())
+    .unwrap_or_default();
 
   if let Some(chunk) = chunks.first() {
     let chunk_id = chunk.get("id").and_then(|v| v.as_str()).unwrap();
@@ -607,7 +640,10 @@ pub fn main_function() {
     assert!(result.get("callees").is_some(), "Should have callees section");
     assert!(result.get("same_file").is_some(), "Should have same_file section");
     assert!(result.get("memories").is_some(), "Should have memories section");
-    assert!(result.get("documentation").is_some(), "Should have documentation section");
+    assert!(
+      result.get("documentation").is_some(),
+      "Should have documentation section"
+    );
 
     // Verify chunk details
     let chunk = result.get("chunk").expect("chunk section");
@@ -821,7 +857,10 @@ fn example() {
     params: serde_json::json!({ "cwd": cwd }),
   };
   let list_response = router.handle(list_request).await;
-  let chunks = list_response.result.and_then(|r| r.as_array().cloned()).unwrap_or_default();
+  let chunks = list_response
+    .result
+    .and_then(|r| r.as_array().cloned())
+    .unwrap_or_default();
 
   // At least one chunk should exist
   assert!(!chunks.is_empty(), "Should have chunks");
@@ -886,7 +925,10 @@ fn main() {
     params: serde_json::json!({ "cwd": cwd }),
   };
   let list_response = router.handle(list_request).await;
-  let chunks = list_response.result.and_then(|r| r.as_array().cloned()).unwrap_or_default();
+  let chunks = list_response
+    .result
+    .and_then(|r| r.as_array().cloned())
+    .unwrap_or_default();
 
   if let Some(chunk) = chunks.first() {
     let chunk_id = chunk.get("id").and_then(|v| v.as_str()).unwrap();
@@ -961,7 +1003,10 @@ export class UserService {
     params: serde_json::json!({ "cwd": cwd }),
   };
   let list_response = router.handle(list_request).await;
-  let chunks = list_response.result.and_then(|r| r.as_array().cloned()).unwrap_or_default();
+  let chunks = list_response
+    .result
+    .and_then(|r| r.as_array().cloned())
+    .unwrap_or_default();
 
   assert!(!chunks.is_empty(), "Should have TypeScript chunks");
 
@@ -1020,9 +1065,14 @@ export const MyComponent: React.FC<Props> = ({ title }) => {
     params: serde_json::json!({ "cwd": cwd }),
   };
   let list_response = router.handle(list_request).await;
-  let chunks = list_response.result.and_then(|r| r.as_array().cloned()).unwrap_or_default();
+  let chunks = list_response
+    .result
+    .and_then(|r| r.as_array().cloned())
+    .unwrap_or_default();
 
-  let tsx_chunk = chunks.iter().find(|c| c.get("language").and_then(|v| v.as_str()) == Some("tsx"));
+  let tsx_chunk = chunks
+    .iter()
+    .find(|c| c.get("language").and_then(|v| v.as_str()) == Some("tsx"));
   assert!(tsx_chunk.is_some(), "Should have TSX chunk");
 }
 
@@ -1076,9 +1126,14 @@ class DataProcessor:
     params: serde_json::json!({ "cwd": cwd }),
   };
   let list_response = router.handle(list_request).await;
-  let chunks = list_response.result.and_then(|r| r.as_array().cloned()).unwrap_or_default();
+  let chunks = list_response
+    .result
+    .and_then(|r| r.as_array().cloned())
+    .unwrap_or_default();
 
-  let py_chunk = chunks.iter().find(|c| c.get("language").and_then(|v| v.as_str()) == Some("python"));
+  let py_chunk = chunks
+    .iter()
+    .find(|c| c.get("language").and_then(|v| v.as_str()) == Some("python"));
   assert!(py_chunk.is_some(), "Should have Python chunk");
 }
 
@@ -1135,9 +1190,14 @@ func main() {
     params: serde_json::json!({ "cwd": cwd }),
   };
   let list_response = router.handle(list_request).await;
-  let chunks = list_response.result.and_then(|r| r.as_array().cloned()).unwrap_or_default();
+  let chunks = list_response
+    .result
+    .and_then(|r| r.as_array().cloned())
+    .unwrap_or_default();
 
-  let go_chunk = chunks.iter().find(|c| c.get("language").and_then(|v| v.as_str()) == Some("go"));
+  let go_chunk = chunks
+    .iter()
+    .find(|c| c.get("language").and_then(|v| v.as_str()) == Some("go"));
   assert!(go_chunk.is_some(), "Should have Go chunk");
 }
 
@@ -1219,7 +1279,10 @@ export function process(input: string) {
     params: serde_json::json!({ "cwd": cwd }),
   };
   let list_response = router.handle(list_request).await;
-  let chunks = list_response.result.and_then(|r| r.as_array().cloned()).unwrap_or_default();
+  let chunks = list_response
+    .result
+    .and_then(|r| r.as_array().cloned())
+    .unwrap_or_default();
 
   // Find the app.ts chunk
   let app_chunk = chunks.iter().find(|c| {
@@ -1250,7 +1313,10 @@ export function process(input: string) {
     );
 
     let result = related_response.result.expect("Should have result");
-    let related = result.get("related").and_then(|v| v.as_array()).expect("Should have related array");
+    let related = result
+      .get("related")
+      .and_then(|v| v.as_array())
+      .expect("Should have related array");
 
     // Should find utils.ts via import resolution (./utils.js -> utils.ts)
     let found_utils = related.iter().any(|r| {
@@ -1324,7 +1390,10 @@ export function main() {
     params: serde_json::json!({ "cwd": cwd }),
   };
   let list_response = router.handle(list_request).await;
-  let chunks = list_response.result.and_then(|r| r.as_array().cloned()).unwrap_or_default();
+  let chunks = list_response
+    .result
+    .and_then(|r| r.as_array().cloned())
+    .unwrap_or_default();
 
   // Find the app.ts chunk
   let app_chunk = chunks.iter().find(|c| {
@@ -1351,7 +1420,10 @@ export function main() {
     assert!(related_response.error.is_none(), "code_related should succeed");
 
     let result = related_response.result.expect("Should have result");
-    let related = result.get("related").and_then(|v| v.as_array()).expect("Should have related array");
+    let related = result
+      .get("related")
+      .and_then(|v| v.as_array())
+      .expect("Should have related array");
 
     // Should find utils.ts via import resolution (./utils -> utils.ts)
     let found_utils = related.iter().any(|r| {
@@ -1416,7 +1488,10 @@ export function main() {
     params: serde_json::json!({ "cwd": cwd }),
   };
   let list_response = router.handle(list_request).await;
-  let chunks = list_response.result.and_then(|r| r.as_array().cloned()).unwrap_or_default();
+  let chunks = list_response
+    .result
+    .and_then(|r| r.as_array().cloned())
+    .unwrap_or_default();
 
   // Find the app.ts chunk
   let app_chunk = chunks.iter().find(|c| {
@@ -1443,7 +1518,10 @@ export function main() {
     assert!(related_response.error.is_none(), "code_related should succeed");
 
     let result = related_response.result.expect("Should have result");
-    let related = result.get("related").and_then(|v| v.as_array()).expect("Should have related array");
+    let related = result
+      .get("related")
+      .and_then(|v| v.as_array())
+      .expect("Should have related array");
 
     // Should find helper.ts via import resolution
     let found_helper = related.iter().any(|r| {

@@ -126,8 +126,12 @@ class DataProcessor:
     "code_search should succeed: {:?}",
     search_response.error
   );
-  let results = search_response.result.expect("Should have results");
-  let results_arr = results.as_array().expect("Results should be array");
+  let response = search_response.result.expect("Should have results");
+  let results_arr = response
+    .get("results")
+    .expect("Should have results field")
+    .as_array()
+    .expect("Results should be array");
 
   // Verify results are returned as a valid array structure
   // Note: without embeddings, we can't guarantee matches, but we can verify structure
@@ -373,7 +377,13 @@ async fn test_router_code_import_chunk() {
   };
   let search_response = router.handle(search_request).await;
   assert!(search_response.error.is_none(), "code_search should succeed");
-  let results = search_response.result.unwrap().as_array().unwrap().clone();
+  let response = search_response.result.unwrap();
+  let results = response
+    .get("results")
+    .expect("Should have results field")
+    .as_array()
+    .expect("Results should be array")
+    .clone();
   assert!(!results.is_empty(), "Should find imported chunk");
 
   // Verify the chunk was found

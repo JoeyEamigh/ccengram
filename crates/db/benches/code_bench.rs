@@ -61,6 +61,13 @@ export function function_{}(arg: number): number {{
     file_hash: format!("hash_{}", idx),
     indexed_at: chrono::Utc::now(),
     tokens_estimate,
+    definition_kind: None,
+    definition_name: None,
+    visibility: None,
+    signature: None,
+    docstring: None,
+    parent_definition: None,
+    embedding_text: None,
   }
 }
 

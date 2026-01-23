@@ -1058,7 +1058,11 @@ impl ToolHandler {
                 && let Ok(Some(related_mem)) = db.get_memory(&related_id).await
               {
                 let score = rel.confidence;
-                related.push((related_mem, score, format!("relationship:{}", rel.relationship_type.as_str())));
+                related.push((
+                  related_mem,
+                  score,
+                  format!("relationship:{}", rel.relationship_type.as_str()),
+                ));
               }
             }
           }

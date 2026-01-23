@@ -20,7 +20,14 @@ const JS_TO_TS_EXTENSIONS: &[(&str, &[&str])] = &[
 ];
 
 /// Index file names to try when importing a directory
-const INDEX_FILES: &[&str] = &["index.ts", "index.tsx", "index.js", "index.jsx", "index.mts", "index.mjs"];
+const INDEX_FILES: &[&str] = &[
+  "index.ts",
+  "index.tsx",
+  "index.js",
+  "index.jsx",
+  "index.mts",
+  "index.mjs",
+];
 
 /// Normalize an import path for matching
 ///
@@ -111,10 +118,7 @@ pub fn import_matches_file(import_path: &str, file_path: &str) -> bool {
       .file_stem()
       .and_then(|s| s.to_str())
       .unwrap_or("");
-    let candidate_stem = Path::new(&candidate)
-      .file_stem()
-      .and_then(|s| s.to_str())
-      .unwrap_or("");
+    let candidate_stem = Path::new(&candidate).file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
     if !file_stem.is_empty() && !candidate_stem.is_empty() && file_stem == candidate_stem {
       // Same base name - check if directories match
@@ -124,7 +128,9 @@ pub fn import_matches_file(import_path: &str, file_path: &str) -> bool {
       if file_dir == candidate_dir
         || candidate_dir.is_none()
         || candidate_dir == Some("")
-        || file_dir.map(|d| d.ends_with(candidate_dir.unwrap_or(""))).unwrap_or(false)
+        || file_dir
+          .map(|d| d.ends_with(candidate_dir.unwrap_or("")))
+          .unwrap_or(false)
       {
         return true;
       }
@@ -174,7 +180,11 @@ mod tests {
     let possible = possible_resolutions("./utils");
     assert!(possible.contains(&"utils.ts".to_string()), "possible: {:?}", possible);
     assert!(possible.contains(&"utils.tsx".to_string()), "possible: {:?}", possible);
-    assert!(possible.contains(&"utils/index.ts".to_string()), "possible: {:?}", possible);
+    assert!(
+      possible.contains(&"utils/index.ts".to_string()),
+      "possible: {:?}",
+      possible
+    );
   }
 
   #[test]
@@ -196,7 +206,10 @@ mod tests {
   #[test]
   fn test_import_matches_file_with_path() {
     // Import with directory should match
-    assert!(import_matches_file("./components/Button.js", "src/components/Button.ts"));
+    assert!(import_matches_file(
+      "./components/Button.js",
+      "src/components/Button.ts"
+    ));
     assert!(import_matches_file("../utils/helper.js", "utils/helper.ts"));
   }
 
@@ -212,7 +225,15 @@ mod tests {
   #[test]
   fn test_import_to_file_patterns() {
     let patterns = import_to_file_patterns("./utils.js");
-    assert!(patterns.iter().any(|p| p.contains("utils.ts")), "patterns: {:?}", patterns);
-    assert!(patterns.iter().any(|p| p.contains("utils.tsx")), "patterns: {:?}", patterns);
+    assert!(
+      patterns.iter().any(|p| p.contains("utils.ts")),
+      "patterns: {:?}",
+      patterns
+    );
+    assert!(
+      patterns.iter().any(|p| p.contains("utils.tsx")),
+      "patterns: {:?}",
+      patterns
+    );
   }
 }
