@@ -980,7 +980,12 @@ impl HookHandler {
     }
 
     // Check for high-priority signals (corrections/preferences) for immediate extraction
-    if self.hooks_enabled && self.use_llm_extraction && self.high_priority_signals_enabled && !prompt.is_empty() && prompt.len() >= 20 {
+    if self.hooks_enabled
+      && self.use_llm_extraction
+      && self.high_priority_signals_enabled
+      && !prompt.is_empty()
+      && prompt.len() >= 20
+    {
       match classify_signal(prompt).await {
         Ok(classification) if classification.category.is_high_priority() && classification.is_extractable => {
           info!("High-priority signal detected: {:?}", classification.category);
@@ -1176,7 +1181,8 @@ impl HookHandler {
     {
       let mut contexts = self.session_contexts.write().await;
       if let Some(ctx) = contexts.get_mut(session_id) {
-        if self.hooks_enabled && self.use_background_extraction && self.use_llm_extraction && ctx.has_meaningful_work() {
+        if self.hooks_enabled && self.use_background_extraction && self.use_llm_extraction && ctx.has_meaningful_work()
+        {
           // Use background extraction to avoid blocking the hook response
           self.spawn_background_extraction(ctx.clone(), cwd_str.clone(), "pre_compact");
           // memories_created will be empty since extraction is async
@@ -1239,7 +1245,8 @@ impl HookHandler {
     {
       let mut contexts = self.session_contexts.write().await;
       if let Some(ctx) = contexts.remove(session_id) {
-        if self.hooks_enabled && self.use_background_extraction && self.use_llm_extraction && ctx.has_meaningful_work() {
+        if self.hooks_enabled && self.use_background_extraction && self.use_llm_extraction && ctx.has_meaningful_work()
+        {
           // Use background extraction to avoid blocking the hook response
           self.spawn_background_extraction(ctx, cwd_str.clone(), "stop");
           // memories_created will be empty since extraction is async

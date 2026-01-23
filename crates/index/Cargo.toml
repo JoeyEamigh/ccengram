@@ -10,6 +10,7 @@ doctest = false
 engram-core = { workspace = true }
 embedding = { workspace = true }
 db = { workspace = true }
+ccengram-parser = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

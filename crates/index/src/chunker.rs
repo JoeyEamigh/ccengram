@@ -1,3 +1,4 @@
+use ccengram_parser::TreeSitterParser;
 use chrono::Utc;
 use engram_core::{CHARS_PER_TOKEN, ChunkType, CodeChunk, Language};
 use uuid::Uuid;
@@ -23,9 +24,10 @@ impl Default for ChunkerConfig {
   }
 }
 
-/// Line-based code chunker
+/// Line-based code chunker with tree-sitter integration for import/call extraction
 pub struct Chunker {
   config: ChunkerConfig,
+  ts_parser: TreeSitterParser,
 }
 
 impl Default for Chunker {
@@ -36,17 +38,26 @@ impl Default for Chunker {
 
 impl Chunker {
   pub fn new(config: ChunkerConfig) -> Self {
-    Self { config }
+    Self {
+      config,
+      ts_parser: TreeSitterParser::new(),
+    }
   }
 
   /// Chunk source code into semantic pieces
-  pub fn chunk(&self, source: &str, file_path: &str, language: Language, file_hash: &str) -> Vec<CodeChunk> {
+  ///
+  /// Uses tree-sitter to extract imports and function calls for supported languages.
+  pub fn chunk(&mut self, source: &str, file_path: &str, language: Language, file_hash: &str) -> Vec<CodeChunk> {
     let lines: Vec<&str> = source.lines().collect();
     let total_lines = lines.len();
 
     // Small files: single chunk
     if total_lines <= self.config.max_lines {
       let chunk_type = self.determine_chunk_type(source, language);
+      // Extract imports and calls using tree-sitter
+      let imports = self.ts_parser.extract_imports(source, language);
+      let calls = self.ts_parser.extract_calls(source, language);
+
       return vec![CodeChunk {
         id: Uuid::now_v7(),
         file_path: file_path.to_string(),
@@ -54,6 +65,8 @@ impl Chunker {
         language,
         chunk_type,
         symbols: self.extract_symbols(source, language),
+        imports,
+        calls,
         start_line: 1,
         end_line: total_lines as u32,
         file_hash: file_hash.to_string(),
@@ -75,6 +88,9 @@ impl Chunker {
         let content = lines[current_start..boundary].join("\n");
         let chunk_type = self.determine_chunk_type(&content, language);
         let tokens_estimate = (content.len() / CHARS_PER_TOKEN) as u32;
+        // Extract imports and calls using tree-sitter
+        let imports = self.ts_parser.extract_imports(&content, language);
+        let calls = self.ts_parser.extract_calls(&content, language);
 
         chunks.push(CodeChunk {
           id: Uuid::now_v7(),
@@ -83,6 +99,8 @@ impl Chunker {
           language,
           chunk_type,
           symbols: self.extract_symbols_in_range(&lines, current_start, boundary, language),
+          imports,
+          calls,
           start_line: (current_start + 1) as u32,
           end_line: boundary as u32,
           file_hash: file_hash.to_string(),
@@ -99,6 +117,9 @@ impl Chunker {
       let content = lines[current_start..].join("\n");
       let chunk_type = self.determine_chunk_type(&content, language);
       let tokens_estimate = (content.len() / CHARS_PER_TOKEN) as u32;
+      // Extract imports and calls using tree-sitter
+      let imports = self.ts_parser.extract_imports(&content, language);
+      let calls = self.ts_parser.extract_calls(&content, language);
 
       chunks.push(CodeChunk {
         id: Uuid::now_v7(),
@@ -107,6 +128,8 @@ impl Chunker {
         language,
         chunk_type,
         symbols: self.extract_symbols_in_range(&lines, current_start, total_lines, language),
+        imports,
+        calls,
         start_line: (current_start + 1) as u32,
         end_line: total_lines as u32,
         file_hash: file_hash.to_string(),
@@ -352,7 +375,7 @@ impl Chunker {
   }
 
   /// Split into evenly-sized chunks when no semantic boundaries found
-  fn split_evenly(&self, lines: &[&str], file_path: &str, language: Language, file_hash: &str) -> Vec<CodeChunk> {
+  fn split_evenly(&mut self, lines: &[&str], file_path: &str, language: Language, file_hash: &str) -> Vec<CodeChunk> {
     let total_lines = lines.len();
     let chunk_count = (total_lines / self.config.target_lines).max(1);
     let chunk_size = total_lines / chunk_count;
@@ -370,6 +393,9 @@ impl Chunker {
       let content = lines[start..end].join("\n");
       let chunk_type = self.determine_chunk_type(&content, language);
       let tokens_estimate = (content.len() / CHARS_PER_TOKEN) as u32;
+      // Extract imports and calls using tree-sitter
+      let imports = self.ts_parser.extract_imports(&content, language);
+      let calls = self.ts_parser.extract_calls(&content, language);
 
       chunks.push(CodeChunk {
         id: Uuid::now_v7(),
@@ -378,6 +404,8 @@ impl Chunker {
         language,
         chunk_type,
         symbols: self.extract_symbols_in_range(lines, start, end, language),
+        imports,
+        calls,
         start_line: (start + 1) as u32,
         end_line: end as u32,
         file_hash: file_hash.to_string(),
@@ -434,7 +462,7 @@ mod tests {
   #[test]
   fn test_chunk_small_file() {
     let source = "fn main() {\n    println!(\"Hello\");\n}";
-    let chunker = Chunker::default();
+    let mut chunker = Chunker::default();
 
     let chunks = chunker.chunk(source, "main.rs", Language::Rust, "hash123");
 
@@ -451,7 +479,7 @@ mod tests {
       .collect::<Vec<_>>()
       .join("\n");
 
-    let chunker = Chunker::default();
+    let mut chunker = Chunker::default();
     let chunks = chunker.chunk(&source, "large.rs", Language::Rust, "hash123");
 
     // Should have multiple chunks
@@ -530,6 +558,139 @@ export interface MyInterface {}
     assert_eq!(
       chunker.determine_chunk_type("use std::io;", Language::Rust),
       ChunkType::Import
+    );
+  }
+
+  #[test]
+  fn test_chunk_extracts_imports_rust() {
+    let source = r#"
+use std::collections::HashMap;
+use std::io::{Read, Write};
+
+pub fn main() {
+    let map = HashMap::new();
+    println!("hello");
+}
+"#;
+    let mut chunker = Chunker::default();
+    let chunks = chunker.chunk(source, "main.rs", Language::Rust, "hash123");
+
+    assert_eq!(chunks.len(), 1);
+    // Verify imports were extracted via tree-sitter
+    assert!(
+      !chunks[0].imports.is_empty(),
+      "imports should be populated: {:?}",
+      chunks[0].imports
+    );
+    assert!(
+      chunks[0].imports.iter().any(|i| i.contains("HashMap")),
+      "should find HashMap import: {:?}",
+      chunks[0].imports
+    );
+  }
+
+  #[test]
+  fn test_chunk_extracts_calls_rust() {
+    let source = r#"
+pub fn main() {
+    let result = helper_function(42);
+    println!("Result: {}", result);
+    result.unwrap();
+}
+"#;
+    let mut chunker = Chunker::default();
+    let chunks = chunker.chunk(source, "main.rs", Language::Rust, "hash123");
+
+    assert_eq!(chunks.len(), 1);
+    // Verify calls were extracted via tree-sitter
+    assert!(
+      !chunks[0].calls.is_empty(),
+      "calls should be populated: {:?}",
+      chunks[0].calls
+    );
+    assert!(
+      chunks[0].calls.contains(&"helper_function".to_string()),
+      "should find helper_function call: {:?}",
+      chunks[0].calls
+    );
+    assert!(
+      chunks[0].calls.contains(&"println".to_string()),
+      "should find println macro: {:?}",
+      chunks[0].calls
+    );
+  }
+
+  #[test]
+  fn test_chunk_extracts_imports_typescript() {
+    let source = r#"
+import { useState, useEffect } from 'react';
+import axios from 'axios';
+
+export function App() {
+    const [data, setData] = useState(null);
+    return <div>{data}</div>;
+}
+"#;
+    let mut chunker = Chunker::default();
+    let chunks = chunker.chunk(source, "app.tsx", Language::Tsx, "hash123");
+
+    assert_eq!(chunks.len(), 1);
+    // Verify imports were extracted via tree-sitter
+    assert!(
+      !chunks[0].imports.is_empty(),
+      "imports should be populated: {:?}",
+      chunks[0].imports
+    );
+    assert!(
+      chunks[0].imports.contains(&"react".to_string()),
+      "should find react import: {:?}",
+      chunks[0].imports
+    );
+    assert!(
+      chunks[0].imports.contains(&"axios".to_string()),
+      "should find axios import: {:?}",
+      chunks[0].imports
+    );
+  }
+
+  #[test]
+  fn test_chunk_extracts_calls_tsx() {
+    let source = r#"
+import React from 'react';
+
+export function Counter() {
+    const [count, setCount] = React.useState(0);
+
+    return (
+        <div>
+            <Button onClick={() => setCount(count + 1)}>
+                Count: {count}
+            </Button>
+        </div>
+    );
+}
+"#;
+    let mut chunker = Chunker::default();
+    let chunks = chunker.chunk(source, "counter.tsx", Language::Tsx, "hash123");
+
+    assert_eq!(chunks.len(), 1);
+    // Verify calls were extracted via tree-sitter
+    assert!(
+      !chunks[0].calls.is_empty(),
+      "calls should be populated: {:?}",
+      chunks[0].calls
+    );
+    // Should find regular function calls
+    assert!(
+      chunks[0].calls.contains(&"useState".to_string()),
+      "should find useState call: {:?}",
+      chunks[0].calls
+    );
+    // Should find JSX components as calls
+    assert!(
+      chunks[0].calls.contains(&"Button".to_string()),
+      "should find Button JSX component: {:?}",
+      chunks[0].calls
     );
   }
 }

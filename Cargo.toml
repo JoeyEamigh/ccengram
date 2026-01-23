@@ -10,6 +10,7 @@ members = [
     "crates/daemon",
     "crates/cli",
     "crates/tui",
+    "crates/parser",
 ]
 
 [workspace.package]
@@ -26,6 +27,7 @@ extract = { path = "crates/extract" }
 llm = { path = "crates/llm" }
 daemon = { path = "crates/daemon" }
 tui = { path = "crates/tui" }
+ccengram-parser = { path = "crates/parser" }
 
 # External dependencies (add with cargo add)
 anyhow = "1"

@@ -1,0 +1,68 @@
+[package]
+name = "ccengram-parser"
+version.workspace = true
+edition.workspace = true
+description = "Tree-sitter based code parsing for CCEngram"
+
+[lib]
+doctest = false
+
+[dependencies]
+tree-sitter = "0.26"
+thiserror = { workspace = true }
+
+# Tier 1: Always included (most common languages)
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-javascript = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-go = "0.25"
+tree-sitter-java = "0.23"
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"
+
+# Re-export core types
+engram-core = { workspace = true }
+
+# Tier 2: Optional languages
+tree-sitter-ruby = { version = "0.23", optional = true }
+tree-sitter-php = { version = "0.24", optional = true }
+tree-sitter-c-sharp = { version = "0.23", optional = true }
+tree-sitter-kotlin = { git = "https://github.com/dan0v/tree-sitter-kotlin.git", optional = true }
+tree-sitter-bash = { version = "0.25", optional = true }
+tree-sitter-scala = { version = "0.24", optional = true }
+tree-sitter-lua = { version = "0.4", optional = true }
+tree-sitter-zig = { version = "1.1", optional = true }
+
+# Tier 3: Data formats (optional, no call extraction)
+tree-sitter-json = { version = "0.24", optional = true }
+tree-sitter-yaml = { version = "0.7", optional = true }
+tree-sitter-toml = { version = "0.20", optional = true }
+tree-sitter-html = { version = "0.23", optional = true }
+tree-sitter-css = { version = "0.25", optional = true }
+tree-sitter-markdown = { version = "0.7", optional = true }
+
+[features]
+default = []
+tier2 = [
+  "dep:tree-sitter-ruby",
+  "dep:tree-sitter-php",
+  "dep:tree-sitter-c-sharp",
+  "dep:tree-sitter-kotlin",
+  "dep:tree-sitter-bash",
+  "dep:tree-sitter-scala",
+  "dep:tree-sitter-lua",
+  "dep:tree-sitter-zig",
+]
+tier3 = [
+  "dep:tree-sitter-json",
+  "dep:tree-sitter-yaml",
+  "dep:tree-sitter-toml",
+  "dep:tree-sitter-html",
+  "dep:tree-sitter-css",
+  "dep:tree-sitter-markdown",
+]
+all-languages = ["tier2", "tier3"]
+
+[dev-dependencies]
+pretty_assertions = "1"

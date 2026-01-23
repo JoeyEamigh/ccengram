@@ -146,9 +146,8 @@ impl Router {
       Arc::clone(&registry),
       Arc::clone(&embedding),
     ));
-    let hook_handler = Arc::new(
-      HookHandler::with_embedding(Arc::clone(&registry), Arc::clone(&embedding)).with_config(hooks_config),
-    );
+    let hook_handler =
+      Arc::new(HookHandler::with_embedding(Arc::clone(&registry), Arc::clone(&embedding)).with_config(hooks_config));
 
     Self {
       registry,

@@ -222,6 +222,8 @@ fn code_chunk_to_batch(chunk: &CodeChunk, vector: Option<&[f32]>, vector_dim: us
   let language = StringArray::from(vec![format!("{:?}", chunk.language).to_lowercase()]);
   let chunk_type = StringArray::from(vec![format!("{:?}", chunk.chunk_type).to_lowercase()]);
   let symbols = StringArray::from(vec![serde_json::to_string(&chunk.symbols)?]);
+  let imports = StringArray::from(vec![serde_json::to_string(&chunk.imports)?]);
+  let calls = StringArray::from(vec![serde_json::to_string(&chunk.calls)?]);
   let start_line = UInt32Array::from(vec![chunk.start_line]);
   let end_line = UInt32Array::from(vec![chunk.end_line]);
   let file_hash = StringArray::from(vec![chunk.file_hash.clone()]);
@@ -256,6 +258,8 @@ fn code_chunk_to_batch(chunk: &CodeChunk, vector: Option<&[f32]>, vector_dim: us
       Arc::new(language),
       Arc::new(chunk_type),
       Arc::new(symbols),
+      Arc::new(imports),
+      Arc::new(calls),
       Arc::new(start_line),
       Arc::new(end_line),
       Arc::new(file_hash),
@@ -275,6 +279,13 @@ fn batch_to_code_chunk(batch: &RecordBatch, row: usize) -> Result<CodeChunk> {
       .and_then(|c| c.as_any().downcast_ref::<StringArray>())
       .map(|a| a.value(row).to_string())
       .ok_or_else(|| DbError::NotFound(format!("column {}", name)))
+  };
+
+  let get_string_opt = |name: &str| -> Option<String> {
+    batch
+      .column_by_name(name)
+      .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+      .map(|a| a.value(row).to_string())
   };
 
   let get_u32 = |name: &str| -> Result<u32> {
@@ -297,6 +308,10 @@ fn batch_to_code_chunk(batch: &RecordBatch, row: usize) -> Result<CodeChunk> {
   let language_str = get_string("language")?;
   let chunk_type_str = get_string("chunk_type")?;
   let symbols_json = get_string("symbols")?;
+
+  // imports and calls may not exist in older databases
+  let imports_json = get_string_opt("imports");
+  let calls_json = get_string_opt("calls");
 
   let language = match language_str.as_str() {
     "typescript" => Language::TypeScript,
@@ -333,6 +348,14 @@ fn batch_to_code_chunk(batch: &RecordBatch, row: usize) -> Result<CodeChunk> {
   let content = get_string("content")?;
   let tokens_estimate = (content.len() / 4) as u32; // Estimate tokens from content
 
+  // Parse imports/calls, defaulting to empty vec if not present
+  let imports = imports_json
+    .and_then(|j| serde_json::from_str(&j).ok())
+    .unwrap_or_default();
+  let calls = calls_json
+    .and_then(|j| serde_json::from_str(&j).ok())
+    .unwrap_or_default();
+
   Ok(CodeChunk {
     id: Uuid::parse_str(&id_str).map_err(|_| DbError::NotFound("invalid id".into()))?,
     file_path: get_string("file_path")?,
@@ -340,6 +363,8 @@ fn batch_to_code_chunk(batch: &RecordBatch, row: usize) -> Result<CodeChunk> {
     language,
     chunk_type,
     symbols: serde_json::from_str(&symbols_json)?,
+    imports,
+    calls,
     start_line: get_u32("start_line")?,
     end_line: get_u32("end_line")?,
     file_hash: get_string("file_hash")?,
@@ -374,6 +399,8 @@ mod tests {
       language: Language::Rust,
       chunk_type: ChunkType::Function,
       symbols: vec!["test".to_string()],
+      imports: Vec::new(),
+      calls: Vec::new(),
       start_line: 1,
       end_line: 1,
       file_hash: "abc123".to_string(),

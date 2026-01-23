@@ -56,6 +56,8 @@ export function function_{}(arg: number): number {{
     start_line: 1,
     end_line: 10,
     symbols: vec![format!("function_{}", idx)],
+    imports: Vec::new(),
+    calls: Vec::new(),
     file_hash: format!("hash_{}", idx),
     indexed_at: chrono::Utc::now(),
     tokens_estimate,

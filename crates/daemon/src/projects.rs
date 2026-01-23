@@ -65,10 +65,7 @@ impl ProjectInfo {
           .map(|n| n.to_string_lossy().to_string())
           .unwrap_or_else(|| "unnamed".to_string());
 
-        info!(
-          "Using workspace alias: {:?} -> {:?}",
-          canonical, alias_canonical
-        );
+        info!("Using workspace alias: {:?} -> {:?}", canonical, alias_canonical);
 
         return Ok(Self {
           id,
@@ -439,7 +436,7 @@ fn run_watcher_loop(
   root: &Path,
   _data_dir: PathBuf,
 ) {
-  let chunker = Chunker::default();
+  let mut chunker = Chunker::default();
   let scanner = Scanner::new();
   let mut config = Config::load_for_project(root);
 

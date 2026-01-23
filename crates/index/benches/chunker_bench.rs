@@ -90,12 +90,12 @@ export class Class_{} implements Interface_{} {{
 
 fn bench_chunk_rust(c: &mut Criterion) {
   let mut group = c.benchmark_group("chunk_rust");
-  let chunker = Chunker::default();
 
   for size in [100, 500, 1000, 2000].iter() {
     let code = generate_rust_code(*size);
     group.throughput(Throughput::Bytes(code.len() as u64));
     group.bench_with_input(BenchmarkId::from_parameter(size), &code, |b, code| {
+      let mut chunker = Chunker::default();
       b.iter(|| chunker.chunk(black_box(code), "test.rs", Language::Rust, "checksum123"));
     });
   }
@@ -105,12 +105,12 @@ fn bench_chunk_rust(c: &mut Criterion) {
 
 fn bench_chunk_typescript(c: &mut Criterion) {
   let mut group = c.benchmark_group("chunk_typescript");
-  let chunker = Chunker::default();
 
   for size in [100, 500, 1000, 2000].iter() {
     let code = generate_typescript_code(*size);
     group.throughput(Throughput::Bytes(code.len() as u64));
     group.bench_with_input(BenchmarkId::from_parameter(size), &code, |b, code| {
+      let mut chunker = Chunker::default();
       b.iter(|| chunker.chunk(black_box(code), "test.ts", Language::TypeScript, "checksum123"));
     });
   }
@@ -120,12 +120,12 @@ fn bench_chunk_typescript(c: &mut Criterion) {
 
 fn bench_symbol_extraction(c: &mut Criterion) {
   let mut group = c.benchmark_group("symbol_extraction");
-  let chunker = Chunker::default();
 
   // Large file for symbol extraction
   let rust_code = generate_rust_code(1000);
 
   group.bench_function("rust_1000_lines", |b| {
+    let mut chunker = Chunker::default();
     b.iter(|| {
       let chunks = chunker.chunk(black_box(&rust_code), "test.rs", Language::Rust, "checksum");
       // Force evaluation of symbols
@@ -136,6 +136,7 @@ fn bench_symbol_extraction(c: &mut Criterion) {
 
   let ts_code = generate_typescript_code(1000);
   group.bench_function("typescript_1000_lines", |b| {
+    let mut chunker = Chunker::default();
     b.iter(|| {
       let chunks = chunker.chunk(black_box(&ts_code), "test.ts", Language::TypeScript, "checksum");
       let total_symbols: usize = chunks.iter().map(|c| c.symbols.len()).sum();

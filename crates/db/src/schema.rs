@@ -55,6 +55,8 @@ pub fn code_chunks_schema(vector_dim: usize) -> Arc<Schema> {
     Field::new("language", DataType::Utf8, false),
     Field::new("chunk_type", DataType::Utf8, false),
     Field::new("symbols", DataType::Utf8, false), // JSON array
+    Field::new("imports", DataType::Utf8, false), // JSON array of import paths
+    Field::new("calls", DataType::Utf8, false),   // JSON array of function/method calls
     Field::new("start_line", DataType::UInt32, false),
     Field::new("end_line", DataType::UInt32, false),
     Field::new("file_hash", DataType::Utf8, false),

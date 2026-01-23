@@ -302,6 +302,8 @@ mod tests {
         end_line: 10,
         chunk_type: ChunkType::Function,
         symbols: vec![],
+        imports: vec![],
+        calls: vec![],
         file_hash: "abc123".to_string(),
         indexed_at: chrono::Utc::now(),
         tokens_estimate: 10,

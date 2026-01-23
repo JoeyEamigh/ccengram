@@ -230,7 +230,7 @@ impl ToolHandler {
       scan_result.files.iter().map(|f| (f.relative_path.clone(), f)).collect();
 
     // Process only pending files
-    let chunker = Chunker::default();
+    let mut chunker = Chunker::default();
     let mut total_chunks = 0;
     let mut indexed_files = 0;
     let mut failed_files = Vec::new();
@@ -457,6 +457,8 @@ impl ToolHandler {
       language,
       chunk_type,
       symbols: args.chunk.symbols,
+      imports: Vec::new(), // TODO: extract from tree-sitter
+      calls: Vec::new(),   // TODO: extract from tree-sitter
       start_line: args.chunk.start_line,
       end_line: args.chunk.end_line,
       file_hash: args.chunk.file_hash,

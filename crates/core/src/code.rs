@@ -19,6 +19,14 @@ pub struct CodeChunk {
   pub indexed_at: DateTime<Utc>,
   /// Estimated token count (content.len() / CHARS_PER_TOKEN)
   pub tokens_estimate: u32,
+  /// Import paths referenced by this chunk
+  /// e.g., ["std::collections::HashMap", "crate::db::ProjectDb"]
+  #[serde(default)]
+  pub imports: Vec<String>,
+  /// Function/method calls made within this chunk
+  /// e.g., ["process", "HashMap::new", "db.query"]
+  #[serde(default)]
+  pub calls: Vec<String>,
 }
 
 impl CodeChunk {
