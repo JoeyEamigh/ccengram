@@ -85,8 +85,7 @@ fn bench_single_vs_batch(c: &mut Criterion) {
             .unwrap();
 
           // Simulate watcher: insert one chunk at a time
-          for i in 0..count {
-            let (chunk, vector) = &chunks_and_vectors[i];
+          for (chunk, vector) in chunks_and_vectors.iter().take(count) {
             db.add_code_chunk(black_box(chunk), Some(vector)).await.unwrap();
           }
         });

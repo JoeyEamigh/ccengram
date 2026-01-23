@@ -1,0 +1,65 @@
+[package]
+name = "benchmark"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "ccengram-bench"
+path = "src/main.rs"
+
+[lib]
+doctest = false
+
+[dependencies]
+# Internal crates
+engram-core = { workspace = true }
+db = { workspace = true }
+daemon = { workspace = true }
+index = { workspace = true }
+embedding = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = "0.8"
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Progress/UI
+indicatif = "0.17"
+
+# System monitoring
+sysinfo = "0.33"
+
+# Graph analysis
+petgraph = "0.6"
+
+# Utilities
+tempfile = "3"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+rayon = "1.10"
+glob = "0.3"
+sha2 = "0.10"
+reqwest = { version = "0.13", features = ["stream"] }
+tokio-util = { version = "0.7", features = ["io"] }
+flate2 = "1.0"
+tar = "0.4"
+dirs = "6"
+hostname = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

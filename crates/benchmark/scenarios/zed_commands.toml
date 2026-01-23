@@ -1,0 +1,43 @@
+# Zed Command System Exploration
+# Tests discovering how Zed handles editor commands
+
+[scenario]
+id = "zed-command-system"
+name = "Understanding Zed Command Architecture"
+repo = "zed"
+difficulty = "hard"
+description = "Explore how Zed implements its command system, from keybindings to execution"
+
+[task]
+prompt = "How does Zed handle editor commands?"
+intent = "architectural_discovery"
+
+[expected]
+must_find_files = [
+    "**/commands.rs",
+    "**/actions.rs",
+    "**/keymap/**",
+]
+must_find_symbols = ["Action", "actions", "dispatch", "Keymap", "KeyBinding"]
+noise_patterns = ["**/tests/**", "test_*", "Mock*", "*_test.rs"]
+
+[[steps]]
+query = "How does Zed handle editor commands and actions?"
+expected_results = 5
+max_noise_ratio = 0.3
+scope = "code"
+
+[[steps]]
+query = "Action trait definition and dispatch mechanism"
+depends_on_previous = true
+expected_results = 3
+
+[[steps]]
+query = "keymap keybinding keyboard shortcuts"
+depends_on_previous = false
+scope = "code"
+
+[success]
+min_discovery_score = 0.7
+max_noise_ratio = 0.25
+max_steps_to_core = 3

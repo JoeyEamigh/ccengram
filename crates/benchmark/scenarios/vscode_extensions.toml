@@ -1,0 +1,42 @@
+# VSCode Extension System Exploration
+# Tests discovering how VSCode handles extensions
+
+[scenario]
+id = "vscode-extension-system"
+name = "Understanding VSCode Extension System"
+repo = "vscode"
+difficulty = "hard"
+description = "Explore how VSCode loads, manages, and runs extensions"
+
+[task]
+prompt = "How does VSCode handle extensions?"
+intent = "architectural_discovery"
+
+[expected]
+must_find_files = [
+    "**/extensions/**/*.ts",
+    "**/extensionHost/**/*.ts",
+    "**/extensionManagement/**/*.ts",
+]
+must_find_symbols = ["Extension", "ExtensionHost", "activate", "deactivate", "ExtensionService"]
+noise_patterns = ["**/test/**", "*.test.ts", "*.spec.ts", "__tests__/**", "mock*"]
+
+[[steps]]
+query = "VSCode extension system how extensions work"
+expected_results = 5
+max_noise_ratio = 0.3
+scope = "code"
+
+[[steps]]
+query = "ExtensionHost how extensions are loaded and activated"
+depends_on_previous = true
+
+[[steps]]
+query = "extension API contribute contributions"
+depends_on_previous = false
+scope = "code"
+
+[success]
+min_discovery_score = 0.6
+max_noise_ratio = 0.30
+max_steps_to_core = 3

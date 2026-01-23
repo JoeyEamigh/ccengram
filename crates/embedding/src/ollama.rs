@@ -580,7 +580,7 @@ mod tests {
     let provider = OllamaProvider::new().with_context_length(8192);
     assert_eq!(provider.max_batch_size(), 16);
 
-    let num_batches = (100 + provider.max_batch_size() - 1) / provider.max_batch_size();
+    let num_batches = 100_usize.div_ceil(provider.max_batch_size());
     assert_eq!(num_batches, 7);
   }
 }

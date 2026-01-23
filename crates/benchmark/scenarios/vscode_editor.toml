@@ -1,0 +1,47 @@
+# VSCode Editor Core Exploration
+# Tests discovering how VSCode's editor works
+
+[scenario]
+id = "vscode-editor-core"
+name = "Understanding VSCode Editor Core"
+repo = "vscode"
+difficulty = "hard"
+description = "Explore how VSCode's text editor and Monaco integration works"
+
+[task]
+prompt = "How does VSCode's text editor work?"
+intent = "architectural_discovery"
+
+[expected]
+must_find_files = [
+    "**/editor/**/*.ts",
+    "**/textModel/**/*.ts",
+    "**/viewModel/**/*.ts",
+]
+must_find_symbols = ["Editor", "TextModel", "ViewModel", "CodeEditor", "editorAction"]
+noise_patterns = ["**/test/**", "*.test.ts", "*.spec.ts", "__tests__/**", "mock*"]
+
+[[steps]]
+query = "VSCode text editor core implementation"
+expected_results = 5
+max_noise_ratio = 0.3
+scope = "code"
+
+[[steps]]
+query = "TextModel document text buffer"
+depends_on_previous = true
+
+[[steps]]
+query = "editor actions commands keybindings"
+depends_on_previous = false
+scope = "code"
+
+[[steps]]
+query = "cursor selection text editing"
+depends_on_previous = false
+scope = "code"
+
+[success]
+min_discovery_score = 0.6
+max_noise_ratio = 0.30
+max_steps_to_core = 3

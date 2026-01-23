@@ -1,0 +1,47 @@
+# Zed LSP Integration Exploration
+# Tests discovering how Zed integrates with Language Server Protocol
+
+[scenario]
+id = "zed-lsp-integration"
+name = "Understanding Zed LSP Integration"
+repo = "zed"
+difficulty = "hard"
+description = "Explore how Zed integrates with language servers for code intelligence"
+
+[task]
+prompt = "How does Zed integrate with language servers?"
+intent = "architectural_discovery"
+
+[expected]
+must_find_files = [
+    "**/lsp/**/*.rs",
+    "**/language.rs",
+    "**/language_server.rs",
+]
+must_find_symbols = ["LanguageServer", "LspAdapter", "completion", "hover", "goto_definition"]
+noise_patterns = ["**/tests/**", "test_*", "Mock*", "*_test.rs"]
+
+[[steps]]
+query = "Language Server Protocol LSP integration"
+expected_results = 5
+max_noise_ratio = 0.3
+scope = "code"
+
+[[steps]]
+query = "LanguageServer struct how it connects to language servers"
+depends_on_previous = true
+
+[[steps]]
+query = "completion provider autocomplete suggestions"
+depends_on_previous = false
+scope = "code"
+
+[[steps]]
+query = "go to definition jump to definition"
+depends_on_previous = false
+scope = "code"
+
+[success]
+min_discovery_score = 0.6
+max_noise_ratio = 0.30
+max_steps_to_core = 4

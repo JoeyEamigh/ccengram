@@ -11,6 +11,7 @@ members = [
     "crates/cli",
     "crates/tui",
     "crates/parser",
+    "crates/benchmark",
 ]
 
 [workspace.package]
