@@ -10,7 +10,7 @@ pub mod validation;
 pub use code::{CHARS_PER_TOKEN, ChunkType, CodeChunk, Language};
 pub use config::{
   ALL_TOOLS, Config, DecayConfig as ConfigDecay, EmbeddingConfig, EmbeddingProvider as ConfigEmbeddingProvider,
-  INTERNAL_TOOLS, IndexConfig, PRESET_MINIMAL, PRESET_STANDARD, SearchConfig, ToolConfig, ToolPreset,
+  HooksConfig, INTERNAL_TOOLS, IndexConfig, PRESET_MINIMAL, PRESET_STANDARD, SearchConfig, ToolConfig, ToolPreset,
   WorkspaceConfig,
 };
 pub use document::{ChunkParams, Document, DocumentChunk, DocumentId, DocumentSource, chunk_text};

@@ -1,7 +1,7 @@
 use crate::projects::ProjectRegistry;
 use crate::session_tracker::{SessionId, SessionTracker};
 use embedding::EmbeddingProvider;
-use engram_core::{Memory, MemoryType, Sector, resolve_project_path};
+use engram_core::{HooksConfig, Memory, MemoryType, Sector, resolve_project_path};
 use extract::{classify_sector, compute_hashes, extract_concepts, extract_files};
 use llm::{ExtractedMemory, classify_signal, extract_high_priority, extract_memories};
 use serde::{Deserialize, Serialize};
@@ -217,14 +217,22 @@ pub struct HookHandler {
   /// Simple hash-based deduplication (content hashes seen recently)
   /// Cleared when it exceeds MAX_SEEN_HASHES to prevent unbounded growth
   seen_hashes: RwLock<HashSet<String>>,
-  /// Whether to use LLM extraction (true) or basic summary fallback (false)
-  use_llm_extraction: bool,
   /// Session to project path binding - ensures directory changes don't switch projects
   session_projects: RwLock<HashMap<String, PathBuf>>,
-  /// Whether to use background extraction (non-blocking) for PreCompact/Stop triggers
-  use_background_extraction: bool,
   /// Session tracker for daemon lifecycle management (optional)
   lifecycle_session_tracker: RwLock<Option<Arc<SessionTracker>>>,
+
+  // Configuration flags (from HooksConfig)
+  /// Whether automatic memory capture is enabled
+  hooks_enabled: bool,
+  /// Whether to use LLM extraction (true) or basic summary fallback (false)
+  use_llm_extraction: bool,
+  /// Whether to use background extraction (non-blocking) for PreCompact/Stop triggers
+  use_background_extraction: bool,
+  /// Whether to create tool observation memories
+  tool_observations_enabled: bool,
+  /// Whether to detect high-priority signals in user prompts
+  high_priority_signals_enabled: bool,
 }
 
 impl HookHandler {
@@ -234,10 +242,14 @@ impl HookHandler {
       embedding: None,
       session_contexts: RwLock::new(HashMap::new()),
       seen_hashes: RwLock::new(HashSet::new()),
-      use_llm_extraction: true,
       session_projects: RwLock::new(HashMap::new()),
-      use_background_extraction: true, // Default to background extraction
       lifecycle_session_tracker: RwLock::new(None),
+      // Default configuration
+      hooks_enabled: true,
+      use_llm_extraction: true,
+      use_background_extraction: true,
+      tool_observations_enabled: true,
+      high_priority_signals_enabled: true,
     }
   }
 
@@ -247,11 +259,25 @@ impl HookHandler {
       embedding: Some(embedding),
       session_contexts: RwLock::new(HashMap::new()),
       seen_hashes: RwLock::new(HashSet::new()),
-      use_llm_extraction: true,
       session_projects: RwLock::new(HashMap::new()),
-      use_background_extraction: true, // Default to background extraction
       lifecycle_session_tracker: RwLock::new(None),
+      // Default configuration
+      hooks_enabled: true,
+      use_llm_extraction: true,
+      use_background_extraction: true,
+      tool_observations_enabled: true,
+      high_priority_signals_enabled: true,
     }
+  }
+
+  /// Configure the hook handler from a HooksConfig
+  pub fn with_config(mut self, config: &HooksConfig) -> Self {
+    self.hooks_enabled = config.enabled;
+    self.use_llm_extraction = config.llm_extraction;
+    self.use_background_extraction = config.background_extraction;
+    self.tool_observations_enabled = config.tool_observations;
+    self.high_priority_signals_enabled = config.high_priority_signals;
+    self
   }
 
   /// Set the session tracker for daemon lifecycle management
@@ -337,6 +363,10 @@ impl HookHandler {
     tool_result: Option<&serde_json::Value>,
     cwd: &str,
   ) -> Result<Option<String>, HookError> {
+    // Skip if hooks or tool observations are disabled
+    if !self.hooks_enabled || !self.tool_observations_enabled {
+      return Ok(None);
+    }
     // Format the observation based on tool type
     let observation = match tool_name {
       "Read" => {
@@ -491,6 +521,11 @@ impl HookHandler {
 
   /// Extract and store a memory from content
   async fn extract_memory(&self, content: &str, cwd: &str, _session_id: &str) -> Result<Option<String>, HookError> {
+    // Skip if hooks are disabled
+    if !self.hooks_enabled {
+      return Ok(None);
+    }
+
     // Skip if content is too short
     if content.len() < 20 {
       return Ok(None);
@@ -550,6 +585,11 @@ impl HookHandler {
 
   /// Store an extracted memory from LLM extraction
   async fn store_extracted_memory(&self, extracted: &ExtractedMemory, cwd: &str) -> Result<Option<String>, HookError> {
+    // Skip if hooks are disabled
+    if !self.hooks_enabled {
+      return Ok(None);
+    }
+
     // Skip if content is too short
     if extracted.content.len() < 20 {
       return Ok(None);
@@ -940,7 +980,7 @@ impl HookHandler {
     }
 
     // Check for high-priority signals (corrections/preferences) for immediate extraction
-    if self.use_llm_extraction && !prompt.is_empty() && prompt.len() >= 20 {
+    if self.hooks_enabled && self.use_llm_extraction && self.high_priority_signals_enabled && !prompt.is_empty() && prompt.len() >= 20 {
       match classify_signal(prompt).await {
         Ok(classification) if classification.category.is_high_priority() && classification.is_extractable => {
           info!("High-priority signal detected: {:?}", classification.category);
@@ -1080,7 +1120,7 @@ impl HookHandler {
     };
 
     // If todo_completion threshold met, trigger extraction
-    if should_trigger_extraction && self.use_llm_extraction {
+    if should_trigger_extraction && self.hooks_enabled && self.use_llm_extraction {
       info!(
         "Todo completion trigger: extracting memories for session {}",
         session_id
@@ -1136,11 +1176,11 @@ impl HookHandler {
     {
       let mut contexts = self.session_contexts.write().await;
       if let Some(ctx) = contexts.get_mut(session_id) {
-        if self.use_background_extraction && self.use_llm_extraction && ctx.has_meaningful_work() {
+        if self.hooks_enabled && self.use_background_extraction && self.use_llm_extraction && ctx.has_meaningful_work() {
           // Use background extraction to avoid blocking the hook response
           self.spawn_background_extraction(ctx.clone(), cwd_str.clone(), "pre_compact");
           // memories_created will be empty since extraction is async
-        } else if self.use_llm_extraction {
+        } else if self.hooks_enabled && self.use_llm_extraction {
           // Synchronous LLM extraction
           match self.extract_with_llm(ctx, &cwd_str).await {
             Ok(ids) => memories_created.extend(ids),
@@ -1199,11 +1239,11 @@ impl HookHandler {
     {
       let mut contexts = self.session_contexts.write().await;
       if let Some(ctx) = contexts.remove(session_id) {
-        if self.use_background_extraction && self.use_llm_extraction && ctx.has_meaningful_work() {
+        if self.hooks_enabled && self.use_background_extraction && self.use_llm_extraction && ctx.has_meaningful_work() {
           // Use background extraction to avoid blocking the hook response
           self.spawn_background_extraction(ctx, cwd_str.clone(), "stop");
           // memories_created will be empty since extraction is async
-        } else if self.use_llm_extraction {
+        } else if self.hooks_enabled && self.use_llm_extraction {
           // Synchronous LLM extraction
           match self.extract_with_llm(&ctx, &cwd_str).await {
             Ok(ids) => memories_created.extend(ids),

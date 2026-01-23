@@ -10,7 +10,7 @@ You are building **CCEngram** - intelligent memory and code search for Claude Co
 - `ccengram mcp` - Thin stdio proxy for Claude Code MCP
 - `ccengram hook <name>` - Thin hook client, sends event to daemon
 
-**Storage: SQLite** (per-project isolation)
+**Storage: LanceDB** (per-project isolation)
 
 - Each project gets its own database at `~/.local/share/ccengram/projects/<hash>/`
 - Tables: `memories`, `code_chunks`, `documents`, `sessions`, `entities`
@@ -22,7 +22,7 @@ You are building **CCEngram** - intelligent memory and code search for Claude Co
 ```
 crates/
 ├── core/       # Domain types (Memory, Sector, CodeChunk, Config)
-├── db/         # SQLite wrapper, per-project connections
+├── db/         # LanceDB wrapper, per-project connections
 ├── embedding/  # Ollama embedding provider
 ├── index/      # File scanner, tree-sitter parser, chunker
 ├── extract/    # Dedup (SimHash), decay, sector classification
@@ -51,9 +51,6 @@ cargo build                               # Build all
 cargo test                                # Run tests
 cargo clippy --all-targets --all-features # Lint all
 cargo fmt --all                           # Format all
-cargo run -p cli -- daemon                # Run daemon
-cargo run -p cli -- search memories "q"   # Search memories
-cargo run -p cli -- tui                   # Launch TUI
 ```
 
 ## Tool Presets
@@ -71,30 +68,6 @@ Initialize project config:
 ```bash
 ccengram config init --preset minimal
 ```
-
-## MemExplore Subagent
-
-Generate a MemExplore subagent for codebase exploration:
-
-```bash
-ccengram agent
-# Creates .claude/agents/MemExplore.md
-```
-
-The MemExplore agent has access to:
-- `memory_search` - Search memories
-- `code_search` - Search indexed code
-- `code_context` - Get surrounding lines for a code chunk
-- `docs_search` - Search ingested documents
-- `doc_context` - Get adjacent chunks from a document
-- `memory_timeline` - Get chronological context
-- `entity_top` - Get top mentioned entities
-
-Use for:
-- Finding past decisions and their rationale
-- Locating relevant code by semantic meaning
-- Recalling user preferences and patterns
-- Exploring codebase structure
 
 ## CLI Commands
 
@@ -167,21 +140,3 @@ ccengram completions zsh            # Generate zsh completions
 ccengram completions fish           # Generate fish completions
 ccengram completions powershell     # Generate PowerShell completions
 ```
-
-## Document Indexing
-
-Configure document auto-indexing in `.claude/ccengram.toml`:
-
-```toml
-[docs]
-# Directory to watch for documents (relative to project root)
-directory = "docs"
-
-# File extensions to treat as documents
-extensions = ["md", "txt", "rst", "adoc", "org"]
-
-# Maximum document file size (bytes)
-max_file_size = 5242880  # 5MB
-```
-
-When `docs.directory` is set, the file watcher will automatically index documents when they change. The config file is also watched and reloaded on changes.

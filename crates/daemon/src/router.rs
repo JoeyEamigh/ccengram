@@ -136,6 +136,33 @@ impl Router {
     }
   }
 
+  /// Create a router with embedding provider and hooks configuration
+  pub fn with_embedding_and_config(
+    registry: Arc<ProjectRegistry>,
+    embedding: Arc<dyn EmbeddingProvider>,
+    hooks_config: &engram_core::HooksConfig,
+  ) -> Self {
+    let tool_handler = Arc::new(ToolHandler::with_embedding(
+      Arc::clone(&registry),
+      Arc::clone(&embedding),
+    ));
+    let hook_handler = Arc::new(
+      HookHandler::with_embedding(Arc::clone(&registry), Arc::clone(&embedding)).with_config(hooks_config),
+    );
+
+    Self {
+      registry,
+      tool_handler,
+      hook_handler,
+      shutdown_handle: Arc::new(Mutex::new(None)),
+      session_tracker: Arc::new(Mutex::new(None)),
+      activity_tracker: Arc::new(Mutex::new(None)),
+      foreground: Arc::new(Mutex::new(false)),
+      embedding_provider: Arc::new(Mutex::new(Some(embedding))),
+      request_count: AtomicU64::new(0),
+    }
+  }
+
   /// Set the shutdown handle (called after server is created)
   pub async fn set_shutdown_handle(&self, handle: ShutdownHandle) {
     let mut guard = self.shutdown_handle.lock().await;

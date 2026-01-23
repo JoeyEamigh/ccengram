@@ -311,6 +311,50 @@ impl Default for DaemonConfig {
 }
 
 // ============================================================================
+// Hooks Configuration
+// ============================================================================
+
+/// Hook behavior configuration for automatic memory capture
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HooksConfig {
+  /// Enable automatic memory capture from hooks (default: true)
+  /// When false, hooks will still run but won't create memories automatically.
+  /// Manual memory creation via memory_add tool is still available.
+  pub enabled: bool,
+
+  /// Enable LLM-based memory extraction (default: true)
+  /// When false, uses basic summary extraction without LLM inference.
+  /// This uses your Claude Code subscription.
+  pub llm_extraction: bool,
+
+  /// Enable background extraction for PreCompact/Stop hooks (default: true)
+  /// When true, extraction runs asynchronously without blocking hook responses.
+  /// It is not recommended to disable this unless debugging.
+  pub background_extraction: bool,
+
+  /// Enable tool observation memories (default: true)
+  /// Tool observations are episodic memories capturing individual tool uses.
+  pub tool_observations: bool,
+
+  /// Enable high-priority signal detection (default: true)
+  /// When true, user prompts are scanned for corrections/preferences for immediate extraction.
+  pub high_priority_signals: bool,
+}
+
+impl Default for HooksConfig {
+  fn default() -> Self {
+    Self {
+      enabled: true,
+      llm_extraction: true,
+      background_extraction: true,
+      tool_observations: true,
+      high_priority_signals: true,
+    }
+  }
+}
+
+// ============================================================================
 // Workspace Configuration
 // ============================================================================
 
@@ -416,6 +460,10 @@ pub struct Config {
   /// Workspace aliasing settings
   #[serde(default)]
   pub workspace: WorkspaceConfig,
+
+  /// Hook behavior settings
+  #[serde(default)]
+  pub hooks: HooksConfig,
 }
 
 /// Tool filtering configuration
@@ -671,6 +719,34 @@ log_retention_days = 7
 # Disable automatic worktree detection (default: false)
 # Set to true to treat git worktrees as separate projects.
 # disable_worktree_detection = false
+
+# ============================================================================
+# Hook Behavior
+# ============================================================================
+
+[hooks]
+# Enable automatic memory capture from hooks (default: true)
+# When false, hooks still run but don't create memories automatically.
+# Manual memory creation via memory_add tool is still available.
+enabled = true
+
+# Enable LLM-based memory extraction (default: true)
+# When false, uses basic summary extraction without LLM inference.
+# This uses your Claude Code subscription.
+llm_extraction = true
+
+# Enable background extraction for PreCompact/Stop hooks (default: true)
+# When true, extraction runs asynchronously without blocking hook responses.
+# It is not recommended to disable this unless debugging.
+background_extraction = true
+
+# Enable tool observation memories (default: true)
+# Creates episodic memories for individual tool uses (the "tool trail").
+tool_observations = true
+
+# Enable high-priority signal detection (default: true)
+# Scans user prompts for corrections/preferences for immediate extraction.
+high_priority_signals = true
 "#,
       tool_count = ALL_TOOLS.len(),
       preset_name = preset_name
@@ -961,5 +1037,77 @@ preset = "minimal"
     let config: Config = toml::from_str(toml_content).unwrap();
     assert!(config.workspace.alias.is_none());
     assert!(!config.workspace.disable_worktree_detection);
+  }
+
+  #[test]
+  fn test_hooks_defaults() {
+    let config = HooksConfig::default();
+    assert!(config.enabled);
+    assert!(config.llm_extraction);
+    assert!(config.background_extraction);
+    assert!(config.tool_observations);
+    assert!(config.high_priority_signals);
+  }
+
+  #[test]
+  fn test_hooks_config_in_template() {
+    let template = Config::generate_template(ToolPreset::Standard);
+    assert!(template.contains("[hooks]"));
+    assert!(template.contains("enabled = true"));
+    assert!(template.contains("llm_extraction = true"));
+    assert!(template.contains("background_extraction"));
+    assert!(template.contains("tool_observations"));
+    assert!(template.contains("high_priority_signals"));
+  }
+
+  #[test]
+  fn test_hooks_config_roundtrip() {
+    let config = Config {
+      hooks: HooksConfig {
+        enabled: false,
+        llm_extraction: false,
+        background_extraction: false,
+        tool_observations: false,
+        high_priority_signals: false,
+      },
+      ..Default::default()
+    };
+
+    let toml_str = toml::to_string_pretty(&config).unwrap();
+    let parsed: Config = toml::from_str(&toml_str).unwrap();
+
+    assert!(!parsed.hooks.enabled);
+    assert!(!parsed.hooks.llm_extraction);
+    assert!(!parsed.hooks.background_extraction);
+    assert!(!parsed.hooks.tool_observations);
+    assert!(!parsed.hooks.high_priority_signals);
+  }
+
+  #[test]
+  fn test_hooks_config_parsing() {
+    let toml_content = r#"
+[hooks]
+enabled = false
+llm_extraction = false
+"#;
+    let config: Config = toml::from_str(toml_content).unwrap();
+    assert!(!config.hooks.enabled);
+    assert!(!config.hooks.llm_extraction);
+    // Other fields should default to true
+    assert!(config.hooks.background_extraction);
+    assert!(config.hooks.tool_observations);
+    assert!(config.hooks.high_priority_signals);
+  }
+
+  #[test]
+  fn test_hooks_config_optional() {
+    // Hooks section can be completely omitted (uses defaults)
+    let toml_content = r#"
+[tools]
+preset = "minimal"
+"#;
+    let config: Config = toml::from_str(toml_content).unwrap();
+    assert!(config.hooks.enabled);
+    assert!(config.hooks.llm_extraction);
   }
 }

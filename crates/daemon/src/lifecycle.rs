@@ -6,7 +6,7 @@ use crate::server::{Server, ShutdownHandle};
 use crate::session_tracker::SessionTracker;
 use crate::shutdown_watcher::ShutdownWatcher;
 use embedding::{EmbeddingProvider, OllamaProvider, OpenRouterProvider};
-use engram_core::{Config, ConfigEmbeddingProvider, EmbeddingConfig};
+use engram_core::{Config, ConfigEmbeddingProvider, EmbeddingConfig, HooksConfig};
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
@@ -39,6 +39,8 @@ pub struct DaemonConfig {
   pub embedding: EmbeddingConfig,
   /// Log retention in days (0 = keep forever)
   pub log_retention_days: u64,
+  /// Hook behavior configuration
+  pub hooks: HooksConfig,
 }
 
 impl Default for DaemonConfig {
@@ -55,6 +57,7 @@ impl Default for DaemonConfig {
       foreground: false,
       embedding: config.embedding,
       log_retention_days: config.daemon.log_retention_days,
+      hooks: config.hooks,
     }
   }
 }
@@ -166,9 +169,21 @@ impl Daemon {
       warn!("Embedding provider is not available - falling back to text search");
     }
 
-    // Create router with our registry and embedding provider
-    let router = Router::with_embedding(Arc::clone(&self.registry), embedding);
+    // Create router with our registry, embedding provider, and hooks config
+    let router = Router::with_embedding_and_config(Arc::clone(&self.registry), embedding, &self.config.hooks);
     let router = Arc::new(router);
+
+    // Log hooks configuration
+    if !self.config.hooks.enabled {
+      info!("Automatic memory capture is DISABLED");
+    } else {
+      if !self.config.hooks.llm_extraction {
+        info!("LLM extraction is disabled, using basic summary extraction");
+      }
+      if !self.config.hooks.tool_observations {
+        info!("Tool observation memories are disabled");
+      }
+    }
 
     // Create server
     let server = Server::with_socket_path(Arc::clone(&router), self.config.socket_path.clone());
