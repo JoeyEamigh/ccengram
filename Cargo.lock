@@ -1643,6 +1643,7 @@ dependencies = [
  "embedding",
  "engram-core",
  "extract",
+ "futures",
  "index",
  "libc",
  "llm",

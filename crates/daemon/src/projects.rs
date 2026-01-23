@@ -426,6 +426,190 @@ impl ProjectRegistry {
   }
 }
 
+/// Holds context for processing a file change
+struct FileChangeContext {
+  change_path: PathBuf,
+  relative_path: String,
+  is_doc_file: bool,
+  is_delete: bool,
+}
+
+/// Process a single file change (async, for parallel processing)
+async fn process_file_change(
+  ctx: FileChangeContext,
+  db: Arc<ProjectDb>,
+  embedding: Option<Arc<dyn EmbeddingProvider>>,
+  project_id: String,
+  root: PathBuf,
+  docs_config: engram_core::DocsConfig,
+) -> Result<(bool, bool), ()> {
+  // Returns (is_code_file_indexed, is_doc_indexed)
+  let mut code_indexed = false;
+  let mut doc_indexed = false;
+
+  if ctx.is_delete {
+    // Handle deletes
+    if ctx.is_doc_file {
+      let filter = format!("source = '{}'", ctx.relative_path.replace('\'', "''"));
+      if let Ok(chunks) = db.list_document_chunks(Some(&filter), Some(1)).await
+        && let Some(chunk) = chunks.first()
+      {
+        let doc_id = chunk.document_id;
+        if let Err(e) = db.delete_document(&doc_id).await {
+          warn!("Failed to delete document {}: {}", ctx.relative_path, e);
+        }
+      }
+    } else if let Err(e) = db.delete_chunks_for_file(&ctx.relative_path).await {
+      warn!("Failed to delete chunks for {}: {}", ctx.relative_path, e);
+    }
+    return Ok((false, false));
+  }
+
+  // Handle create/modify
+  if ctx.is_doc_file {
+    // Index as document
+    if let Ok(content) = tokio::fs::read_to_string(&ctx.change_path).await {
+      if content.len() > docs_config.max_file_size {
+        debug!("Skipping large doc file: {:?}", ctx.change_path);
+        return Ok((false, false));
+      }
+
+      let title = ctx
+        .change_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Untitled")
+        .to_string();
+
+      // Delete existing document if any
+      let filter = format!("source = '{}'", ctx.relative_path.replace('\'', "''"));
+      if let Ok(chunks) = db.list_document_chunks(Some(&filter), Some(1)).await
+        && let Some(chunk) = chunks.first()
+      {
+        let doc_id = chunk.document_id;
+        let _ = db.delete_document(&doc_id).await;
+      }
+
+      // Chunk the document
+      let params = ChunkParams::default();
+      let text_chunks = chunk_text(&content, &params);
+      let total_chunks = text_chunks.len();
+
+      if total_chunks == 0 {
+        return Ok((false, false));
+      }
+
+      let document_id = DocumentId::new();
+      let project_uuid = uuid::Uuid::parse_str(&project_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
+
+      // Create all chunks
+      let chunks: Vec<DocumentChunk> = text_chunks
+        .into_iter()
+        .enumerate()
+        .map(|(i, (chunk_content, char_offset))| {
+          DocumentChunk::new(
+            document_id,
+            project_uuid,
+            chunk_content,
+            title.clone(),
+            ctx.relative_path.clone(),
+            DocumentSource::File,
+            i,
+            total_chunks,
+            char_offset,
+          )
+        })
+        .collect();
+
+      // Batch embed all chunks
+      let vectors: Vec<Option<Vec<f32>>> = if let Some(ref emb) = embedding {
+        let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
+        match emb.embed_batch(&texts).await {
+          Ok(vecs) => vecs.into_iter().map(Some).collect(),
+          Err(e) => {
+            warn!(
+              "Batch embedding failed for doc {}: {}, using no vectors",
+              ctx.relative_path, e
+            );
+            chunks.iter().map(|_| None).collect()
+          }
+        }
+      } else {
+        chunks.iter().map(|_| None).collect()
+      };
+
+      // Batch insert all chunks
+      if let Err(e) = db.add_document_chunks(&chunks, &vectors).await {
+        warn!("Failed to batch insert document chunks for {}: {}", ctx.relative_path, e);
+      } else {
+        debug!("Batch inserted {} document chunks for {}", chunks.len(), ctx.relative_path);
+        doc_indexed = true;
+      }
+    }
+  } else {
+    // Index as code
+    let scanner = Scanner::new();
+    if let Some(scanned) = scanner.scan_file(&ctx.change_path, &root) {
+      // Delete old chunks
+      if let Err(e) = db.delete_chunks_for_file(&ctx.relative_path).await {
+        warn!("Failed to delete old chunks for {}: {}", ctx.relative_path, e);
+      }
+
+      // Read and chunk the file
+      if let Ok(content) = tokio::fs::read_to_string(&ctx.change_path).await {
+        let mut chunker = Chunker::default();
+        let chunks = chunker.chunk(&content, &ctx.relative_path, scanned.language, &scanned.checksum);
+
+        if chunks.is_empty() {
+          return Ok((false, false));
+        }
+
+        // Batch embed all chunks
+        let embeddings: Vec<Vec<f32>> = if let Some(ref emb) = embedding {
+          let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
+          match emb.embed_batch(&texts).await {
+            Ok(vecs) => vecs,
+            Err(e) => {
+              warn!(
+                "Batch embedding failed for {}: {}, using zero vectors",
+                ctx.relative_path, e
+              );
+              let dim = emb.dimensions();
+              chunks.iter().map(|_| vec![0.0f32; dim]).collect()
+            }
+          }
+        } else {
+          Vec::new()
+        };
+
+        // Prepare batch data for insert
+        let chunks_with_vectors: Vec<_> = chunks
+          .into_iter()
+          .enumerate()
+          .map(|(i, chunk)| {
+            let vector = embeddings.get(i).cloned().unwrap_or_default();
+            (chunk, vector)
+          })
+          .collect();
+
+        // Batch insert all chunks
+        if let Err(e) = db.add_code_chunks(&chunks_with_vectors).await {
+          warn!("Failed to batch insert chunks for {}: {}", ctx.relative_path, e);
+        } else {
+          debug!(
+            "Batch inserted {} chunks for {}",
+            chunks_with_vectors.len(),
+            ctx.relative_path
+          );
+          code_indexed = true;
+        }
+      }
+    }
+  }
+
+  Ok((code_indexed, doc_indexed))
+}
+
 /// Run the file watcher loop (blocking, runs in spawn_blocking)
 fn run_watcher_loop(
   mut watcher: DebouncedWatcher,
@@ -436,8 +620,6 @@ fn run_watcher_loop(
   root: &Path,
   _data_dir: PathBuf,
 ) {
-  let mut chunker = Chunker::default();
-  let scanner = Scanner::new();
   let mut config = Config::load_for_project(root);
 
   let poll_interval = Duration::from_millis(config.index.watcher_debounce_ms.max(100));
@@ -450,8 +632,9 @@ fn run_watcher_loop(
   // Set up docs directory watching if configured
   let mut docs_dir = config.docs.directory.as_ref().map(|d| root.join(d));
   let mut doc_extensions: HashSet<String> = config.docs.extensions.iter().cloned().collect();
+  let mut parallel_files = config.index.parallel_files.max(1);
 
-  info!("Watcher loop started for {}", project_id);
+  info!("Watcher loop started for {} (parallel_files={})", project_id, parallel_files);
   if let Some(ref dir) = docs_dir {
     info!("Watching docs directory: {:?}", dir);
   }
@@ -484,6 +667,7 @@ fn run_watcher_loop(
       config = Config::load_for_project(root);
       docs_dir = config.docs.directory.as_ref().map(|d| root.join(d));
       doc_extensions = config.docs.extensions.iter().cloned().collect();
+      parallel_files = config.index.parallel_files.max(1);
 
       if let Some(ref dir) = docs_dir {
         info!("Updated docs directory: {:?}", dir);
@@ -495,7 +679,9 @@ fn run_watcher_loop(
       }
     }
 
-    // Process changes
+    // Collect and filter changes
+    let mut file_contexts: Vec<FileChangeContext> = Vec::new();
+
     for change in changes {
       // Skip config file (already handled)
       if change.path == config_path {
@@ -528,152 +714,56 @@ fn run_watcher_loop(
         false
       };
 
-      match change.kind {
-        ChangeKind::Deleted => {
-          if is_doc_file {
-            // Delete document chunks for this file
+      let is_delete = matches!(change.kind, ChangeKind::Deleted);
+
+      file_contexts.push(FileChangeContext {
+        change_path: change.path,
+        relative_path,
+        is_doc_file,
+        is_delete,
+      });
+    }
+
+    // Process file changes in parallel (P1)
+    if !file_contexts.is_empty()
+      && let Ok(rt) = tokio::runtime::Handle::try_current() {
+        let results: Vec<Option<(bool, bool)>> = rt.block_on(async {
+          use std::sync::Arc as StdArc;
+          use tokio::sync::Semaphore;
+
+          let semaphore = StdArc::new(Semaphore::new(parallel_files));
+          let mut tasks = Vec::with_capacity(file_contexts.len());
+
+          for ctx in file_contexts {
             let db_clone = Arc::clone(&db);
-            let source = relative_path.clone();
-            if let Ok(rt) = tokio::runtime::Handle::try_current() {
-              // Find and delete document by source
-              let filter = format!("source = '{}'", source.replace('\'', "''"));
-              if let Ok(chunks) = rt.block_on(async { db_clone.list_document_chunks(Some(&filter), Some(1)).await })
-                && let Some(chunk) = chunks.first()
-              {
-                let doc_id = chunk.document_id;
-                if let Err(e) = rt.block_on(async { db_clone.delete_document(&doc_id).await }) {
-                  warn!("Failed to delete document {}: {}", source, e);
-                }
-              }
-            }
-          } else {
-            // Delete code chunks for this file
-            let db_clone = Arc::clone(&db);
-            let path_clone = relative_path.clone();
-            if let Ok(rt) = tokio::runtime::Handle::try_current()
-              && let Err(e) = rt.block_on(async { db_clone.delete_chunks_for_file(&path_clone).await })
-            {
-              warn!("Failed to delete chunks for {}: {}", path_clone, e);
-            }
+            let emb_clone = embedding.clone();
+            let project_id_clone = project_id.to_string();
+            let root_clone = root.to_path_buf();
+            let docs_config_clone = config.docs.clone();
+            let sem_clone = StdArc::clone(&semaphore);
+
+            tasks.push(async move {
+              // Acquire semaphore permit to limit concurrency
+              let _permit = sem_clone.acquire().await.ok()?;
+              process_file_change(ctx, db_clone, emb_clone, project_id_clone, root_clone, docs_config_clone)
+                .await
+                .ok()
+            });
           }
-        }
-        ChangeKind::Created | ChangeKind::Modified | ChangeKind::Renamed => {
-          if is_doc_file {
-            // Index as document
-            if let Ok(content) = std::fs::read_to_string(&change.path) {
-              // Check file size
-              if content.len() > config.docs.max_file_size {
-                debug!("Skipping large doc file: {:?}", change.path);
-                continue;
-              }
 
-              let title = change
-                .path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("Untitled")
-                .to_string();
+          futures::future::join_all(tasks).await
+        });
 
-              // Delete existing document if any
-              let db_clone = Arc::clone(&db);
-              let source = relative_path.clone();
-              if let Ok(rt) = tokio::runtime::Handle::try_current() {
-                let filter = format!("source = '{}'", source.replace('\'', "''"));
-                if let Ok(chunks) = rt.block_on(async { db_clone.list_document_chunks(Some(&filter), Some(1)).await })
-                  && let Some(chunk) = chunks.first()
-                {
-                  let doc_id = chunk.document_id;
-                  let _ = rt.block_on(async { db_clone.delete_document(&doc_id).await });
-                }
-
-                // Chunk and store the document
-                let params = ChunkParams::default();
-                let text_chunks = chunk_text(&content, &params);
-                let total_chunks = text_chunks.len();
-
-                let document_id = DocumentId::new();
-                let project_uuid = uuid::Uuid::parse_str(project_id).unwrap_or_else(|_| uuid::Uuid::new_v4());
-
-                for (i, (chunk_content, char_offset)) in text_chunks.into_iter().enumerate() {
-                  let chunk = DocumentChunk::new(
-                    document_id,
-                    project_uuid,
-                    chunk_content.clone(),
-                    title.clone(),
-                    relative_path.clone(),
-                    DocumentSource::File,
-                    i,
-                    total_chunks,
-                    char_offset,
-                  );
-
-                  let vector = if let Some(ref emb) = embedding {
-                    rt.block_on(async { emb.embed(&chunk_content).await.ok() })
-                  } else {
-                    None
-                  };
-
-                  let vector_slice: Option<Vec<f32>> = vector.map(|v| v.into_iter().collect());
-
-                  let db_clone = Arc::clone(&db);
-                  if let Err(e) =
-                    rt.block_on(async { db_clone.add_document_chunk(&chunk, vector_slice.as_deref()).await })
-                  {
-                    warn!("Failed to add document chunk for {}: {}", relative_path, e);
-                  }
-                }
-
-                docs_indexed += 1;
-                debug!("Indexed document: {} ({} chunks)", title, total_chunks);
-              }
-            }
-          } else {
-            // Re-index as code
-            if let Some(scanned) = scanner.scan_file(&change.path, root) {
-              // Delete old chunks
-              let db_clone = Arc::clone(&db);
-              let path_clone = relative_path.clone();
-              if let Ok(rt) = tokio::runtime::Handle::try_current()
-                && let Err(e) = rt.block_on(async { db_clone.delete_chunks_for_file(&path_clone).await })
-              {
-                warn!("Failed to delete old chunks for {}: {}", path_clone, e);
-              }
-
-              // Read and chunk the file
-              if let Ok(content) = std::fs::read_to_string(&change.path) {
-                let chunks = chunker.chunk(&content, &relative_path, scanned.language, &scanned.checksum);
-
-                // Store chunks
-                for chunk in chunks {
-                  let vector = if let Some(ref emb) = embedding {
-                    if let Ok(rt) = tokio::runtime::Handle::try_current() {
-                      rt.block_on(async { emb.embed(&chunk.content).await.ok() })
-                    } else {
-                      None
-                    }
-                  } else {
-                    None
-                  };
-
-                  let vector_slice: Option<Vec<f32>> = vector.map(|v| v.into_iter().collect());
-
-                  let db_clone = Arc::clone(&db);
-                  let chunk_clone = chunk.clone();
-                  if let Ok(rt) = tokio::runtime::Handle::try_current()
-                    && let Err(e) =
-                      rt.block_on(async { db_clone.add_code_chunk(&chunk_clone, vector_slice.as_deref()).await })
-                  {
-                    warn!("Failed to add chunk for {}: {}", relative_path, e);
-                  }
-                }
-
-                files_indexed += 1;
-              }
-            }
+        // Count indexed files
+        for result in results.into_iter().flatten() {
+          if result.0 {
+            files_indexed += 1;
+          }
+          if result.1 {
+            docs_indexed += 1;
           }
         }
       }
-    }
 
     // Sleep before next poll
     std::thread::sleep(poll_interval);

@@ -18,6 +18,7 @@ pub use format::{format_context_response, format_explore_response};
 
 use crate::projects::ProjectRegistry;
 use embedding::EmbeddingProvider;
+use engram_core::EmbeddingConfig;
 use std::sync::Arc;
 use tracing::warn;
 
@@ -27,6 +28,8 @@ pub use ranking::{RankingWeights, rank_memories};
 pub struct ToolHandler {
   pub(crate) registry: Arc<ProjectRegistry>,
   pub(crate) embedding: Option<Arc<dyn EmbeddingProvider>>,
+  /// Embedding configuration for health check context_length comparison
+  pub(crate) embedding_config: Option<EmbeddingConfig>,
 }
 
 impl ToolHandler {
@@ -34,6 +37,7 @@ impl ToolHandler {
     Self {
       registry,
       embedding: None,
+      embedding_config: None,
     }
   }
 
@@ -41,6 +45,19 @@ impl ToolHandler {
     Self {
       registry,
       embedding: Some(embedding),
+      embedding_config: None,
+    }
+  }
+
+  pub fn with_embedding_and_config(
+    registry: Arc<ProjectRegistry>,
+    embedding: Arc<dyn EmbeddingProvider>,
+    config: EmbeddingConfig,
+  ) -> Self {
+    Self {
+      registry,
+      embedding: Some(embedding),
+      embedding_config: Some(config),
     }
   }
 

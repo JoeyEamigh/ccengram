@@ -84,9 +84,16 @@ impl DaemonConfig {
 fn create_embedding_provider(config: &EmbeddingConfig) -> Arc<dyn EmbeddingProvider> {
   match config.provider {
     ConfigEmbeddingProvider::Ollama => {
-      let provider = OllamaProvider::new()
+      let mut provider = OllamaProvider::new()
         .with_url(&config.ollama_url)
-        .with_model(&config.model, config.dimensions);
+        .with_model(&config.model, config.dimensions)
+        .with_context_length(config.context_length);
+
+      // Apply explicit max_batch_size if configured
+      if let Some(max_batch_size) = config.max_batch_size {
+        provider = provider.with_max_batch_size(max_batch_size);
+      }
+
       Arc::new(provider)
     }
     ConfigEmbeddingProvider::OpenRouter => {
@@ -99,9 +106,15 @@ fn create_embedding_provider(config: &EmbeddingConfig) -> Arc<dyn EmbeddingProvi
 
       if api_key.is_empty() {
         warn!("OpenRouter API key not configured, falling back to Ollama");
-        let provider = OllamaProvider::new()
+        let mut provider = OllamaProvider::new()
           .with_url(&config.ollama_url)
-          .with_model(&config.model, config.dimensions);
+          .with_model(&config.model, config.dimensions)
+          .with_context_length(config.context_length);
+
+        if let Some(max_batch_size) = config.max_batch_size {
+          provider = provider.with_max_batch_size(max_batch_size);
+        }
+
         Arc::new(provider)
       } else {
         let provider = OpenRouterProvider::new(api_key).with_model(&config.model, config.dimensions);
@@ -169,8 +182,13 @@ impl Daemon {
       warn!("Embedding provider is not available - falling back to text search");
     }
 
-    // Create router with our registry, embedding provider, and hooks config
-    let router = Router::with_embedding_and_config(Arc::clone(&self.registry), embedding, &self.config.hooks);
+    // Create router with our registry, embedding provider, and configs
+    let router = Router::with_embedding_and_config(
+      Arc::clone(&self.registry),
+      embedding,
+      &self.config.hooks,
+      &self.config.embedding,
+    );
     let router = Arc::new(router);
 
     // Log hooks configuration

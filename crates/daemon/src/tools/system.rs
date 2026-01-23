@@ -79,20 +79,51 @@ impl ToolHandler {
       }
     };
 
-    // Check Ollama availability
+    // Check Ollama availability and context length
     let ollama = OllamaProvider::new();
     let ollama_status = ollama.check_health().await;
+
+    // Check for context length mismatch (P0-D)
+    let mut context_length_warning: Option<String> = None;
+    if ollama_status.available && ollama_status.configured_model_available
+      && let Some(ref config) = self.embedding_config {
+        // Query model's actual context length
+        let model_provider = OllamaProvider::new()
+          .with_url(&config.ollama_url)
+          .with_model(&config.model, config.dimensions);
+        if let Some(actual_context_length) = model_provider.get_model_context_length().await
+          && config.context_length > actual_context_length {
+            let msg = format!(
+              "Configured context_length ({}) exceeds model's actual context length ({}). \
+               Batch embedding may fail or produce errors. Consider reducing context_length in config.",
+              config.context_length, actual_context_length
+            );
+            warn!("{}", msg);
+            context_length_warning = Some(msg);
+          }
+      }
 
     // Check embedding provider (use what we have configured)
     let embedding_status = match &self.embedding {
       Some(provider) => {
-        serde_json::json!({
+        let mut status = serde_json::json!({
             "configured": true,
             "provider": provider.name(),
             "model": provider.model_id(),
             "dimensions": provider.dimensions(),
             "available": provider.is_available().await,
-        })
+        });
+        // Add context_length info if available
+        if let Some(ref config) = self.embedding_config {
+          status["context_length"] = serde_json::json!(config.context_length);
+          if let Some(batch_size) = config.max_batch_size {
+            status["max_batch_size"] = serde_json::json!(batch_size);
+          }
+        }
+        if let Some(ref warning) = context_length_warning {
+          status["warning"] = serde_json::json!(warning);
+        }
+        status
       }
       None => {
         serde_json::json!({

@@ -144,6 +144,18 @@ pub struct EmbeddingConfig {
   /// If not set, reads from OPENROUTER_API_KEY env var
   #[serde(skip_serializing_if = "Option::is_none")]
   pub openrouter_api_key: Option<String>,
+
+  /// Context length for batch size calculation (default: 32768)
+  /// Should match OLLAMA_CONTEXT_LENGTH environment variable if set
+  /// Lower VRAM requires smaller context_length:
+  ///   24 GB -> 32768, 12 GB -> 16384, 8 GB -> 8192, 6 GB -> 4096
+  pub context_length: usize,
+
+  /// Maximum batch size for embedding requests
+  /// Auto-calculated from context_length if not set: min(context_length / 512, 64)
+  /// Set explicitly to override auto-calculation
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub max_batch_size: Option<usize>,
 }
 
 impl Default for EmbeddingConfig {
@@ -154,6 +166,8 @@ impl Default for EmbeddingConfig {
       dimensions: 4096,
       ollama_url: "http://localhost:11434".to_string(),
       openrouter_api_key: None,
+      context_length: 32768,
+      max_batch_size: None, // Auto-calculated
     }
   }
 }
@@ -275,6 +289,11 @@ pub struct IndexConfig {
 
   /// Maximum chunk size in characters (default: 2000)
   pub max_chunk_chars: usize,
+
+  /// Number of files to process in parallel during indexing (default: 4)
+  /// Higher values use more memory but may be faster on SSDs.
+  /// Reduce if experiencing memory pressure.
+  pub parallel_files: usize,
 }
 
 impl Default for IndexConfig {
@@ -284,6 +303,7 @@ impl Default for IndexConfig {
       watcher_debounce_ms: 500,
       max_file_size: 1024 * 1024, // 1MB
       max_chunk_chars: 2000,
+      parallel_files: 4,
     }
   }
 }
@@ -652,6 +672,20 @@ ollama_url = "http://localhost:11434"
 # Can also be set via OPENROUTER_API_KEY env var
 # openrouter_api_key = "sk-or-..."
 
+# Context length for batch size calculation
+# Should match your OLLAMA_CONTEXT_LENGTH environment variable
+# Lower VRAM requires smaller context_length:
+#   24 GB VRAM -> 32768 (default)
+#   12 GB VRAM -> 16384
+#   8 GB VRAM  -> 8192
+#   6 GB VRAM  -> 4096
+context_length = 32768
+
+# Maximum batch size (auto-calculated if not set)
+# Formula: min(context_length / 512, 64)
+# Set explicitly to override auto-calculation
+# max_batch_size = 64
+
 # ============================================================================
 # Decay & Memory Lifecycle
 # ============================================================================
@@ -722,6 +756,11 @@ max_file_size = 1048576  # 1MB
 
 # Maximum chunk size (characters)
 max_chunk_chars = 2000
+
+# Number of files to process in parallel (default: 4)
+# Higher values use more memory but may be faster on SSDs
+# Reduce if experiencing memory pressure
+parallel_files = 4
 
 # ============================================================================
 # Document Indexing
@@ -1002,6 +1041,20 @@ dimensions = 4096
     assert_eq!(config.model, "qwen3-embedding");
     assert_eq!(config.dimensions, 4096);
     assert_eq!(config.ollama_url, "http://localhost:11434");
+    assert_eq!(config.context_length, 32768);
+    assert!(config.max_batch_size.is_none());
+  }
+
+  #[test]
+  fn test_embedding_context_length_parsing() {
+    let toml_content = r#"
+[embedding]
+context_length = 8192
+max_batch_size = 16
+"#;
+    let config: Config = toml::from_str(toml_content).unwrap();
+    assert_eq!(config.embedding.context_length, 8192);
+    assert_eq!(config.embedding.max_batch_size, Some(16));
   }
 
   #[test]

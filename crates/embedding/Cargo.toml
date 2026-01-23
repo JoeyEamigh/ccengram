@@ -24,3 +24,7 @@ tempfile = "3"
 [[bench]]
 name = "retry_bench"
 harness = false
+
+[[bench]]
+name = "batch_embed_bench"
+harness = false

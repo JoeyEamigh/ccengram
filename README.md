@@ -32,6 +32,91 @@ ollama serve
 ollama pull qwen3-embedding
 ```
 
+### Recommended Ollama Configuration
+
+For optimal embedding performance during bulk indexing, configure Ollama's systemd service:
+
+```bash
+sudo systemctl edit ollama
+```
+
+Add the following configuration:
+
+```ini
+[Service]
+Environment="OLLAMA_CONTEXT_LENGTH=32768" # see below for VRAM-based adjustments
+Environment="OLLAMA_KEEP_ALIVE=30m"
+Environment="OLLAMA_GPU_OVERHEAD=2147483648"
+Environment="OLLAMA_MAX_LOADED_MODELS=1"
+Environment="OLLAMA_NUM_PARALLEL=16"
+Environment="OLLAMA_MAX_QUEUE=2048"
+```
+
+Then restart Ollama:
+
+```bash
+sudo systemctl restart ollama
+```
+
+**Why these values:**
+- `MAX_LOADED_MODELS=1` - Prevents OOM by limiting to one model
+- `KEEP_ALIVE=30m` - Keeps model loaded, avoids reload latency during indexing
+- `NUM_PARALLEL=16` - Queue depth for burst requests (throughput is GPU-bound regardless)
+- `MAX_QUEUE=2048` - Large queue for bulk indexing operations
+- `GPU_OVERHEAD=2GB` - Reserves VRAM headroom for your desktop environment
+
+> **Note**: Embedding throughput is GPU-bound. Increasing `NUM_PARALLEL` only increases queue depth, not actual throughput. The GPU processes requests as fast as it can regardless of parallelism settings.
+
+### VRAM Requirements
+
+The `qwen3-embedding` model (Q4_K_M quantization, 7.6B parameters) has the following VRAM requirements:
+
+| Component | Size |
+|-----------|------|
+| Base (model weights) | ~4.9 GB |
+| Per 1K context tokens | ~231 MB |
+
+**Total VRAM by context length:**
+
+| Context Length | Total VRAM |
+|----------------|------------|
+| 2K | 5.3 GB |
+| 4K | 5.8 GB |
+| 8K | 6.8 GB |
+| 16K | 8.6 GB |
+| 32K | 12.4 GB |
+
+**GPU compatibility:**
+
+| GPU | VRAM | Max Context | Configuration |
+|-----|------|-------------|---------------|
+| RTX 3090 / 4090 | 24 GB | 32K+ | Full context, use default config |
+| RTX 3060 / 4060 Ti / Intel B580 | 12 GB | ~24K | `OLLAMA_CONTEXT_LENGTH=16384` recommended |
+| RTX 4060 / 3050 | 8 GB | ~12K | `OLLAMA_CONTEXT_LENGTH=8192` required |
+
+**Configuration for lower VRAM GPUs (8-12GB):**
+
+```bash
+sudo systemctl edit ollama
+```
+
+```ini
+[Service]
+# For 12GB VRAM (RTX 3060, Intel B580)
+Environment="OLLAMA_CONTEXT_LENGTH=16384"
+Environment="OLLAMA_KEEP_ALIVE=30m"
+Environment="OLLAMA_GPU_OVERHEAD=2147483648"
+Environment="OLLAMA_MAX_LOADED_MODELS=1"
+Environment="OLLAMA_NUM_PARALLEL=8"
+Environment="OLLAMA_MAX_QUEUE=1024"
+
+# For 8GB VRAM (RTX 4060), use instead:
+# Environment="OLLAMA_CONTEXT_LENGTH=8192"
+# Environment="OLLAMA_NUM_PARALLEL=4"
+```
+
+> **Note**: Lower context lengths reduce maximum batch sizes for embedding operations. CCEngram automatically adapts batch sizes based on the configured context length. With 8K context, expect ~2x longer indexing times compared to 32K context.
+
 ### Option 1: Quick Install (Recommended)
 
 ```bash

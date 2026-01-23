@@ -136,15 +136,17 @@ impl Router {
     }
   }
 
-  /// Create a router with embedding provider and hooks configuration
+  /// Create a router with embedding provider and configuration
   pub fn with_embedding_and_config(
     registry: Arc<ProjectRegistry>,
     embedding: Arc<dyn EmbeddingProvider>,
     hooks_config: &engram_core::HooksConfig,
+    embedding_config: &engram_core::EmbeddingConfig,
   ) -> Self {
-    let tool_handler = Arc::new(ToolHandler::with_embedding(
+    let tool_handler = Arc::new(ToolHandler::with_embedding_and_config(
       Arc::clone(&registry),
       Arc::clone(&embedding),
+      embedding_config.clone(),
     ));
     let hook_handler =
       Arc::new(HookHandler::with_embedding(Arc::clone(&registry), Arc::clone(&embedding)).with_config(hooks_config));

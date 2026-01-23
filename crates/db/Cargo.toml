@@ -36,3 +36,7 @@ harness = false
 [[bench]]
 name = "code_bench"
 harness = false
+
+[[bench]]
+name = "batch_perf_bench"
+harness = false
