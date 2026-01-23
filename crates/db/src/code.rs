@@ -174,9 +174,7 @@ impl ProjectDb {
   /// Searches for code chunks whose ID starts with the given prefix.
   pub async fn find_code_chunks_by_prefix(&self, prefix: &str) -> Result<Vec<CodeChunk>> {
     if prefix.len() < 6 {
-      return Err(DbError::InvalidInput(
-        "ID prefix must be at least 6 characters".into(),
-      ));
+      return Err(DbError::InvalidInput("ID prefix must be at least 6 characters".into()));
     }
 
     // Use LIKE query for prefix matching
@@ -208,9 +206,7 @@ impl ProjectDb {
         }),
       }
     } else if id_or_prefix.len() < 6 {
-      Err(DbError::InvalidInput(
-        "ID prefix must be at least 6 characters".into(),
-      ))
+      Err(DbError::InvalidInput("ID prefix must be at least 6 characters".into()))
     } else {
       Ok(None)
     }

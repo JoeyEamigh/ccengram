@@ -1,10 +1,5 @@
 use crate::theme::Theme;
-use ratatui::{
-  buffer::Buffer,
-  layout::Rect,
-  style::{Style, Stylize},
-  widgets::Widget,
-};
+use ratatui::{buffer::Buffer, layout::Rect, style::Style, widgets::Widget};
 
 /// A colored badge displaying a memory sector
 /// Example: [Semantic] or [Episodic]

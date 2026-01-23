@@ -5,12 +5,7 @@ use daemon::{Request, connect_or_start};
 use tracing::error;
 
 /// Get context around a chunk (auto-detects code vs document)
-pub async fn cmd_context(
-  chunk_id: &str,
-  before: Option<usize>,
-  after: Option<usize>,
-  json_output: bool,
-) -> Result<()> {
+pub async fn cmd_context(chunk_id: &str, before: Option<usize>, after: Option<usize>, json_output: bool) -> Result<()> {
   let mut client = connect_or_start().await.context("Failed to connect to daemon")?;
 
   let cwd = std::env::current_dir()

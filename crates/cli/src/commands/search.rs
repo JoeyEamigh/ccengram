@@ -205,7 +205,13 @@ pub async fn cmd_search_code(
 }
 
 /// Search documents
-pub async fn cmd_search_docs(query: &str, limit: usize, project: Option<&str>, json_output: bool, long_ids: bool) -> Result<()> {
+pub async fn cmd_search_docs(
+  query: &str,
+  limit: usize,
+  project: Option<&str>,
+  json_output: bool,
+  long_ids: bool,
+) -> Result<()> {
   let mut client = connect_or_start().await.context("Failed to connect to daemon")?;
 
   let cwd = project

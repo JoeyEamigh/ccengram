@@ -23,7 +23,7 @@ use ratatui::{
   backend::CrosstermBackend,
   buffer::Buffer,
   layout::{Constraint, Direction, Layout, Rect},
-  style::{Style, Stylize},
+  style::Style,
   widgets::{Block, Borders, Clear, Widget},
 };
 use std::io;

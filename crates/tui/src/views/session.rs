@@ -2,7 +2,7 @@ use crate::theme::Theme;
 use ratatui::{
   buffer::Buffer,
   layout::{Constraint, Direction, Layout, Rect},
-  style::{Style, Stylize},
+  style::Style,
   widgets::{Block, Borders, Widget},
 };
 use serde_json::Value;

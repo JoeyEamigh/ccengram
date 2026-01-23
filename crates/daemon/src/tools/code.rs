@@ -521,11 +521,7 @@ impl ToolHandler {
     let chunk = match db.get_code_chunk_by_id_or_prefix(&args.chunk_id).await {
       Ok(Some(c)) => c,
       Ok(None) => {
-        return Response::error(
-          request.id,
-          -32000,
-          &format!("Code chunk not found: {}", args.chunk_id),
-        );
+        return Response::error(request.id, -32000, &format!("Code chunk not found: {}", args.chunk_id));
       }
       Err(db::DbError::AmbiguousPrefix { prefix, count }) => {
         return Response::error(
@@ -622,7 +618,6 @@ impl ToolHandler {
       }),
     )
   }
-
 }
 
 #[cfg(test)]

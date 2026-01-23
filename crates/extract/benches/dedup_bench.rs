@@ -3,9 +3,10 @@
 //! Run with: cargo bench -p extract
 
 use chrono::Utc;
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use engram_core::{Memory, Sector};
 use extract::{decay, dedup};
+use std::hint::black_box;
 use uuid::Uuid;
 
 fn generate_memory_content(idx: usize, variation: usize) -> String {

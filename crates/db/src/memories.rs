@@ -174,16 +174,21 @@ impl ProjectDb {
   /// Requires minimum 6 characters for safety. Returns up to 10 matches.
   pub async fn find_by_prefix(&self, prefix: &str) -> Result<Vec<Memory>> {
     if prefix.len() < 6 {
-      return Err(DbError::InvalidInput(
-        "ID prefix must be at least 6 characters".into(),
-      ));
+      return Err(DbError::InvalidInput("ID prefix must be at least 6 characters".into()));
     }
 
     let table = self.memories_table().await?;
 
     // Use LIKE query for prefix matching
     let filter = format!("id LIKE '{}%'", prefix);
-    let results: Vec<RecordBatch> = table.query().only_if(filter).limit(10).execute().await?.try_collect().await?;
+    let results: Vec<RecordBatch> = table
+      .query()
+      .only_if(filter)
+      .limit(10)
+      .execute()
+      .await?
+      .try_collect()
+      .await?;
 
     let mut memories = Vec::new();
     for batch in results {
@@ -202,9 +207,10 @@ impl ProjectDb {
   pub async fn get_memory_by_id_or_prefix(&self, id_or_prefix: &str) -> Result<Option<Memory>> {
     // Try exact match first (if it looks like a full UUID)
     if let Ok(memory_id) = id_or_prefix.parse::<MemoryId>()
-      && let Some(memory) = self.get_memory(&memory_id).await? {
-        return Ok(Some(memory));
-      }
+      && let Some(memory) = self.get_memory(&memory_id).await?
+    {
+      return Ok(Some(memory));
+    }
 
     // Try prefix match if at least 6 characters
     if id_or_prefix.len() >= 6 {
@@ -218,9 +224,7 @@ impl ProjectDb {
         }),
       }
     } else if id_or_prefix.len() < 6 {
-      Err(DbError::InvalidInput(
-        "ID prefix must be at least 6 characters".into(),
-      ))
+      Err(DbError::InvalidInput("ID prefix must be at least 6 characters".into()))
     } else {
       Ok(None)
     }

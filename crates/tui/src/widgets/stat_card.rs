@@ -2,7 +2,7 @@ use crate::theme::Theme;
 use ratatui::{
   buffer::Buffer,
   layout::Rect,
-  style::{Style, Stylize},
+  style::Style,
   widgets::{Block, Borders, Widget},
 };
 

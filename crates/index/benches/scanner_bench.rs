@@ -2,9 +2,10 @@
 //!
 //! Run with: cargo bench -p index --bench scanner_bench
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use index::Scanner;
 use std::fs;
+use std::hint::black_box;
 use tempfile::TempDir;
 
 fn create_test_repo(file_count: usize, avg_lines: usize) -> TempDir {

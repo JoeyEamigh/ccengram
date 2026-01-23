@@ -2,8 +2,9 @@
 //!
 //! Run with: cargo bench -p embedding --bench retry_bench
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use embedding::{EmbeddingError, RetryConfig, is_retryable_error};
+use std::hint::black_box;
 use std::time::Duration;
 
 fn bench_backoff_calculation(c: &mut Criterion) {

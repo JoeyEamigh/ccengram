@@ -2,9 +2,10 @@
 //!
 //! Run with: cargo bench
 
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use engram_core::Language;
 use index::Chunker;
+use std::hint::black_box;
 
 fn generate_rust_code(lines: usize) -> String {
   let mut code = String::new();

@@ -2,9 +2,10 @@
 //!
 //! Run with: cargo bench -p db --bench code_bench
 
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use db::ProjectDb;
 use engram_core::{ChunkType, CodeChunk, Language};
+use std::hint::black_box;
 use std::path::Path;
 use tempfile::TempDir;
 use uuid::Uuid;

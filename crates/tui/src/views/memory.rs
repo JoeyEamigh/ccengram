@@ -3,7 +3,7 @@ use crate::widgets::SalienceBar;
 use ratatui::{
   buffer::Buffer,
   layout::{Constraint, Direction, Layout, Rect},
-  style::{Style, Stylize},
+  style::Style,
   widgets::{Block, Borders, ListState, Widget},
 };
 use serde_json::Value;

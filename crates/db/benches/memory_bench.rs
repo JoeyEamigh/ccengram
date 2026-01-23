@@ -11,9 +11,10 @@
 //!
 //! Run with: cargo bench -p db
 
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use db::ProjectDb;
 use engram_core::{Memory, Sector};
+use std::hint::black_box;
 use std::path::Path;
 use tempfile::TempDir;
 use uuid::Uuid;

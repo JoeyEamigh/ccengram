@@ -15,17 +15,26 @@ use tracing::debug;
 ///
 /// Tries exact match first, then falls back to prefix matching.
 /// Returns an appropriate error response for not found, ambiguous, or invalid prefixes.
-async fn resolve_memory(db: &ProjectDb, id_or_prefix: &str, request_id: Option<serde_json::Value>) -> Result<Memory, Response> {
+async fn resolve_memory(
+  db: &ProjectDb,
+  id_or_prefix: &str,
+  request_id: Option<serde_json::Value>,
+) -> Result<Memory, Response> {
   match db.get_memory_by_id_or_prefix(id_or_prefix).await {
     Ok(Some(memory)) => Ok(memory),
-    Ok(None) => Err(Response::error(request_id, -32000, &format!("Memory not found: {}", id_or_prefix))),
-    Err(db::DbError::AmbiguousPrefix { prefix, count }) => {
-      Err(Response::error(
-        request_id,
-        -32000,
-        &format!("Ambiguous prefix '{}' matches {} memories. Use more characters.", prefix, count),
-      ))
-    }
+    Ok(None) => Err(Response::error(
+      request_id,
+      -32000,
+      &format!("Memory not found: {}", id_or_prefix),
+    )),
+    Err(db::DbError::AmbiguousPrefix { prefix, count }) => Err(Response::error(
+      request_id,
+      -32000,
+      &format!(
+        "Ambiguous prefix '{}' matches {} memories. Use more characters.",
+        prefix, count
+      ),
+    )),
     Err(db::DbError::InvalidInput(msg)) => Err(Response::error(request_id, -32602, &msg)),
     Err(e) => Err(Response::error(request_id, -32000, &format!("Database error: {}", e))),
   }

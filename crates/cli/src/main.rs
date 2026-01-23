@@ -85,10 +85,13 @@ pub enum IndexCommand {
 #[derive(Subcommand)]
 pub enum SearchCommand {
   /// Search memories (default if no subcommand)
-  #[command(alias = "mem", after_help = "\
+  #[command(
+    alias = "mem",
+    after_help = "\
 NOTE:
   IDs are shown as 8-character prefixes by default. Use --long to show full IDs.
-  You can use these prefixes directly in commands like 'memory show <prefix>'.")]
+  You can use these prefixes directly in commands like 'memory show <prefix>'."
+  )]
   Memories {
     /// Search query
     query: String,

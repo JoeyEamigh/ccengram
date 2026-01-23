@@ -2,8 +2,9 @@
 //!
 //! Run with: cargo bench -p core
 
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use engram_core::document::{ChunkParams, chunk_text};
+use std::hint::black_box;
 
 /// Generate a realistic document with paragraphs and sentences
 fn generate_document(paragraphs: usize, sentences_per_para: usize) -> String {
