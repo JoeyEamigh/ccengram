@@ -34,9 +34,65 @@ pub struct ProjectInfo {
 }
 
 impl ProjectInfo {
+  /// Create ProjectInfo from a path, applying workspace aliasing rules.
+  ///
+  /// Resolution order:
+  /// 1. Explicit alias in config (`[workspace] alias = "/path"`)
+  /// 2. Git worktree detection (auto-resolve to main repo)
+  /// 3. Standard git root detection
+  /// 4. Use the path as-is
   pub fn from_path(path: &Path) -> Result<Self, ProjectError> {
     let canonical = path.canonicalize()?;
-    let id = ProjectId::from_path(&canonical);
+
+    // Load config to check for workspace alias
+    let config = Config::load_for_project(&canonical);
+
+    Self::from_path_with_config(&canonical, &config)
+  }
+
+  /// Create ProjectInfo using an explicit config.
+  pub fn from_path_with_config(path: &Path, config: &Config) -> Result<Self, ProjectError> {
+    let canonical = path.canonicalize()?;
+
+    // Check for explicit workspace alias first
+    if let Some(ref alias) = config.workspace.alias {
+      let alias_path = PathBuf::from(alias);
+      if alias_path.exists() {
+        let alias_canonical = alias_path.canonicalize()?;
+        let id = ProjectId::from_path_exact(&alias_canonical);
+        let name = alias_canonical
+          .file_name()
+          .map(|n| n.to_string_lossy().to_string())
+          .unwrap_or_else(|| "unnamed".to_string());
+
+        info!(
+          "Using workspace alias: {:?} -> {:?}",
+          canonical, alias_canonical
+        );
+
+        return Ok(Self {
+          id,
+          path: alias_canonical,
+          name,
+        });
+      } else {
+        warn!(
+          "Workspace alias path does not exist: {:?}, falling back to auto-detection",
+          alias
+        );
+      }
+    }
+
+    // Check if worktree detection is disabled
+    let id = if config.workspace.disable_worktree_detection {
+      // Use local git root only, don't resolve worktrees
+      let local_root = engram_core::find_git_root_local(&canonical).unwrap_or_else(|| canonical.clone());
+      ProjectId::from_path_exact(&local_root)
+    } else {
+      // Normal resolution (includes worktree detection)
+      ProjectId::from_path(&canonical)
+    };
+
     let name = canonical
       .file_name()
       .map(|n| n.to_string_lossy().to_string())

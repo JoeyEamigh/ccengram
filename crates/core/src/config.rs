@@ -311,6 +311,37 @@ impl Default for DaemonConfig {
 }
 
 // ============================================================================
+// Workspace Configuration
+// ============================================================================
+
+/// Workspace aliasing configuration for sharing memory across directories.
+///
+/// This is useful for:
+/// - Git worktrees (auto-detected, but can be overridden)
+/// - Multiple clones of the same repository
+/// - Monorepo subdirectories that should share context
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct WorkspaceConfig {
+  /// Alias this project to share memory with another project path.
+  ///
+  /// When set, this project will use the same database as the aliased path.
+  /// The alias path should be the canonical path to the main repository.
+  ///
+  /// Example: alias = "/home/user/main-repo"
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub alias: Option<String>,
+
+  /// Disable automatic worktree detection.
+  ///
+  /// By default, git worktrees are automatically detected and aliased to
+  /// their main repository. Set this to true to treat worktrees as separate
+  /// projects.
+  #[serde(default)]
+  pub disable_worktree_detection: bool,
+}
+
+// ============================================================================
 // Documents Configuration
 // ============================================================================
 
@@ -381,6 +412,10 @@ pub struct Config {
   /// Daemon lifecycle settings
   #[serde(default)]
   pub daemon: DaemonConfig,
+
+  /// Workspace aliasing settings
+  #[serde(default)]
+  pub workspace: WorkspaceConfig,
 }
 
 /// Tool filtering configuration
@@ -622,6 +657,20 @@ log_rotation = "daily"
 # Log retention in days (0 = keep forever)
 # Default: 7
 log_retention_days = 7
+
+# ============================================================================
+# Workspace Aliasing
+# ============================================================================
+
+[workspace]
+# Alias this project to share memory with another project.
+# Useful for multiple clones of the same repo or custom workspace groupings.
+# Git worktrees are automatically detected and don't need this setting.
+# alias = "/home/user/main-repo"
+
+# Disable automatic worktree detection (default: false)
+# Set to true to treat git worktrees as separate projects.
+# disable_worktree_detection = false
 "#,
       tool_count = ALL_TOOLS.len(),
       preset_name = preset_name
@@ -856,5 +905,61 @@ dimensions = 4096
     assert_eq!(parsed.daemon.log_level, "debug");
     assert_eq!(parsed.daemon.log_rotation, "hourly");
     assert_eq!(parsed.daemon.log_retention_days, 14);
+  }
+
+  #[test]
+  fn test_workspace_defaults() {
+    let config = WorkspaceConfig::default();
+    assert!(config.alias.is_none());
+    assert!(!config.disable_worktree_detection);
+  }
+
+  #[test]
+  fn test_workspace_config_in_template() {
+    let template = Config::generate_template(ToolPreset::Standard);
+    assert!(template.contains("[workspace]"));
+    assert!(template.contains("alias"));
+    assert!(template.contains("disable_worktree_detection"));
+  }
+
+  #[test]
+  fn test_workspace_config_roundtrip() {
+    let config = Config {
+      workspace: WorkspaceConfig {
+        alias: Some("/home/user/main-repo".to_string()),
+        disable_worktree_detection: true,
+      },
+      ..Default::default()
+    };
+
+    let toml_str = toml::to_string_pretty(&config).unwrap();
+    let parsed: Config = toml::from_str(&toml_str).unwrap();
+
+    assert_eq!(parsed.workspace.alias, Some("/home/user/main-repo".to_string()));
+    assert!(parsed.workspace.disable_worktree_detection);
+  }
+
+  #[test]
+  fn test_workspace_config_parsing() {
+    let toml_content = r#"
+[workspace]
+alias = "/path/to/main/repo"
+disable_worktree_detection = false
+"#;
+    let config: Config = toml::from_str(toml_content).unwrap();
+    assert_eq!(config.workspace.alias, Some("/path/to/main/repo".to_string()));
+    assert!(!config.workspace.disable_worktree_detection);
+  }
+
+  #[test]
+  fn test_workspace_config_optional_fields() {
+    // Workspace section can be completely empty
+    let toml_content = r#"
+[tools]
+preset = "minimal"
+"#;
+    let config: Config = toml::from_str(toml_content).unwrap();
+    assert!(config.workspace.alias.is_none());
+    assert!(!config.workspace.disable_worktree_detection);
   }
 }
