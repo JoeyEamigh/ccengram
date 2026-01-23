@@ -330,57 +330,6 @@ crates/benchmark/
     └── vscode/
 ```
 
-## CI Integration
-
-Example GitHub Actions workflow:
-
-```yaml
-name: Benchmark
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-
-jobs:
-  benchmark:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-action@stable
-
-      - name: Cache repositories
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ccengram-bench
-          key: bench-repos-${{ hashFiles('crates/benchmark/src/repos/registry.rs') }}
-
-      - name: Download repos
-        run: cargo run -p benchmark -- index --repos all
-
-      - name: Start daemon
-        run: |
-          cargo run --release -- daemon &
-          sleep 5
-
-      - name: Run benchmarks
-        run: cargo run -p benchmark -- run --output ./results
-
-      - name: Check for regressions
-        if: github.event_name == 'pull_request'
-        run: |
-          # Download baseline from main branch
-          cargo run -p benchmark -- compare baseline.json results/benchmark.json --threshold 10
-
-      - name: Upload results
-        uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-results
-          path: results/
-```
-
 ## Writing New Scenarios
 
 1. **Identify the exploration goal**: What should an agent discover?
