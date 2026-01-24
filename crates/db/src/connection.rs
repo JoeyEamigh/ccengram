@@ -4,7 +4,7 @@ use lancedb::table::OptimizeAction;
 use lancedb::{Connection, connect};
 use std::path::PathBuf;
 use thiserror::Error;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::schema::{
   DEFAULT_VECTOR_DIM, code_chunks_schema, code_references_schema, document_metadata_schema, documents_schema,
@@ -55,8 +55,17 @@ impl ProjectDb {
       std::fs::create_dir_all(parent)?;
     }
 
-    info!("Opening LanceDB at {:?}", db_path);
-    let connection = connect(db_path.to_string_lossy().as_ref()).execute().await?;
+    info!(path = %db_path.display(), project_id = %project_id.as_str(), vector_dim = vector_dim, "Opening database connection");
+    let connection = match connect(db_path.to_string_lossy().as_ref()).execute().await {
+      Ok(conn) => {
+        debug!(path = %db_path.display(), "Database connection established");
+        conn
+      }
+      Err(e) => {
+        error!(path = %db_path.display(), err = %e, "Failed to connect to database");
+        return Err(e.into());
+      }
+    };
 
     let db = Self {
       project_id,
@@ -66,6 +75,7 @@ impl ProjectDb {
     };
 
     // Ensure tables exist
+    debug!("Initializing database schema");
     db.ensure_tables().await?;
 
     Ok(db)
@@ -74,6 +84,7 @@ impl ProjectDb {
   /// Ensure all required tables exist
   async fn ensure_tables(&self) -> Result<()> {
     let table_names = self.connection.table_names().execute().await?;
+    debug!(existing_tables = table_names.len(), "Checking required tables");
 
     if !table_names.contains(&"memories".to_string()) {
       debug!("Creating memories table");
@@ -343,6 +354,7 @@ impl ProjectDb {
   /// This creates a new connection to the same database, useful for
   /// passing to tasks that need their own connection handle.
   pub async fn clone_connection(&self) -> Result<Self> {
+    debug!(path = %self.path.display(), "Cloning database connection");
     Self::open_at_path(self.project_id.clone(), self.path.clone(), self.vector_dim).await
   }
 }

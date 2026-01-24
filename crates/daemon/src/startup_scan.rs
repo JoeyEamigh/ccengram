@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 /// Errors that can occur during startup scan
 #[derive(Error, Debug)]
@@ -260,16 +260,23 @@ impl StartupScanner {
     self.state.start();
     self.state.set_phase("Loading indexed files").await;
 
-    info!("Starting startup scan for {:?}", root);
+    info!(path = %root.display(), "Starting startup scan");
     debug!(
-      "Scan config: mode={:?}, blocking={}, parallelism={}",
-      self.config.mode, self.config.blocking, self.config.parallelism
+      mode = ?self.config.mode,
+      blocking = self.config.blocking,
+      parallelism = self.config.parallelism,
+      timeout_secs = self.config.timeout.as_secs(),
+      "Scan configuration"
     );
 
     // Step 1: Load indexed files from database
     let indexed_files = self.load_indexed_files(db).await?;
     let indexed_count = indexed_files.len();
-    debug!("Loaded {} indexed files from database", indexed_count);
+    debug!(
+      count = indexed_count,
+      elapsed_ms = start.elapsed().as_millis() as u64,
+      "Loaded indexed files from database"
+    );
 
     if self.is_cancelled() {
       self.state.finish();
@@ -278,9 +285,14 @@ impl StartupScanner {
 
     // Step 2: Scan filesystem
     self.state.set_phase("Scanning filesystem").await;
+    let scan_start = Instant::now();
     let filesystem_files = self.scan_filesystem(root)?;
     let fs_count = filesystem_files.len();
-    debug!("Found {} files on filesystem", fs_count);
+    debug!(
+      count = fs_count,
+      elapsed_ms = scan_start.elapsed().as_millis() as u64,
+      "Filesystem scan complete"
+    );
 
     if self.is_cancelled() {
       self.state.finish();
@@ -418,6 +430,13 @@ impl StartupScanner {
           let old_path = deleted_paths[0];
           let (new_path, _) = added_files[0];
 
+          trace!(
+            old_path = %old_path,
+            new_path = %new_path,
+            hash = %hash,
+            "File rename detected"
+          );
+
           changes.push(FileChange::Renamed {
             old_path: old_path.clone(),
             new_path: new_path.clone(),
@@ -434,7 +453,7 @@ impl StartupScanner {
     for (path, db_file) in indexed {
       if !filesystem.contains_key(path) && !renamed_old_paths.contains(path) {
         changes.push(FileChange::Deleted { path: path.clone() });
-        debug!("File deleted: {} (hash={})", path, db_file.file_hash);
+        trace!(path = %path, hash = %db_file.file_hash, "File deleted from filesystem");
       }
     }
 
@@ -448,6 +467,7 @@ impl StartupScanner {
         match indexed.get(path) {
           None => {
             // New file
+            trace!(path = %path, hash = %fs_file.current_hash, "New file detected");
             changes.push(FileChange::Added {
               path: path.clone(),
               hash: fs_file.current_hash.clone(),
@@ -457,6 +477,12 @@ impl StartupScanner {
             if self.config.mode == ScanMode::Full {
               // Check for modifications using hybrid strategy
               if self.is_file_modified(db_file, fs_file) {
+                trace!(
+                  path = %path,
+                  old_hash = %db_file.file_hash,
+                  new_hash = %fs_file.current_hash,
+                  "File modified"
+                );
                 changes.push(FileChange::Modified {
                   path: path.clone(),
                   old_hash: db_file.file_hash.clone(),
@@ -567,20 +593,28 @@ impl StartupScanner {
     // Step 2: Delete chunks for removed files
     if !result.deleted.is_empty() {
       self.state.set_phase("Deleting stale chunks").await;
-      info!("Deleting chunks for {} removed files", result.deleted.len());
+      info!(count = result.deleted.len(), "Deleting chunks for removed files");
 
       let paths: Vec<&str> = result.deleted.iter().map(|s| s.as_str()).collect();
 
       // Delete in batches to avoid very long SQL statements
       const BATCH_SIZE: usize = 100;
-      for batch in paths.chunks(BATCH_SIZE) {
+      let total_batches = paths.len().div_ceil(BATCH_SIZE);
+      for (batch_idx, batch) in paths.chunks(BATCH_SIZE).enumerate() {
         if self.is_cancelled() {
           self.state.finish();
           return Err(ScanError::Cancelled);
         }
 
+        debug!(
+          batch = batch_idx + 1,
+          total = total_batches,
+          files_in_batch = batch.len(),
+          "Deleting batch of stale files"
+        );
+
         if let Err(e) = db.delete_chunks_for_files(batch).await {
-          warn!("Failed to delete chunks: {}", e);
+          warn!(batch = batch_idx + 1, err = %e, "Failed to delete chunks batch");
           apply_result.errors.push(format!("Delete error: {}", e));
         } else {
           apply_result.files_deleted += batch.len();
@@ -594,7 +628,12 @@ impl StartupScanner {
 
     if !files_to_index.is_empty() {
       self.state.set_phase("Indexing new/modified files").await;
-      info!("Indexing {} new/modified files", files_to_index.len());
+      info!(
+        count = files_to_index.len(),
+        added = result.added.len(),
+        modified = result.modified.len(),
+        "Indexing new/modified files"
+      );
 
       // Delete chunks for modified files first
       if !result.modified.is_empty() {

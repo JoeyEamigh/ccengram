@@ -1,4 +1,5 @@
 use engram_core::Sector;
+use tracing::{debug, trace};
 
 /// Pattern definitions for sector classification
 struct PatternSet {
@@ -151,6 +152,8 @@ fn reflective_patterns() -> PatternSet {
 
 /// Classify content into a memory sector
 pub fn classify_sector(content: &str) -> Sector {
+  debug!(text_len = content.len(), "Classifying sector");
+
   // Convert to lowercase once, then score all patterns
   let lower = content.to_lowercase();
   let scores = [
@@ -161,11 +164,19 @@ pub fn classify_sector(content: &str) -> Sector {
     (Sector::Episodic, episodic_patterns().score_lowercase(&lower)),
   ];
 
-  scores
+  // Log individual sector scores
+  for (sector, score) in &scores {
+    trace!(sector = ?sector, score = score, "Sector score");
+  }
+
+  let (final_sector, confidence) = scores
     .into_iter()
     .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-    .map(|(sector, _)| sector)
-    .unwrap_or(Sector::Semantic)
+    .unwrap_or((Sector::Semantic, 0.0));
+
+  debug!(sector = ?final_sector, confidence = confidence, "Classification complete");
+
+  final_sector
 }
 
 /// Get all sector scores for debugging/analysis
@@ -183,31 +194,40 @@ pub fn sector_scores(content: &str) -> Vec<(Sector, f32)> {
 
 /// Extract concepts from memory content
 pub fn extract_concepts(content: &str) -> Vec<String> {
+  trace!(text_len = content.len(), "Extracting concepts");
+
   let mut concepts = Vec::new();
 
   // Backtick strings (code references)
+  let backtick_count_before = concepts.len();
   for cap in find_backtick_content(content) {
     if cap.len() >= 2 && cap.len() <= 100 {
       concepts.push(cap);
     }
   }
+  let backtick_concepts = concepts.len() - backtick_count_before;
 
   // CamelCase identifiers
+  let camel_count_before = concepts.len();
   for word in content.split_whitespace() {
     if is_camel_case(word) && word.len() >= 3 && word.len() <= 50 {
       concepts.push(word.to_string());
     }
   }
+  let camel_concepts = concepts.len() - camel_count_before;
 
   // snake_case identifiers
+  let snake_count_before = concepts.len();
   for word in content.split_whitespace() {
     let cleaned = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
     if is_snake_case(cleaned) && cleaned.len() >= 3 && cleaned.len() <= 50 {
       concepts.push(cleaned.to_string());
     }
   }
+  let snake_concepts = concepts.len() - snake_count_before;
 
   // File paths
+  let path_count_before = concepts.len();
   for word in content.split_whitespace() {
     if looks_like_file_path(word) {
       concepts.push(
@@ -217,15 +237,28 @@ pub fn extract_concepts(content: &str) -> Vec<String> {
       );
     }
   }
+  let path_concepts = concepts.len() - path_count_before;
 
   // Deduplicate and sort
   concepts.sort();
   concepts.dedup();
+
+  trace!(
+    backtick = backtick_concepts,
+    camel_case = camel_concepts,
+    snake_case = snake_concepts,
+    file_paths = path_concepts,
+    total = concepts.len(),
+    "Concepts extracted"
+  );
+
   concepts
 }
 
 /// Extract file references from content
 pub fn extract_files(content: &str) -> Vec<String> {
+  trace!(text_len = content.len(), "Extracting file references");
+
   let mut files = Vec::new();
 
   for word in content.split_whitespace() {
@@ -244,6 +277,13 @@ pub fn extract_files(content: &str) -> Vec<String> {
 
   files.sort();
   files.dedup();
+
+  trace!(
+    count = files.len(),
+    files = ?files,
+    "File references extracted"
+  );
+
   files
 }
 

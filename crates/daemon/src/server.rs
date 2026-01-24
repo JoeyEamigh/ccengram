@@ -150,9 +150,11 @@ fn is_streaming_request(request: &Request) -> bool {
 
 /// Handle a single client connection
 async fn handle_connection(stream: UnixStream, router: Arc<Router>) -> Result<(), ServerError> {
+  debug!("Client connected");
   let (reader, mut writer) = stream.into_split();
   let mut reader = BufReader::new(reader);
   let mut line = String::new();
+  let mut request_count = 0u64;
 
   loop {
     line.clear();
@@ -160,7 +162,7 @@ async fn handle_connection(stream: UnixStream, router: Arc<Router>) -> Result<()
 
     if n == 0 {
       // Client disconnected
-      debug!("Client disconnected");
+      debug!(requests_handled = request_count, "Client disconnected");
       break;
     }
 
@@ -183,7 +185,9 @@ async fn handle_connection(stream: UnixStream, router: Arc<Router>) -> Result<()
       }
     };
 
-    debug!("Request: {} (id={:?})", request.method, request.id);
+    let start = std::time::Instant::now();
+    request_count += 1;
+    debug!(method = %request.method, id = ?request.id, "Processing request");
 
     // Check if this is a streaming request
     if is_streaming_request(&request) {
@@ -211,13 +215,21 @@ async fn handle_connection(stream: UnixStream, router: Arc<Router>) -> Result<()
       }
     } else {
       // Route and handle normally (single response)
-      let response = router.handle(request).await;
+      let response = router.handle(request.clone()).await;
 
       // Send response
       let json = serde_json::to_string(&response)?;
       writer.write_all(json.as_bytes()).await?;
       writer.write_all(b"\n").await?;
       writer.flush().await?;
+
+      let elapsed = start.elapsed();
+      debug!(
+        method = %request.method,
+        elapsed_ms = elapsed.as_millis() as u64,
+        has_error = response.error.is_some(),
+        "Request completed"
+      );
     }
   }
 

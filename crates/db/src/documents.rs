@@ -6,6 +6,7 @@ use engram_core::{DocumentChunk, DocumentId, DocumentSource};
 use futures::TryStreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use std::sync::Arc;
+use tracing::debug;
 use uuid::Uuid;
 
 use crate::connection::{DbError, ProjectDb, Result};
@@ -14,6 +15,16 @@ use crate::schema::documents_schema;
 impl ProjectDb {
   /// Add a document chunk to the database
   pub async fn add_document_chunk(&self, chunk: &DocumentChunk, vector: Option<&[f32]>) -> Result<()> {
+    debug!(
+      table = "documents",
+      operation = "insert",
+      id = %chunk.id,
+      document_id = %chunk.document_id,
+      chunk_index = chunk.chunk_index,
+      has_vector = vector.is_some(),
+      "Adding document chunk"
+    );
+
     let table = self.documents_table().await?;
 
     let batch = chunk_to_batch(chunk, vector, self.vector_dim)?;
@@ -28,6 +39,13 @@ impl ProjectDb {
     if chunks.is_empty() {
       return Ok(());
     }
+
+    debug!(
+      table = "documents",
+      operation = "batch_insert",
+      batch_size = chunks.len(),
+      "Adding document chunks batch"
+    );
 
     let table = self.documents_table().await?;
 
@@ -76,6 +94,15 @@ impl ProjectDb {
     limit: usize,
     filter: Option<&str>,
   ) -> Result<Vec<(DocumentChunk, f32)>> {
+    debug!(
+      table = "documents",
+      operation = "search",
+      query_len = query_vector.len(),
+      limit = limit,
+      has_filter = filter.is_some(),
+      "Searching documents"
+    );
+
     let table = self.documents_table().await?;
 
     let query = if let Some(f) = filter {
@@ -98,6 +125,13 @@ impl ProjectDb {
         chunks.push((chunk, distance));
       }
     }
+
+    debug!(
+      table = "documents",
+      operation = "search",
+      results = chunks.len(),
+      "Search complete"
+    );
 
     Ok(chunks)
   }
@@ -127,6 +161,7 @@ impl ProjectDb {
 
   /// Delete all chunks for a document
   pub async fn delete_document(&self, document_id: &DocumentId) -> Result<()> {
+    debug!(table = "documents", operation = "delete_document", document_id = %document_id, "Deleting document and all chunks");
     let table = self.documents_table().await?;
     table.delete(&format!("document_id = '{}'", document_id)).await?;
     Ok(())
@@ -134,6 +169,7 @@ impl ProjectDb {
 
   /// Delete a single document chunk
   pub async fn delete_document_chunk(&self, id: &DocumentId) -> Result<()> {
+    debug!(table = "documents", operation = "delete_chunk", id = %id, "Deleting document chunk");
     let table = self.documents_table().await?;
     table.delete(&format!("id = '{}'", id)).await?;
     Ok(())

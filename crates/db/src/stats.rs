@@ -4,6 +4,8 @@ use crate::connection::{ProjectDb, Result};
 use engram_core::{Sector, Tier};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::time::Instant;
+use tracing::trace;
 
 /// Statistics for a project's memories
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +70,7 @@ pub struct EntityStats {
 impl ProjectDb {
   /// Get comprehensive memory statistics
   pub async fn get_memory_stats(&self) -> Result<MemoryStats> {
+    let start = Instant::now();
     let memories = self.list_memories(None, None).await?;
 
     let mut by_sector: HashMap<String, usize> = HashMap::new();
@@ -116,7 +119,7 @@ impl ProjectDb {
       by_tier.entry(tier.as_str().to_string()).or_insert(0);
     }
 
-    Ok(MemoryStats {
+    let stats = MemoryStats {
       total: memories.len(),
       by_sector,
       by_tier,
@@ -127,11 +130,22 @@ impl ProjectDb {
         very_low,
       },
       superseded_count,
-    })
+    };
+
+    trace!(
+      table = "memories",
+      operation = "stats",
+      total = stats.total,
+      elapsed_ms = start.elapsed().as_millis() as u64,
+      "Memory stats computed"
+    );
+
+    Ok(stats)
   }
 
   /// Get comprehensive code statistics
   pub async fn get_code_stats(&self) -> Result<CodeStats> {
+    let start = Instant::now();
     let chunks = self.list_code_chunks(None, None).await?;
 
     // Count by language
@@ -173,27 +187,51 @@ impl ProjectDb {
       })
       .collect();
 
-    Ok(CodeStats {
+    let stats = CodeStats {
       total_chunks: chunks.len(),
       total_files: files_seen.len(),
       by_language,
       recent_indexed,
-    })
+    };
+
+    trace!(
+      table = "code_chunks",
+      operation = "stats",
+      total_chunks = stats.total_chunks,
+      total_files = stats.total_files,
+      elapsed_ms = start.elapsed().as_millis() as u64,
+      "Code stats computed"
+    );
+
+    Ok(stats)
   }
 
   /// Get document statistics
   pub async fn get_document_stats(&self) -> Result<DocumentStats> {
+    let start = Instant::now();
     let docs = self.list_document_metadata(self.project_id.as_str()).await?;
     let chunks = self.list_document_chunks(None, None).await?;
 
-    Ok(DocumentStats {
+    let stats = DocumentStats {
       total: docs.len(),
       total_chunks: chunks.len(),
-    })
+    };
+
+    trace!(
+      table = "documents",
+      operation = "stats",
+      total = stats.total,
+      total_chunks = stats.total_chunks,
+      elapsed_ms = start.elapsed().as_millis() as u64,
+      "Document stats computed"
+    );
+
+    Ok(stats)
   }
 
   /// Get entity statistics
   pub async fn get_entity_stats(&self) -> Result<EntityStats> {
+    let start = Instant::now();
     let entities = self.list_entities(None).await?;
 
     let mut by_type: HashMap<String, usize> = HashMap::new();
@@ -203,18 +241,36 @@ impl ProjectDb {
         .or_insert(0) += 1;
     }
 
-    Ok(EntityStats {
+    let stats = EntityStats {
       total: entities.len(),
       by_type,
-    })
+    };
+
+    trace!(
+      table = "entities",
+      operation = "stats",
+      total = stats.total,
+      elapsed_ms = start.elapsed().as_millis() as u64,
+      "Entity stats computed"
+    );
+
+    Ok(stats)
   }
 
   /// Get all project statistics
   pub async fn get_project_stats(&self) -> Result<ProjectStats> {
+    let start = Instant::now();
+
     let memories = self.get_memory_stats().await?;
     let code = self.get_code_stats().await?;
     let documents = self.get_document_stats().await?;
     let entities = self.get_entity_stats().await?;
+
+    trace!(
+      operation = "project_stats",
+      elapsed_ms = start.elapsed().as_millis() as u64,
+      "Project stats computed"
+    );
 
     Ok(ProjectStats {
       memories,

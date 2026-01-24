@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 use thiserror::Error;
+use tracing::{debug, info, trace, warn};
 
 #[derive(Error, Debug)]
 pub enum ScanError {
@@ -75,6 +76,12 @@ impl Scanner {
   where
     F: Fn(ScanProgress) + Send + Sync,
   {
+    info!(
+      directory = %root.display(),
+      max_file_size = self.max_file_size,
+      follow_links = self.follow_links,
+      "Starting file scan"
+    );
     let start = Instant::now();
     let scanned = AtomicU32::new(0);
     let skipped = AtomicU32::new(0);
@@ -112,25 +119,51 @@ impl Scanner {
 
         // Get language from extension
         let ext = path.extension()?.to_str()?;
-        let language = Language::from_extension(ext)?;
+        let language = match Language::from_extension(ext) {
+          Some(lang) => lang,
+          None => {
+            trace!(file = %path.display(), extension = ext, "Skipping unsupported file type");
+            return None;
+          }
+        };
 
         // Skip empty or large files
         let metadata = entry.metadata().ok()?;
         if metadata.len() == 0 {
+          trace!(file = %path.display(), "Skipping empty file");
           skipped.fetch_add(1, Ordering::Relaxed);
           return None;
         }
         if metadata.len() > self.max_file_size {
+          debug!(
+            file = %path.display(),
+            size = metadata.len(),
+            max_size = self.max_file_size,
+            "Skipping file exceeding size limit"
+          );
           skipped.fetch_add(1, Ordering::Relaxed);
           return None;
         }
 
         // Compute quick checksum
-        let checksum = quick_checksum(path).ok()?;
+        let checksum = match quick_checksum(path) {
+          Ok(c) => c,
+          Err(_) => {
+            // Warning already logged in quick_checksum
+            return None;
+          }
+        };
 
         let mtime = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_secs();
 
         total_bytes.fetch_add(metadata.len(), Ordering::Relaxed);
+
+        trace!(
+          file = %path.display(),
+          language = ?language,
+          size = metadata.len(),
+          "File discovered"
+        );
 
         Some(ScannedFile {
           path: path.to_path_buf(),
@@ -143,25 +176,58 @@ impl Scanner {
       })
       .collect();
 
+    let elapsed = start.elapsed();
+    let file_count = files.len();
+    let skipped_count = skipped.load(Ordering::Relaxed);
+    let bytes = total_bytes.load(Ordering::Relaxed);
+
+    info!(
+      files_found = file_count,
+      skipped = skipped_count,
+      total_bytes = bytes,
+      elapsed_ms = elapsed.as_millis() as u64,
+      "Scan completed"
+    );
+
+    debug!(
+      files_per_second = if elapsed.as_secs() > 0 {
+        file_count as u64 / elapsed.as_secs()
+      } else {
+        file_count as u64
+      },
+      "Scan throughput"
+    );
+
     ScanResult {
       files,
-      skipped_count: skipped.load(Ordering::Relaxed),
-      total_bytes: total_bytes.load(Ordering::Relaxed),
-      scan_duration: start.elapsed(),
+      skipped_count,
+      total_bytes: bytes,
+      scan_duration: elapsed,
     }
   }
 
   /// Scan a single file
   pub fn scan_file(&self, path: &Path, root: &Path) -> Option<ScannedFile> {
+    trace!(file = %path.display(), "Scanning single file");
+
     let ext = path.extension()?.to_str()?;
     let language = Language::from_extension(ext)?;
+
+    trace!(file = %path.display(), language = ?language, "Language detected");
 
     let metadata = path.metadata().ok()?;
     // Skip empty files
     if metadata.len() == 0 {
+      trace!(file = %path.display(), "Skipping empty file");
       return None;
     }
     if metadata.len() > self.max_file_size {
+      debug!(
+        file = %path.display(),
+        size = metadata.len(),
+        max_size = self.max_file_size,
+        "Skipping file exceeding size limit"
+      );
       return None;
     }
 
@@ -181,7 +247,10 @@ impl Scanner {
 
 /// Quick checksum using first 4KB + file size
 fn quick_checksum(path: &Path) -> Result<String, std::io::Error> {
-  let mut file = File::open(path)?;
+  let mut file = File::open(path).map_err(|e| {
+    warn!(file = %path.display(), error = %e, "Failed to open file for checksum");
+    e
+  })?;
   let mut buffer = [0u8; 4096];
   let n = file.read(&mut buffer)?;
 

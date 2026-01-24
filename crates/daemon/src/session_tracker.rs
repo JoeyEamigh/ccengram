@@ -100,7 +100,14 @@ impl SessionTracker {
     {
       let last_seen = self.session_last_seen.read().await;
       for (id, ts) in last_seen.iter() {
-        if now.duration_since(*ts) > self.session_timeout {
+        let idle_duration = now.duration_since(*ts);
+        if idle_duration > self.session_timeout {
+          debug!(
+            session_id = %id,
+            idle_secs = idle_duration.as_secs(),
+            timeout_secs = self.session_timeout.as_secs(),
+            "Session timed out"
+          );
           stale.push(id.clone());
         }
       }
@@ -133,7 +140,9 @@ impl SessionTracker {
 
   /// Get a list of all active session IDs.
   pub async fn list_sessions(&self) -> Vec<SessionId> {
-    self.active_sessions.read().await.iter().cloned().collect()
+    let sessions: Vec<SessionId> = self.active_sessions.read().await.iter().cloned().collect();
+    debug!(count = sessions.len(), "Listed active sessions");
+    sessions
   }
 }
 

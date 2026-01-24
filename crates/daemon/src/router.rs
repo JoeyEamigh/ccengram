@@ -849,7 +849,10 @@ impl Router {
 
   /// Handle an incoming request
   pub async fn handle(&self, request: Request) -> Response {
-    debug!("Handling request: {}", request.method);
+    let start = std::time::Instant::now();
+    let method = request.method.clone();
+    let id = request.id.clone();
+    debug!(method = %method, id = ?id, "Handling request");
 
     // Increment request counter
     self.request_count.fetch_add(1, Ordering::Relaxed);
@@ -862,7 +865,7 @@ impl Router {
       }
     }
 
-    match request.method.as_str() {
+    let response = match request.method.as_str() {
       // Health/meta commands
       "ping" => Response::success(request.id, PingResult("pong".to_string())),
       "status" => self.handle_status(request).await,
@@ -941,15 +944,28 @@ impl Router {
 
       // Unknown method
       _ => {
-        warn!("Unknown method: {}", request.method);
+        warn!(method = %request.method, "Unknown method requested");
         Response::error(request.id, -32601, &format!("Method not found: {}", request.method))
       }
-    }
+    };
+
+    let elapsed = start.elapsed();
+    debug!(
+      method = %method,
+      id = ?id,
+      elapsed_ms = elapsed.as_millis() as u64,
+      "Request completed"
+    );
+
+    response
   }
 
   /// Handle a streaming request that sends progress updates
   pub async fn handle_streaming(&self, request: Request, progress_tx: ProgressSender) {
-    debug!("Handling streaming request: {}", request.method);
+    let start = std::time::Instant::now();
+    let method = request.method.clone();
+    let id = request.id.clone();
+    debug!(method = %method, id = ?id, "Handling streaming request");
 
     // Increment request counter
     self.request_count.fetch_add(1, Ordering::Relaxed);
@@ -974,6 +990,13 @@ impl Router {
         let _ = progress_tx.send(response).await;
       }
     }
+
+    let elapsed = start.elapsed();
+    debug!(
+      method = %method,
+      elapsed_ms = elapsed.as_millis() as u64,
+      "Streaming request completed"
+    );
   }
 
   async fn handle_status(&self, request: Request) -> Response {
@@ -1302,7 +1325,13 @@ impl Router {
       .get("event")
       .and_then(|v| v.as_str())
       .unwrap_or("unknown");
-    debug!("Received hook event: {}", event_str);
+    let session_id = request
+      .params
+      .get("params")
+      .and_then(|p| p.get("session_id"))
+      .and_then(|v| v.as_str())
+      .unwrap_or("unknown");
+    debug!(event = %event_str, session_id = %session_id, "Routing hook event");
 
     // Parse the event type
     let event: HookEvent = match event_str.parse() {

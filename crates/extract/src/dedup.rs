@@ -1,5 +1,6 @@
 use engram_core::Memory;
 use std::collections::HashSet;
+use tracing::{debug, trace};
 
 const FNV_PRIME: u64 = 0x100000001b3;
 const FNV_OFFSET: u64 = 0xcbf29ce484222325;
@@ -7,6 +8,7 @@ const FNV_OFFSET: u64 = 0xcbf29ce484222325;
 /// Compute 64-bit SimHash for locality-sensitive hashing
 pub fn simhash(text: &str) -> u64 {
   let tokens = tokenize(text);
+  let token_count = tokens.len();
   let mut vector = [0i32; 64];
 
   for token in tokens {
@@ -26,6 +28,14 @@ pub fn simhash(text: &str) -> u64 {
       result |= 1 << i;
     }
   }
+
+  trace!(
+    text_len = text.len(),
+    token_count = token_count,
+    simhash = format!("{:016x}", result),
+    "SimHash computed"
+  );
+
   result
 }
 
@@ -133,6 +143,10 @@ impl DuplicateChecker {
   pub fn is_duplicate(&self, new_content: &str, new_hash: &str, new_simhash: u64, existing: &Memory) -> DuplicateMatch {
     // Level 1: Exact content hash match
     if new_hash == existing.content_hash {
+      debug!(
+        existing_id = %existing.id,
+        "Exact duplicate found (content hash match)"
+      );
       return DuplicateMatch::Exact;
     }
 
@@ -140,14 +154,40 @@ impl DuplicateChecker {
     let distance = hamming_distance(new_simhash, existing.simhash);
     let threshold = adaptive_threshold(new_content.len());
 
+    trace!(
+      existing_id = %existing.id,
+      hamming_distance = distance,
+      threshold = threshold,
+      "SimHash distance check"
+    );
+
     if distance <= threshold {
       // Level 3: Always verify with Jaccard to confirm similarity
       // Even with low hamming distance, verify to prevent false positives
       let jaccard = jaccard_similarity(new_content, &existing.content);
+
+      trace!(
+        existing_id = %existing.id,
+        jaccard = jaccard,
+        jaccard_threshold = self.jaccard_threshold,
+        "Jaccard verification"
+      );
+
       if jaccard >= self.jaccard_threshold {
+        debug!(
+          existing_id = %existing.id,
+          hamming_distance = distance,
+          jaccard = jaccard,
+          "Near-duplicate found (SimHash + Jaccard match)"
+        );
         return DuplicateMatch::Simhash { distance, jaccard };
       }
-      // If Jaccard is below threshold, not a duplicate despite similar SimHash
+
+      trace!(
+        existing_id = %existing.id,
+        jaccard = jaccard,
+        "SimHash match rejected - Jaccard below threshold"
+      );
     }
 
     DuplicateMatch::None
@@ -155,16 +195,28 @@ impl DuplicateChecker {
 
   /// Check a new content against a list of existing memories
   pub fn find_duplicate<'a>(&self, new_content: &str, existing: &'a [Memory]) -> Option<(&'a Memory, DuplicateMatch)> {
+    debug!(
+      text_len = new_content.len(),
+      candidates = existing.len(),
+      "Checking for duplicates"
+    );
+
     let new_hash = content_hash(new_content);
     let new_simhash = simhash(new_content);
 
     for memory in existing {
       let result = self.is_duplicate(new_content, &new_hash, new_simhash, memory);
       if result.is_duplicate() {
+        debug!(
+          duplicate_id = %memory.id,
+          match_type = ?result,
+          "Duplicate found"
+        );
         return Some((memory, result));
       }
     }
 
+    debug!("No duplicates found");
     None
   }
 }

@@ -11,7 +11,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 #[derive(Error, Debug)]
 pub enum ProjectError {
@@ -175,16 +175,29 @@ impl ProjectRegistry {
     {
       let projects = self.projects.read().await;
       if let Some(db) = projects.get(&id_str) {
-        debug!("Using cached project: {}", info.name);
+        debug!(project = %info.name, project_id = %id_str, "Using cached project connection");
         return Ok((info, Arc::clone(db)));
       }
     }
 
     // Create new connection
-    info!("Opening project database: {} at {:?}", info.name, self.data_dir);
+    debug!(
+      project = %info.name,
+      project_id = %id_str,
+      path = %path.display(),
+      "Creating new project database connection"
+    );
 
-    let db = ProjectDb::open(info.id.clone(), &self.data_dir).await?;
-    let db = Arc::new(db);
+    let db = match ProjectDb::open(info.id.clone(), &self.data_dir).await {
+      Ok(db) => {
+        info!(project = %info.name, project_id = %id_str, "Project database opened");
+        Arc::new(db)
+      }
+      Err(e) => {
+        error!(project = %info.name, project_id = %id_str, err = %e, "Failed to open project database");
+        return Err(e.into());
+      }
+    };
 
     // Store metadata
     let project_dir = info.id.data_dir(&self.data_dir);
@@ -208,8 +221,10 @@ impl ProjectRegistry {
     let metadata = self.metadata.read().await;
 
     if let (Some(db), Some(info)) = (projects.get(id), metadata.get(id)) {
+      debug!(project_id = %id, project = %info.name, "Project lookup successful");
       Some((info.clone(), Arc::clone(db)))
     } else {
+      debug!(project_id = %id, "Project not found in registry");
       None
     }
   }
@@ -217,7 +232,9 @@ impl ProjectRegistry {
   /// List all active projects
   pub async fn list(&self) -> Vec<ProjectInfo> {
     let metadata = self.metadata.read().await;
-    metadata.values().cloned().collect()
+    let projects: Vec<ProjectInfo> = metadata.values().cloned().collect();
+    trace!(count = projects.len(), "Listed active projects");
+    projects
   }
 
   /// Close a project connection
@@ -226,8 +243,10 @@ impl ProjectRegistry {
     let mut metadata = self.metadata.write().await;
 
     if projects.remove(id).is_some() {
-      metadata.remove(id);
-      info!("Closed project: {}", id);
+      let name = metadata.remove(id).map(|m| m.name).unwrap_or_default();
+      info!(project_id = %id, project = %name, "Project connection closed");
+    } else {
+      debug!(project_id = %id, "Project not found when closing");
     }
   }
 
@@ -553,7 +572,15 @@ impl ProjectRegistry {
   /// Get watcher status for a project
   pub async fn watcher_status(&self, id: &str) -> WatcherStatus {
     let status_map = self.watcher_status.read().await;
-    status_map.get(id).cloned().unwrap_or_default()
+    let status = status_map.get(id).cloned().unwrap_or_default();
+    trace!(
+      project_id = %id,
+      running = status.running,
+      scanning = status.scanning,
+      files_indexed = status.files_indexed,
+      "Watcher status queried"
+    );
+    status
   }
 
   /// Update watcher status (called from watcher loop)

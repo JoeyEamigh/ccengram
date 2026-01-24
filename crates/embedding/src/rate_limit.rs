@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio::time::sleep;
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 /// Configuration for rate limiting
 #[derive(Debug, Clone)]
@@ -80,12 +80,22 @@ impl SlidingWindowLimiter {
   /// Remove expired timestamps from the window
   fn prune_expired(&mut self) {
     let cutoff = Instant::now() - self.config.window;
+    let before_count = self.request_times.len();
     while let Some(&oldest) = self.request_times.front() {
       if oldest < cutoff {
         self.request_times.pop_front();
       } else {
         break;
       }
+    }
+    let pruned = before_count - self.request_times.len();
+    if pruned > 0 {
+      trace!(
+        pruned = pruned,
+        remaining = self.request_times.len(),
+        window_ms = self.config.window.as_millis(),
+        "Rate limit window reset, pruned expired timestamps"
+      );
     }
   }
 
@@ -170,24 +180,33 @@ impl<P: EmbeddingProvider> RateLimitedProvider<P> {
           // Slot available, record the request
           let mut limiter = self.limiter.lock().await;
           limiter.record_request();
+          let current = limiter.current_count();
           debug!(
-            "Rate limiter: acquired slot ({}/{} in window)",
-            limiter.current_count(),
-            self.config.max_requests
+            current = current,
+            max = self.config.max_requests,
+            "Rate limit slot acquired"
           );
           return Ok(());
         }
         Some(wait) => {
           // Check if we've exceeded max wait time
           if start.elapsed() + wait > self.config.max_wait {
-            warn!("Rate limiter: max wait time exceeded ({:?})", self.config.max_wait);
+            warn!(
+              max_wait_ms = self.config.max_wait.as_millis(),
+              elapsed_ms = start.elapsed().as_millis(),
+              "Rate limiter max wait time exceeded"
+            );
             return Err(EmbeddingError::ProviderError(format!(
               "Rate limit wait time exceeded ({:?})",
               self.config.max_wait
             )));
           }
 
-          debug!("Rate limiter: waiting {:?} for slot", wait);
+          debug!(
+            wait_ms = wait.as_millis(),
+            max_requests = self.config.max_requests,
+            "Waiting for rate limit slot"
+          );
           sleep(wait).await;
         }
       }

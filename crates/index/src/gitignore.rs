@@ -12,6 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, RwLock};
 use std::time::SystemTime;
+use tracing::{debug, trace};
 
 /// Global patterns that apply to all projects regardless of .gitignore
 const GLOBAL_PATTERNS: &[&str] = &[
@@ -102,11 +103,13 @@ impl GitignoreCache {
       if let Some(compiled) = cache.get(project_root)
         && self.is_cache_valid(project_root, compiled)
       {
+        trace!(project = %project_root.display(), "Gitignore cache hit");
         return self.check_match(&compiled.matcher, project_root, path);
       }
     }
 
     // Slow path: build and cache matcher
+    trace!(project = %project_root.display(), "Gitignore cache miss, building matcher");
     let matcher = self.build_and_cache_matcher(project_root);
     self.check_match(&matcher, project_root, path)
   }
@@ -126,6 +129,7 @@ impl GitignoreCache {
 
   /// Build matcher and cache it under write lock.
   fn build_and_cache_matcher(&self, project_root: &Path) -> Gitignore {
+    debug!(project = %project_root.display(), "Building gitignore matcher");
     let matcher = self.build_matcher(project_root);
     let mtime = self.get_gitignore_mtime(project_root);
 
@@ -138,6 +142,7 @@ impl GitignoreCache {
       },
     );
 
+    trace!(project = %project_root.display(), "Gitignore matcher cached");
     matcher
   }
 
@@ -153,23 +158,27 @@ impl GitignoreCache {
     // Add project .gitignore if exists
     let gitignore_path = project_root.join(".gitignore");
     if gitignore_path.exists() {
+      debug!(path = %gitignore_path.display(), "Loading .gitignore");
       let _ = builder.add(&gitignore_path);
     }
 
     // Add .git/info/exclude if exists
     let exclude_path = project_root.join(".git/info/exclude");
     if exclude_path.exists() {
+      debug!(path = %exclude_path.display(), "Loading .git/info/exclude");
       let _ = builder.add(&exclude_path);
     }
 
     // Add .ccengramignore if exists
     let ccengram_ignore = project_root.join(".ccengramignore");
     if ccengram_ignore.exists() {
+      debug!(path = %ccengram_ignore.display(), "Loading .ccengramignore");
       let _ = builder.add(&ccengram_ignore);
     }
 
     builder.build().unwrap_or_else(|_| {
       // Fallback to matcher with just global patterns on error
+      debug!(project = %project_root.display(), "Gitignore build failed, using global patterns only");
       let mut fallback = GitignoreBuilder::new(project_root);
       for pattern in GLOBAL_PATTERNS {
         let _ = fallback.add_line(None, pattern);
@@ -195,6 +204,7 @@ impl GitignoreCache {
   ///
   /// Call this when you know the .gitignore has changed.
   pub fn invalidate(&self, project_root: &Path) {
+    debug!(project = %project_root.display(), "Invalidating gitignore cache");
     let mut cache = self.cache.write().unwrap();
     cache.remove(project_root);
   }

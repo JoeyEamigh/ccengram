@@ -1,7 +1,8 @@
 use crate::{EmbeddingError, EmbeddingProvider};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
+use std::time::Instant;
+use tracing::{debug, error, info, trace, warn};
 
 const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
 const DEFAULT_MODEL: &str = "qwen3-embedding";
@@ -42,6 +43,14 @@ impl Default for OllamaProvider {
 impl OllamaProvider {
   pub fn new() -> Self {
     let max_batch_size = calculate_max_batch_size(DEFAULT_CONTEXT_LENGTH);
+    info!(
+      url = DEFAULT_OLLAMA_URL,
+      model = DEFAULT_MODEL,
+      dimensions = DEFAULT_DIMENSIONS,
+      context_length = DEFAULT_CONTEXT_LENGTH,
+      max_batch_size = max_batch_size,
+      "Ollama provider initialized"
+    );
     Self {
       client: reqwest::Client::new(),
       base_url: DEFAULT_OLLAMA_URL.to_string(),
@@ -106,6 +115,9 @@ impl OllamaProvider {
 
   /// Check if Ollama is available and return the list of models
   pub async fn check_health(&self) -> OllamaHealthStatus {
+    debug!(url = %self.base_url, model = %self.model, "Checking Ollama health");
+    let start = Instant::now();
+
     let available = match self
       .client
       .get(&self.base_url)
@@ -114,10 +126,14 @@ impl OllamaProvider {
       .await
     {
       Ok(response) => response.status().is_success(),
-      Err(_) => false,
+      Err(e) => {
+        debug!(err = %e, elapsed_ms = start.elapsed().as_millis(), "Ollama health check failed");
+        false
+      }
     };
 
     if !available {
+      debug!(elapsed_ms = start.elapsed().as_millis(), "Ollama not available");
       return OllamaHealthStatus {
         available: false,
         models: vec![],
@@ -150,6 +166,15 @@ impl OllamaProvider {
       .iter()
       .any(|m| m.starts_with(&self.model) || self.model.starts_with(m));
 
+    debug!(
+      available = available,
+      model_count = models.len(),
+      configured_model = %self.model,
+      configured_model_available = configured_model_available,
+      elapsed_ms = start.elapsed().as_millis(),
+      "Ollama health check complete"
+    );
+
     OllamaHealthStatus {
       available,
       models,
@@ -160,20 +185,37 @@ impl OllamaProvider {
 
   /// Query Ollama for actual model context length
   pub async fn get_model_context_length(&self) -> Option<usize> {
+    trace!(model = %self.model, "Querying model context length");
     let request = ShowRequest { name: &self.model };
+    let start = Instant::now();
 
     match self.client.post(self.show_url()).json(&request).send().await {
       Ok(response) if response.status().is_success() => {
         if let Ok(show) = response.json::<ShowResponse>().await {
-          show
+          let context_length = show
             .model_info
             .and_then(|info| info.context_length)
-            .map(|len| len as usize)
+            .map(|len| len as usize);
+          trace!(
+            model = %self.model,
+            context_length = ?context_length,
+            elapsed_ms = start.elapsed().as_millis(),
+            "Model context length query complete"
+          );
+          context_length
         } else {
+          trace!(model = %self.model, "Failed to parse model info response");
           None
         }
       }
-      _ => None,
+      Ok(response) => {
+        trace!(model = %self.model, status = %response.status(), "Model info request failed");
+        None
+      }
+      Err(e) => {
+        trace!(model = %self.model, err = %e, "Model info request error");
+        None
+      }
     }
   }
 
@@ -187,6 +229,7 @@ impl OllamaProvider {
     use tokio::sync::Semaphore;
 
     let num_batches = texts.len().div_ceil(self.max_batch_size);
+    let start = Instant::now();
 
     // For single batch, no concurrency overhead needed
     if num_batches <= 1 {
@@ -194,10 +237,11 @@ impl OllamaProvider {
     }
 
     debug!(
-      "Processing {} texts in {} concurrent sub-batches (max batch size: {})",
-      texts.len(),
-      num_batches,
-      self.max_batch_size
+      batch_size = texts.len(),
+      sub_batches = num_batches,
+      max_batch_size = self.max_batch_size,
+      model = %self.model,
+      "Processing batch with concurrent sub-batches"
     );
 
     // Limit concurrent requests to avoid overwhelming local GPU
@@ -240,10 +284,11 @@ impl OllamaProvider {
       all_embeddings.extend(embeddings);
     }
 
-    info!(
-      "Batch embedded {} texts in {} concurrent sub-batches",
-      texts.len(),
-      num_batches
+    debug!(
+      batch_size = texts.len(),
+      sub_batches = num_batches,
+      elapsed_ms = start.elapsed().as_millis(),
+      "Batch embedding complete"
     );
 
     Ok(all_embeddings)
@@ -256,14 +301,26 @@ impl OllamaProvider {
       input: texts.to_vec(),
     };
 
-    debug!("Embedding batch of {} texts with Ollama", texts.len());
+    trace!(batch_size = texts.len(), model = %self.model, "Sending batch embedding request");
+    let start = Instant::now();
 
     let response = self.client.post(self.embed_url()).json(&request).send().await?;
+
+    trace!(
+      status = %response.status(),
+      elapsed_ms = start.elapsed().as_millis(),
+      "Received batch embedding response"
+    );
 
     if !response.status().is_success() {
       let status = response.status();
       let body = response.text().await.unwrap_or_default();
-      warn!("Ollama batch embedding failed: {} - {}", status, body);
+      warn!(
+        status = %status,
+        batch_size = texts.len(),
+        model = %self.model,
+        "Ollama batch embedding failed"
+      );
       return Err(EmbeddingError::ProviderError(format!(
         "Ollama returned {}: {}",
         status, body
@@ -271,12 +328,18 @@ impl OllamaProvider {
     }
 
     let result: BatchEmbeddingResponse = response.json().await?;
+    trace!(
+      embeddings_count = result.embeddings.len(),
+      elapsed_ms = start.elapsed().as_millis(),
+      "Parsed batch embedding response"
+    );
 
     if result.embeddings.len() != texts.len() {
-      warn!(
-        "Batch size mismatch: got {} embeddings for {} inputs",
-        result.embeddings.len(),
-        texts.len()
+      error!(
+        expected = texts.len(),
+        got = result.embeddings.len(),
+        model = %self.model,
+        "Batch size mismatch in embedding response"
       );
       return Err(EmbeddingError::ProviderError(format!(
         "Batch size mismatch: got {} embeddings for {} inputs",
@@ -285,12 +348,14 @@ impl OllamaProvider {
       )));
     }
 
-    for embedding in &result.embeddings {
+    for (i, embedding) in result.embeddings.iter().enumerate() {
       if embedding.len() != self.dimensions {
         warn!(
-          "Unexpected embedding dimensions: got {}, expected {}",
-          embedding.len(),
-          self.dimensions
+          index = i,
+          expected = self.dimensions,
+          got = embedding.len(),
+          model = %self.model,
+          "Unexpected embedding dimensions"
         );
       }
     }
@@ -303,7 +368,12 @@ impl OllamaProvider {
     use std::sync::Arc;
     use tokio::sync::Semaphore;
 
-    debug!("Using parallel fallback for {} texts", texts.len());
+    debug!(
+      batch_size = texts.len(),
+      max_concurrent = DEFAULT_MAX_CONCURRENT,
+      "Using parallel fallback for batch embedding"
+    );
+    let start = Instant::now();
 
     let semaphore = Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT));
 
@@ -326,7 +396,27 @@ impl OllamaProvider {
     let results: Vec<Result<Vec<f32>, EmbeddingError>> = futures::future::join_all(futures).await;
 
     // Collect results, propagating first error
-    results.into_iter().collect()
+    let collected: Result<Vec<Vec<f32>>, EmbeddingError> = results.into_iter().collect();
+
+    match &collected {
+      Ok(_) => {
+        debug!(
+          batch_size = texts.len(),
+          elapsed_ms = start.elapsed().as_millis(),
+          "Parallel fallback embedding complete"
+        );
+      }
+      Err(e) => {
+        warn!(
+          batch_size = texts.len(),
+          elapsed_ms = start.elapsed().as_millis(),
+          err = %e,
+          "Parallel fallback embedding failed"
+        );
+      }
+    }
+
+    collected
   }
 }
 
@@ -404,14 +494,26 @@ impl EmbeddingProvider for OllamaProvider {
       prompt: text,
     };
 
-    debug!("Embedding text with Ollama: {} chars", text.len());
+    trace!(text_len = text.len(), model = %self.model, "Sending single embedding request");
+    let start = Instant::now();
 
     let response = self.client.post(self.embeddings_url()).json(&request).send().await?;
+
+    trace!(
+      status = %response.status(),
+      elapsed_ms = start.elapsed().as_millis(),
+      "Received single embedding response"
+    );
 
     if !response.status().is_success() {
       let status = response.status();
       let body = response.text().await.unwrap_or_default();
-      warn!("Ollama embedding failed: {} - {}", status, body);
+      warn!(
+        status = %status,
+        text_len = text.len(),
+        model = %self.model,
+        "Ollama single embedding failed"
+      );
       return Err(EmbeddingError::ProviderError(format!(
         "Ollama returned {}: {}",
         status, body
@@ -422,25 +524,39 @@ impl EmbeddingProvider for OllamaProvider {
 
     if result.embedding.len() != self.dimensions {
       warn!(
-        "Unexpected embedding dimensions: got {}, expected {}",
-        result.embedding.len(),
-        self.dimensions
+        expected = self.dimensions,
+        got = result.embedding.len(),
+        model = %self.model,
+        "Unexpected embedding dimensions"
       );
     }
+
+    trace!(
+      dimensions = result.embedding.len(),
+      elapsed_ms = start.elapsed().as_millis(),
+      "Single embedding complete"
+    );
 
     Ok(result.embedding)
   }
 
   async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
     if texts.is_empty() {
+      trace!("Empty batch, returning immediately");
       return Ok(Vec::new());
     }
+
+    debug!(batch_size = texts.len(), model = %self.model, "Embedding batch");
 
     // Try native batch API first, fall back to parallel on error
     match self.embed_batch_native(texts).await {
       Ok(embeddings) => Ok(embeddings),
       Err(e) => {
-        warn!("Native batch embedding failed ({}), falling back to parallel", e);
+        warn!(
+          batch_size = texts.len(),
+          err = %e,
+          "Native batch embedding failed, falling back to parallel"
+        );
         self.embed_batch_parallel(texts).await
       }
     }
@@ -448,9 +564,17 @@ impl EmbeddingProvider for OllamaProvider {
 
   async fn is_available(&self) -> bool {
     // Try a simple health check
+    debug!(url = %self.base_url, "Checking Ollama availability");
     match self.client.get(&self.base_url).send().await {
-      Ok(response) => response.status().is_success(),
-      Err(_) => false,
+      Ok(response) => {
+        let available = response.status().is_success();
+        debug!(available = available, "Ollama availability check complete");
+        available
+      }
+      Err(e) => {
+        debug!(err = %e, "Ollama availability check failed");
+        false
+      }
     }
   }
 }

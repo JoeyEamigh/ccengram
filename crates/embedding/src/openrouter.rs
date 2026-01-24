@@ -3,8 +3,9 @@ use crate::{EmbeddingError, EmbeddingProvider};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/embeddings";
 const DEFAULT_MODEL: &str = "openai/text-embedding-3-small";
@@ -28,6 +29,12 @@ pub struct OpenRouterProvider {
 
 impl OpenRouterProvider {
   pub fn new(api_key: impl Into<String>) -> Self {
+    info!(
+      model = DEFAULT_MODEL,
+      dimensions = DEFAULT_DIMENSIONS,
+      max_batch_size = DEFAULT_MAX_BATCH_SIZE,
+      "OpenRouter provider initialized"
+    );
     Self {
       client: reqwest::Client::new(),
       api_key: api_key.into(),
@@ -62,12 +69,23 @@ impl OpenRouterProvider {
   }
 
   pub fn from_env() -> Option<Self> {
-    std::env::var("OPENROUTER_API_KEY").ok().map(Self::new)
+    match std::env::var("OPENROUTER_API_KEY") {
+      Ok(key) => {
+        info!(
+          model = DEFAULT_MODEL,
+          "OpenRouter provider initialized from environment"
+        );
+        Some(Self::new(key))
+      }
+      Err(_) => {
+        debug!("OPENROUTER_API_KEY not set, OpenRouter provider unavailable");
+        None
+      }
+    }
   }
 
   /// Acquire a rate limit slot, waiting if necessary
   async fn acquire_rate_limit_slot(&self) -> Result<(), EmbeddingError> {
-    use std::time::Instant;
     use tokio::time::sleep;
 
     let config = RateLimitConfig::for_openrouter();
@@ -82,19 +100,24 @@ impl OpenRouterProvider {
       match wait_time {
         None => {
           // Slot acquired
+          trace!(elapsed_ms = start.elapsed().as_millis(), "Rate limit slot acquired");
           return Ok(());
         }
         Some(wait) => {
           // Check if we've exceeded max wait time
           if start.elapsed() + wait > config.max_wait {
-            warn!("Rate limiter: max wait time exceeded ({:?})", config.max_wait);
+            warn!(
+              max_wait_ms = config.max_wait.as_millis(),
+              elapsed_ms = start.elapsed().as_millis(),
+              "Rate limiter max wait time exceeded"
+            );
             return Err(EmbeddingError::ProviderError(format!(
               "Rate limit wait time exceeded ({:?})",
               config.max_wait
             )));
           }
 
-          debug!("Rate limiter: waiting {:?} for slot", wait);
+          debug!(wait_ms = wait.as_millis(), "Rate limiter waiting for slot");
           sleep(wait).await;
         }
       }
@@ -116,11 +139,12 @@ impl OpenRouterProvider {
       input: EmbeddingInput::Batch(texts.to_vec()),
     };
 
-    debug!(
-      "Embedding batch of {} texts with OpenRouter (model: {})",
-      texts.len(),
-      self.model
+    trace!(
+      batch_size = texts.len(),
+      model = %self.model,
+      "Sending batch embedding request to OpenRouter"
     );
+    let start = Instant::now();
 
     let response = self
       .client
@@ -131,10 +155,39 @@ impl OpenRouterProvider {
       .send()
       .await?;
 
-    if !response.status().is_success() {
-      let status = response.status();
+    let status = response.status();
+    trace!(
+      status = %status,
+      elapsed_ms = start.elapsed().as_millis(),
+      "Received response from OpenRouter"
+    );
+
+    if !status.is_success() {
       let body = response.text().await.unwrap_or_default();
-      warn!("OpenRouter batch embedding failed: {} - {}", status, body);
+
+      // Check for specific error types
+      if status.as_u16() == 401 || status.as_u16() == 403 {
+        error!(
+          status = %status,
+          model = %self.model,
+          "OpenRouter authentication failed"
+        );
+      } else if status.as_u16() == 429 {
+        warn!(
+          status = %status,
+          batch_size = texts.len(),
+          model = %self.model,
+          "OpenRouter rate limit exceeded"
+        );
+      } else {
+        warn!(
+          status = %status,
+          batch_size = texts.len(),
+          model = %self.model,
+          "OpenRouter batch embedding failed"
+        );
+      }
+
       return Err(EmbeddingError::ProviderError(format!(
         "OpenRouter returned {}: {}",
         status, body
@@ -142,12 +195,18 @@ impl OpenRouterProvider {
     }
 
     let result: EmbeddingResponse = response.json().await?;
+    trace!(
+      embeddings_count = result.data.len(),
+      elapsed_ms = start.elapsed().as_millis(),
+      "Parsed OpenRouter response"
+    );
 
     if result.data.len() != texts.len() {
-      warn!(
-        "Batch size mismatch: got {} embeddings for {} inputs",
-        result.data.len(),
-        texts.len()
+      error!(
+        expected = texts.len(),
+        got = result.data.len(),
+        model = %self.model,
+        "Batch size mismatch in OpenRouter response"
       );
       return Err(EmbeddingError::ProviderError(format!(
         "Batch size mismatch: got {} embeddings for {} inputs",
@@ -167,6 +226,7 @@ impl OpenRouterProvider {
   /// concurrently - the rate limiter will naturally throttle them.
   async fn embed_batch_concurrent(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
     let num_batches = texts.len().div_ceil(self.max_batch_size);
+    let start = Instant::now();
 
     // For single batch, no concurrency overhead needed
     if num_batches <= 1 {
@@ -174,10 +234,11 @@ impl OpenRouterProvider {
     }
 
     debug!(
-      "Processing {} texts in {} concurrent sub-batches (max batch size: {})",
-      texts.len(),
-      num_batches,
-      self.max_batch_size
+      batch_size = texts.len(),
+      sub_batches = num_batches,
+      max_batch_size = self.max_batch_size,
+      model = %self.model,
+      "Processing batch with concurrent sub-batches"
     );
 
     // Create indexed sub-batch tasks - NO semaphore limit, rate limiter handles throttling
@@ -213,10 +274,11 @@ impl OpenRouterProvider {
       all_embeddings.extend(embeddings);
     }
 
-    info!(
-      "Batch embedded {} texts in {} concurrent sub-batches",
-      texts.len(),
-      num_batches
+    debug!(
+      batch_size = texts.len(),
+      sub_batches = num_batches,
+      elapsed_ms = start.elapsed().as_millis(),
+      "OpenRouter batch embedding complete"
     );
 
     Ok(all_embeddings)
@@ -269,7 +331,8 @@ impl EmbeddingProvider for OpenRouterProvider {
       input: EmbeddingInput::Single(text),
     };
 
-    debug!("Embedding text with OpenRouter: {} chars", text.len());
+    trace!(text_len = text.len(), model = %self.model, "Sending single embedding request to OpenRouter");
+    let start = Instant::now();
 
     let response = self
       .client
@@ -280,10 +343,39 @@ impl EmbeddingProvider for OpenRouterProvider {
       .send()
       .await?;
 
-    if !response.status().is_success() {
-      let status = response.status();
+    let status = response.status();
+    trace!(
+      status = %status,
+      elapsed_ms = start.elapsed().as_millis(),
+      "Received single embedding response from OpenRouter"
+    );
+
+    if !status.is_success() {
       let body = response.text().await.unwrap_or_default();
-      warn!("OpenRouter embedding failed: {} - {}", status, body);
+
+      // Check for specific error types
+      if status.as_u16() == 401 || status.as_u16() == 403 {
+        error!(
+          status = %status,
+          model = %self.model,
+          "OpenRouter authentication failed"
+        );
+      } else if status.as_u16() == 429 {
+        warn!(
+          status = %status,
+          text_len = text.len(),
+          model = %self.model,
+          "OpenRouter rate limit exceeded"
+        );
+      } else {
+        warn!(
+          status = %status,
+          text_len = text.len(),
+          model = %self.model,
+          "OpenRouter single embedding failed"
+        );
+      }
+
       return Err(EmbeddingError::ProviderError(format!(
         "OpenRouter returned {}: {}",
         status, body
@@ -292,25 +384,35 @@ impl EmbeddingProvider for OpenRouterProvider {
 
     let result: EmbeddingResponse = response.json().await?;
 
-    result
-      .data
-      .into_iter()
-      .next()
-      .map(|d| d.embedding)
-      .ok_or_else(|| EmbeddingError::ProviderError("No embedding in response".into()))
+    let embedding = result.data.into_iter().next().map(|d| d.embedding).ok_or_else(|| {
+      error!(model = %self.model, "OpenRouter returned empty response");
+      EmbeddingError::ProviderError("No embedding in response".into())
+    })?;
+
+    trace!(
+      dimensions = embedding.len(),
+      elapsed_ms = start.elapsed().as_millis(),
+      "Single embedding complete"
+    );
+
+    Ok(embedding)
   }
 
   async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
     if texts.is_empty() {
+      trace!("Empty batch, returning immediately");
       return Ok(Vec::new());
     }
 
+    debug!(batch_size = texts.len(), model = %self.model, "Embedding batch with OpenRouter");
     self.embed_batch_concurrent(texts).await
   }
 
   async fn is_available(&self) -> bool {
     // OpenRouter is a cloud service, just check we have an API key
-    !self.api_key.is_empty()
+    let available = !self.api_key.is_empty();
+    debug!(available = available, "OpenRouter availability check");
+    available
   }
 }
 

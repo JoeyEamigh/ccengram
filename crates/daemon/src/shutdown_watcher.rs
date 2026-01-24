@@ -122,6 +122,17 @@ impl ShutdownWatcher {
       return true;
     }
 
+    // Log when approaching timeout (within 60 seconds)
+    if !has_sessions && idle_duration.as_secs() + 60 >= self.idle_timeout.as_secs() && self.idle_timeout.as_secs() > 60
+    {
+      debug!(
+        idle_secs = idle_duration.as_secs(),
+        timeout_secs = self.idle_timeout.as_secs(),
+        remaining_secs = self.idle_timeout.as_secs().saturating_sub(idle_duration.as_secs()),
+        "Idle timeout approaching"
+      );
+    }
+
     false
   }
 }

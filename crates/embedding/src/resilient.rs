@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{debug, warn};
+use tracing::{debug, info, trace, warn};
 
 /// Configuration for resilient HTTP operations
 #[derive(Debug, Clone)]
@@ -139,34 +139,65 @@ impl<P: EmbeddingProvider> ResilientProvider<P> {
 
   async fn embed_with_retry(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
     let mut last_error = None;
+    let max_retries = self.config.max_retries;
 
-    for attempt in 0..=self.config.max_retries {
+    for attempt in 0..=max_retries {
       if attempt > 0 {
         let backoff = self.config.backoff_for_attempt(attempt - 1);
-        debug!("Retry attempt {} after {:?}", attempt, backoff);
+        trace!(backoff_ms = backoff.as_millis(), "Applying backoff before retry");
+        debug!(
+          attempt = attempt,
+          max_retries = max_retries,
+          backoff_ms = backoff.as_millis(),
+          "Retrying single embed after backoff"
+        );
         sleep(backoff).await;
       }
 
       match tokio::time::timeout(self.config.request_timeout, self.inner.embed(text)).await {
-        Ok(Ok(result)) => return Ok(result),
+        Ok(Ok(result)) => {
+          if attempt > 0 {
+            info!(attempt = attempt, "Single embed succeeded after retry");
+          }
+          return Ok(result);
+        }
         Ok(Err(e)) => {
-          if is_retryable_error(&e) && attempt < self.config.max_retries {
-            warn!("Retryable error on attempt {}: {}", attempt + 1, e);
+          if is_retryable_error(&e) && attempt < max_retries {
+            warn!(
+              attempt = attempt + 1,
+              max_retries = max_retries,
+              err = %e,
+              "Retryable error, will retry"
+            );
             last_error = Some(e);
             continue;
+          }
+          if attempt == max_retries && is_retryable_error(&e) {
+            warn!(
+              attempt = attempt + 1,
+              max_retries = max_retries,
+              err = %e,
+              "All retries exhausted"
+            );
           }
           return Err(e);
         }
         Err(_) => {
-          warn!("Request timed out on attempt {}", attempt + 1);
+          warn!(
+            attempt = attempt + 1,
+            max_retries = max_retries,
+            timeout_ms = self.config.request_timeout.as_millis(),
+            "Request timed out"
+          );
           last_error = Some(EmbeddingError::Timeout);
-          if attempt < self.config.max_retries {
+          if attempt < max_retries {
             continue;
           }
         }
       }
     }
 
+    warn!(max_retries = max_retries, "All retries exhausted");
     Err(last_error.unwrap_or_else(|| EmbeddingError::ProviderError("Max retries exceeded".to_string())))
   }
 
@@ -179,53 +210,88 @@ impl<P: EmbeddingProvider> ResilientProvider<P> {
         return Ok(Vec::new());
       }
 
+      let max_retries = self.config.max_retries;
       let mut attempt = initial_attempt;
+
       loop {
         // Apply backoff if this is a retry
         if attempt > 0 {
           let backoff = self.config.backoff_for_attempt(attempt - 1);
-          debug!("Batch retry attempt {} after {:?}", attempt, backoff);
+          trace!(backoff_ms = backoff.as_millis(), "Applying backoff before batch retry");
+          debug!(
+            attempt = attempt,
+            max_retries = max_retries,
+            batch_size = texts.len(),
+            backoff_ms = backoff.as_millis(),
+            "Retrying batch embed after backoff"
+          );
           sleep(backoff).await;
         }
 
         // Try the batch operation with timeout
         match tokio::time::timeout(self.config.request_timeout, self.inner.embed_batch(texts)).await {
-          Ok(Ok(embeddings)) => return Ok(embeddings),
-          Ok(Err(e)) if is_retryable_error(&e) && attempt < self.config.max_retries => {
+          Ok(Ok(embeddings)) => {
+            if attempt > 0 {
+              info!(
+                attempt = attempt,
+                batch_size = texts.len(),
+                "Batch embed succeeded after retry"
+              );
+            }
+            return Ok(embeddings);
+          }
+          Ok(Err(e)) if is_retryable_error(&e) && attempt < max_retries => {
             // Transient error - retry the entire batch
-            warn!("Retryable batch error on attempt {}: {}", attempt + 1, e);
+            warn!(
+              attempt = attempt + 1,
+              max_retries = max_retries,
+              batch_size = texts.len(),
+              err = %e,
+              "Retryable batch error, will retry"
+            );
             attempt += 1;
             continue;
           }
           Ok(Err(e)) if texts.len() > 1 => {
             // Persistent failure on batch - binary split to isolate problematic texts
             warn!(
-              "Batch embedding failed after {} attempts, splitting batch of {} texts: {}",
-              attempt + 1,
-              texts.len(),
-              e
+              attempt = attempt + 1,
+              batch_size = texts.len(),
+              err = %e,
+              "Batch embedding failed, splitting to isolate problematic texts"
             );
             return self.split_and_retry(texts).await;
           }
           Ok(Err(e)) => {
             // Single text that failed - return the error
+            debug!(
+              attempt = attempt + 1,
+              err = %e,
+              "Single text embed failed"
+            );
             return Err(e);
           }
           Err(_) => {
             // Timeout
             warn!(
-              "Batch request timed out on attempt {} ({} texts)",
-              attempt + 1,
-              texts.len()
+              attempt = attempt + 1,
+              max_retries = max_retries,
+              batch_size = texts.len(),
+              timeout_ms = self.config.request_timeout.as_millis(),
+              "Batch request timed out"
             );
-            if attempt < self.config.max_retries {
+            if attempt < max_retries {
               attempt += 1;
               continue;
             } else if texts.len() > 1 {
               // Try splitting on timeout too
-              warn!("Splitting batch of {} texts after timeout", texts.len());
+              debug!(
+                batch_size = texts.len(),
+                "Splitting batch after timeout to isolate slow texts"
+              );
               return self.split_and_retry(texts).await;
             } else {
+              warn!(max_retries = max_retries, "All retries exhausted after timeout");
               return Err(EmbeddingError::Timeout);
             }
           }
@@ -239,6 +305,13 @@ impl<P: EmbeddingProvider> ResilientProvider<P> {
     let mid = texts.len() / 2;
     let (left, right) = texts.split_at(mid);
 
+    debug!(
+      total_size = texts.len(),
+      left_size = left.len(),
+      right_size = right.len(),
+      "Splitting batch for retry"
+    );
+
     // Process both halves concurrently
     let (left_result, right_result) = tokio::join!(
       self.embed_batch_with_retry(left, 0),
@@ -247,6 +320,9 @@ impl<P: EmbeddingProvider> ResilientProvider<P> {
 
     let mut results = left_result?;
     results.extend(right_result?);
+
+    debug!(result_size = results.len(), "Split retry completed successfully");
+
     Ok(results)
   }
 }

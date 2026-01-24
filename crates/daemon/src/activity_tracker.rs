@@ -5,6 +5,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tracing::trace;
 
 /// Tracks daemon activity for idle timeout detection.
 ///
@@ -39,6 +40,7 @@ impl ActivityTracker {
       .unwrap_or_default()
       .as_millis() as u64;
     self.last_activity_millis.store(now_millis, Ordering::Relaxed);
+    trace!("Activity recorded");
   }
 
   /// Get duration since last activity.

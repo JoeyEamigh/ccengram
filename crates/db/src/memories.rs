@@ -7,6 +7,7 @@ use engram_core::{Memory, MemoryId, MemoryType, Sector, Tier};
 use futures::TryStreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use std::sync::Arc;
+use tracing::debug;
 use uuid::Uuid;
 
 use crate::connection::{DbError, ProjectDb, Result};
@@ -16,6 +17,15 @@ impl ProjectDb {
   /// Add a new memory to the database
   pub async fn add_memory(&self, memory: &Memory, vector: Option<&[f32]>) -> Result<()> {
     let table = self.memories_table().await?;
+
+    debug!(
+      table = "memories",
+      operation = "insert",
+      id = %memory.id,
+      sector = %memory.sector.as_str(),
+      has_vector = vector.is_some(),
+      "Adding memory"
+    );
 
     let batch = memory_to_batch(memory, vector, self.vector_dim)?;
     let batches = RecordBatchIterator::new(vec![Ok(batch)], memories_schema(self.vector_dim));
@@ -53,6 +63,14 @@ impl ProjectDb {
   pub async fn update_memory(&self, memory: &Memory, vector: Option<&[f32]>) -> Result<()> {
     let table = self.memories_table().await?;
 
+    debug!(
+      table = "memories",
+      operation = "update",
+      id = %memory.id,
+      has_vector = vector.is_some(),
+      "Updating memory"
+    );
+
     // LanceDB uses upsert via merge_insert
     let batch = memory_to_batch(memory, vector, self.vector_dim)?;
     let batches = RecordBatchIterator::new(vec![Ok(batch)], memories_schema(self.vector_dim));
@@ -76,6 +94,13 @@ impl ProjectDb {
       return Ok(0);
     }
 
+    debug!(
+      table = "memories",
+      operation = "batch_update",
+      batch_size = memories.len(),
+      "Batch updating memories"
+    );
+
     let table = self.memories_table().await?;
 
     // Build single delete query for all IDs
@@ -94,11 +119,19 @@ impl ProjectDb {
 
     table.add(Box::new(batches)).execute().await?;
 
+    debug!(
+      table = "memories",
+      operation = "batch_update",
+      updated = memories.len(),
+      "Batch update complete"
+    );
+
     Ok(memories.len())
   }
 
   /// Delete a memory by ID (hard delete)
   pub async fn delete_memory(&self, id: &MemoryId) -> Result<()> {
+    debug!(table = "memories", operation = "delete", id = %id, "Deleting memory");
     let table = self.memories_table().await?;
     table.delete(&format!("id = '{}'", id)).await?;
     Ok(())
@@ -111,6 +144,15 @@ impl ProjectDb {
     limit: usize,
     filter: Option<&str>,
   ) -> Result<Vec<(Memory, f32)>> {
+    debug!(
+      table = "memories",
+      operation = "search",
+      query_len = query_vector.len(),
+      limit = limit,
+      has_filter = filter.is_some(),
+      "Searching memories"
+    );
+
     let table = self.memories_table().await?;
 
     let query = if let Some(f) = filter {
@@ -134,6 +176,13 @@ impl ProjectDb {
         memories.push((memory, distance));
       }
     }
+
+    debug!(
+      table = "memories",
+      operation = "search",
+      results = memories.len(),
+      "Search complete"
+    );
 
     Ok(memories)
   }

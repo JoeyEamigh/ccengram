@@ -2,6 +2,8 @@
 //!
 //! All prompts are designed to return JSON for structured parsing.
 
+use tracing::trace;
+
 /// Prompt for classifying user input signals
 pub const SIGNAL_CLASSIFICATION_PROMPT: &str = r#"You are a signal classifier. Analyze the user's message and classify it.
 
@@ -131,7 +133,14 @@ Code changes:
 
 /// Build a signal classification prompt for a specific user message
 pub fn build_signal_classification_prompt(user_message: &str) -> String {
-  format!("{}{}", SIGNAL_CLASSIFICATION_PROMPT, user_message)
+  let prompt = format!("{}{}", SIGNAL_CLASSIFICATION_PROMPT, user_message);
+  trace!(
+    template_len = SIGNAL_CLASSIFICATION_PROMPT.len(),
+    message_len = user_message.len(),
+    total_len = prompt.len(),
+    "Built signal classification prompt"
+  );
+  prompt
 }
 
 /// Build a memory extraction prompt for a conversation segment
@@ -181,6 +190,19 @@ pub fn build_extraction_prompt(context: &ExtractionContext) -> String {
     prompt.push_str(&truncated);
   }
 
+  trace!(
+    template_len = MEMORY_EXTRACTION_PROMPT.len(),
+    total_len = prompt.len(),
+    has_user_prompt = context.user_prompt.is_some(),
+    files_read_count = context.files_read.len(),
+    files_modified_count = context.files_modified.len(),
+    commands_run_count = context.commands_run.len(),
+    errors_count = context.errors_encountered.len(),
+    tasks_count = context.completed_tasks.len(),
+    has_assistant_message = context.last_assistant_message.is_some(),
+    "Built memory extraction prompt"
+  );
+
   prompt
 }
 
@@ -199,9 +221,20 @@ pub fn build_superseding_prompt(new_memory: &str, existing_memories: &[(String, 
   }
   existing_json.push_str("\n]");
 
-  SUPERSEDING_DETECTION_PROMPT
+  let prompt = SUPERSEDING_DETECTION_PROMPT
     .replace("{new_memory}", new_memory)
-    .replace("{existing_memories}", &existing_json)
+    .replace("{existing_memories}", &existing_json);
+
+  trace!(
+    template_len = SUPERSEDING_DETECTION_PROMPT.len(),
+    new_memory_len = new_memory.len(),
+    existing_memories_count = existing_memories.len(),
+    existing_json_len = existing_json.len(),
+    total_len = prompt.len(),
+    "Built superseding detection prompt"
+  );
+
+  prompt
 }
 
 /// Context for memory extraction

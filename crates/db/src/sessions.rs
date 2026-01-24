@@ -6,6 +6,7 @@ use futures::TryStreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tracing::{debug, trace};
 use uuid::Uuid;
 
 use crate::connection::{DbError, ProjectDb, Result};
@@ -40,6 +41,14 @@ impl Session {
 impl ProjectDb {
   /// Add a new session to the database
   pub async fn add_session(&self, session: &Session) -> Result<()> {
+    debug!(
+      table = "sessions",
+      operation = "insert",
+      session_id = %session.id,
+      project_id = %session.project_id,
+      "Creating session"
+    );
+
     let table = self.sessions_table().await?;
 
     let batch = session_to_batch(session)?;
@@ -76,6 +85,13 @@ impl ProjectDb {
 
   /// Update a session
   pub async fn update_session(&self, session: &Session) -> Result<()> {
+    trace!(
+      table = "sessions",
+      operation = "update",
+      session_id = %session.id,
+      "Updating session"
+    );
+
     let table = self.sessions_table().await?;
 
     let batch = session_to_batch(session)?;
@@ -90,6 +106,14 @@ impl ProjectDb {
 
   /// End a session
   pub async fn end_session(&self, id: &Uuid, summary: Option<String>) -> Result<()> {
+    debug!(
+      table = "sessions",
+      operation = "end",
+      session_id = %id,
+      has_summary = summary.is_some(),
+      "Ending session"
+    );
+
     if let Some(mut session) = self.get_session(id).await? {
       session.ended_at = Some(Utc::now());
       session.summary = summary;
@@ -168,6 +192,13 @@ impl ProjectDb {
 
   /// Cleanup stale sessions (those without end time older than max_age_hours)
   pub async fn cleanup_stale_sessions(&self, max_age_hours: u64) -> Result<usize> {
+    debug!(
+      table = "sessions",
+      operation = "cleanup",
+      max_age_hours = max_age_hours,
+      "Cleaning up stale sessions"
+    );
+
     let sessions = self.list_sessions(Some("ended_at IS NULL"), None).await?;
 
     let now = Utc::now();
@@ -184,11 +215,20 @@ impl ProjectDb {
       }
     }
 
+    debug!(
+      table = "sessions",
+      operation = "cleanup",
+      cleaned = cleaned,
+      "Session cleanup complete"
+    );
+
     Ok(cleaned)
   }
 
   /// Delete a session and its memory links
   pub async fn delete_session(&self, id: &Uuid) -> Result<()> {
+    debug!(table = "sessions", operation = "delete", session_id = %id, "Deleting session");
+
     // Delete session-memory links first
     let links = self.get_session_memory_links(id).await?;
     for link in links {

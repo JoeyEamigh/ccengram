@@ -6,6 +6,7 @@ use moka::sync::Cache;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::{debug, trace};
 
 /// Cache entry for file content (used for incremental parsing)
 #[derive(Clone)]
@@ -48,12 +49,19 @@ impl FileContentCache {
   /// Get cached content for a file.
   pub fn get(&self, project_root: &Path, file_path: &str) -> Option<CachedFileContent> {
     let key = (project_root.to_path_buf(), file_path.to_string());
-    self.cache.get(&key)
+    let result = self.cache.get(&key);
+    trace!(
+      file = %file_path,
+      hit = result.is_some(),
+      "File content cache lookup"
+    );
+    result
   }
 
   /// Store content for a file.
   pub fn insert(&self, project_root: &Path, file_path: &str, content: String) {
     let hash = Self::hash_content(&content);
+    let content_len = content.len();
     let key = (project_root.to_path_buf(), file_path.to_string());
     self.cache.insert(
       key,
@@ -62,12 +70,14 @@ impl FileContentCache {
         content_hash: hash,
       },
     );
+    trace!(file = %file_path, content_len = content_len, "File content cached");
   }
 
   /// Remove cached content for a file (e.g., on delete).
   pub fn remove(&self, project_root: &Path, file_path: &str) {
     let key = (project_root.to_path_buf(), file_path.to_string());
     self.cache.invalidate(&key);
+    debug!(file = %file_path, "File content cache invalidated");
   }
 
   /// Remove all cached content for a project.
@@ -75,7 +85,15 @@ impl FileContentCache {
     // Note: moka doesn't support prefix invalidation, so we iterate
     // This is O(n) but should be rare (only on project close)
     let root = project_root.to_path_buf();
+    let count_before = self.cache.entry_count();
     let _ = self.cache.invalidate_entries_if(move |key, _| key.0 == root);
+    let count_after = self.cache.entry_count();
+    let invalidated = count_before.saturating_sub(count_after);
+    debug!(
+      project = %project_root.display(),
+      entries_invalidated = invalidated,
+      "Project cache invalidated"
+    );
   }
 
   /// Get cache statistics.

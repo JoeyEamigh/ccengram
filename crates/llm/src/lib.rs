@@ -12,11 +12,12 @@ pub use prompts::ExtractionContext;
 
 use serde::{Deserialize, Serialize};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::time::timeout;
+use tracing::{debug, error, trace, warn};
 
 /// Errors that can occur during LLM inference
 #[derive(Debug, Error)]
@@ -178,9 +179,13 @@ fn find_claude() -> Result<String> {
   let output = std::process::Command::new(which_cmd)
     .arg("claude")
     .output()
-    .map_err(|_| LlmError::ClaudeNotFound)?;
+    .map_err(|e| {
+      debug!(err = %e, "Failed to execute 'which claude'");
+      LlmError::ClaudeNotFound
+    })?;
 
   if !output.status.success() {
+    debug!("Claude executable not found in PATH");
     return Err(LlmError::ClaudeNotFound);
   }
 
@@ -191,9 +196,11 @@ fn find_claude() -> Result<String> {
     .ok_or(LlmError::ClaudeNotFound)?;
 
   if path.is_empty() {
+    debug!("Claude path is empty");
     return Err(LlmError::ClaudeNotFound);
   }
 
+  trace!(claude_path = %path, "Found claude executable");
   Ok(path)
 }
 
@@ -205,6 +212,7 @@ fn find_claude() -> Result<String> {
 /// 3. Parses the JSON output
 /// 4. Returns the text response and usage stats
 pub async fn infer(request: InferenceRequest) -> Result<InferenceResponse> {
+  let start = Instant::now();
   let claude_path = find_claude()?;
 
   let full_prompt = if let Some(system) = &request.system_prompt {
@@ -213,10 +221,12 @@ pub async fn infer(request: InferenceRequest) -> Result<InferenceResponse> {
     request.prompt.clone()
   };
 
-  tracing::debug!(
-    model = request.model.as_str(),
+  debug!(
+    model = %request.model.as_str(),
     prompt_len = full_prompt.len(),
-    "Starting LLM inference"
+    timeout_secs = request.timeout_secs,
+    has_system_prompt = request.system_prompt.is_some(),
+    "Starting inference request"
   );
 
   let mut cmd = Command::new(&claude_path);
@@ -239,7 +249,19 @@ pub async fn infer(request: InferenceRequest) -> Result<InferenceResponse> {
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
 
-  let mut child = cmd.spawn()?;
+  trace!(
+    claude_path = %claude_path,
+    model = %request.model.as_str(),
+    "Spawning Claude CLI process"
+  );
+
+  let mut child = match cmd.spawn() {
+    Ok(child) => child,
+    Err(e) => {
+      error!(err = %e, "Failed to spawn Claude CLI process");
+      return Err(e.into());
+    }
+  };
 
   // Write prompt to stdin
   if let Some(mut stdin) = child.stdin.take() {
@@ -261,19 +283,58 @@ pub async fn infer(request: InferenceRequest) -> Result<InferenceResponse> {
     Ok::<_, std::io::Error>(output)
   };
 
-  let output = timeout(Duration::from_secs(request.timeout_secs), read_future)
-    .await
-    .map_err(|_| LlmError::Timeout(request.timeout_secs))??;
+  let output = match timeout(Duration::from_secs(request.timeout_secs), read_future).await {
+    Ok(Ok(output)) => output,
+    Ok(Err(e)) => {
+      error!(err = %e, "Failed to read Claude CLI output");
+      return Err(e.into());
+    }
+    Err(_) => {
+      warn!(
+        timeout_secs = request.timeout_secs,
+        elapsed_ms = start.elapsed().as_millis() as u64,
+        model = %request.model.as_str(),
+        "Claude CLI timed out"
+      );
+      return Err(LlmError::Timeout(request.timeout_secs));
+    }
+  };
 
   // Wait for process to complete
   let status = child.wait().await?;
   if !status.success() {
-    return Err(LlmError::ProcessFailed(status.code().unwrap_or(-1)));
+    let exit_code = status.code().unwrap_or(-1);
+    error!(
+      exit_code = exit_code,
+      model = %request.model.as_str(),
+      "Claude CLI process failed"
+    );
+    return Err(LlmError::ProcessFailed(exit_code));
   }
+
+  trace!(
+    output_len = output.len(),
+    elapsed_ms = start.elapsed().as_millis() as u64,
+    "Claude CLI process completed"
+  );
 
   // Parse JSON array output
   // The output is a JSON array: [{system}, {assistant}, {result}]
-  let messages: Vec<ClaudeMessage> = serde_json::from_str(&output)?;
+  let messages: Vec<ClaudeMessage> = match serde_json::from_str::<Vec<ClaudeMessage>>(&output) {
+    Ok(msgs) => {
+      trace!(message_count = msgs.len(), "Parsed Claude CLI JSON response");
+      msgs
+    }
+    Err(e) => {
+      warn!(
+        err = %e,
+        output_len = output.len(),
+        output_preview = %output.chars().take(200).collect::<String>(),
+        "Failed to parse Claude CLI JSON response"
+      );
+      return Err(e.into());
+    }
+  };
 
   let mut response_text = String::new();
   let mut input_tokens = 0u32;
@@ -296,6 +357,11 @@ pub async fn infer(request: InferenceRequest) -> Result<InferenceResponse> {
       ClaudeMessage::Result(result) => {
         if result.is_error {
           let error_msg = result.result.unwrap_or_else(|| "Unknown error".to_string());
+          error!(
+            error_msg = %error_msg,
+            model = %request.model.as_str(),
+            "Claude returned an error"
+          );
           return Err(LlmError::ClaudeError(error_msg));
         }
 
@@ -311,15 +377,23 @@ pub async fn infer(request: InferenceRequest) -> Result<InferenceResponse> {
   }
 
   if response_text.is_empty() {
+    warn!(
+      model = %request.model.as_str(),
+      elapsed_ms = start.elapsed().as_millis() as u64,
+      "Claude returned no response text"
+    );
     return Err(LlmError::NoResponse);
   }
 
-  tracing::debug!(
+  debug!(
     response_len = response_text.len(),
     input_tokens,
     output_tokens,
     duration_ms,
-    "LLM inference completed"
+    cost_usd = ?cost_usd,
+    elapsed_ms = start.elapsed().as_millis() as u64,
+    model = %request.model.as_str(),
+    "Inference completed successfully"
   );
 
   Ok(InferenceResponse {
@@ -339,13 +413,38 @@ pub async fn infer(request: InferenceRequest) -> Result<InferenceResponse> {
 /// - Raw JSON
 pub fn parse_json<T: for<'de> Deserialize<'de>>(text: &str) -> std::result::Result<T, serde_json::Error> {
   // Try to extract JSON from markdown code blocks
-  let json_str = if let Some(captures) = extract_code_block(text) {
-    captures
+  let (json_str, extracted_from_block) = if let Some(captures) = extract_code_block(text) {
+    (captures, true)
   } else {
-    text.trim()
+    (text.trim(), false)
   };
 
-  serde_json::from_str(json_str)
+  trace!(
+    input_len = text.len(),
+    json_len = json_str.len(),
+    extracted_from_code_block = extracted_from_block,
+    "Parsing JSON from LLM response"
+  );
+
+  match serde_json::from_str(json_str) {
+    Ok(result) => {
+      debug!(
+        json_len = json_str.len(),
+        extracted_from_code_block = extracted_from_block,
+        "Successfully parsed JSON from LLM response"
+      );
+      Ok(result)
+    }
+    Err(e) => {
+      warn!(
+        err = %e,
+        json_len = json_str.len(),
+        json_preview = %json_str.chars().take(200).collect::<String>(),
+        "Failed to parse JSON from LLM response"
+      );
+      Err(e)
+    }
+  }
 }
 
 fn extract_code_block(text: &str) -> Option<&str> {

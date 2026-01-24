@@ -8,6 +8,7 @@ use engram_core::{ChunkType, CodeChunk, Language};
 use futures::TryStreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use std::sync::Arc;
+use tracing::{debug, trace};
 use uuid::Uuid;
 
 use crate::connection::{DbError, ProjectDb, Result};
@@ -16,6 +17,15 @@ use crate::schema::code_chunks_schema;
 impl ProjectDb {
   /// Add a new code chunk to the database
   pub async fn add_code_chunk(&self, chunk: &CodeChunk, vector: Option<&[f32]>) -> Result<()> {
+    trace!(
+      table = "code_chunks",
+      operation = "insert",
+      id = %chunk.id,
+      file = %chunk.file_path,
+      has_vector = vector.is_some(),
+      "Adding code chunk"
+    );
+
     let table = self.code_chunks_table().await?;
 
     let batch = code_chunk_to_batch(chunk, vector, self.vector_dim)?;
@@ -30,6 +40,13 @@ impl ProjectDb {
     if chunks.is_empty() {
       return Ok(());
     }
+
+    trace!(
+      table = "code_chunks",
+      operation = "batch_insert",
+      batch_size = chunks.len(),
+      "Adding code chunks batch"
+    );
 
     let table = self.code_chunks_table().await?;
 
@@ -71,6 +88,7 @@ impl ProjectDb {
 
   /// Delete all chunks for a file
   pub async fn delete_chunks_for_file(&self, file_path: &str) -> Result<()> {
+    debug!(table = "code_chunks", operation = "delete_for_file", file = %file_path, "Deleting chunks for file");
     let table = self.code_chunks_table().await?;
     table.delete(&format!("file_path = '{}'", file_path)).await?;
     Ok(())
@@ -82,6 +100,13 @@ impl ProjectDb {
     if file_paths.is_empty() {
       return Ok(());
     }
+
+    debug!(
+      table = "code_chunks",
+      operation = "batch_delete_for_files",
+      file_count = file_paths.len(),
+      "Deleting chunks for multiple files"
+    );
 
     let table = self.code_chunks_table().await?;
 
@@ -98,6 +123,7 @@ impl ProjectDb {
 
   /// Delete a code chunk by ID
   pub async fn delete_code_chunk(&self, id: &Uuid) -> Result<()> {
+    debug!(table = "code_chunks", operation = "delete", id = %id, "Deleting code chunk");
     let table = self.code_chunks_table().await?;
     table.delete(&format!("id = '{}'", id)).await?;
     Ok(())
@@ -108,6 +134,14 @@ impl ProjectDb {
   /// This is more efficient than delete + re-index because it preserves existing
   /// embeddings and other computed data.
   pub async fn rename_file(&self, old_path: &str, new_path: &str) -> Result<usize> {
+    debug!(
+      table = "code_chunks",
+      operation = "rename_file",
+      old_path = %old_path,
+      new_path = %new_path,
+      "Renaming file in index"
+    );
+
     let table = self.code_chunks_table().await?;
 
     // Get chunks for the old path to count and update
@@ -115,6 +149,7 @@ impl ProjectDb {
     let count = chunks.len();
 
     if count == 0 {
+      debug!(old_path = %old_path, "No chunks found for file rename");
       return Ok(0);
     }
 
@@ -130,6 +165,13 @@ impl ProjectDb {
       .execute()
       .await?;
 
+    debug!(
+      old_path = %old_path,
+      new_path = %new_path,
+      chunks_renamed = count,
+      "File rename complete"
+    );
+
     Ok(count)
   }
 
@@ -138,6 +180,14 @@ impl ProjectDb {
   /// Example: rename_files_with_prefix("src/old/", "src/new/") will update
   /// all files starting with "src/old/" to start with "src/new/".
   pub async fn rename_files_with_prefix(&self, old_prefix: &str, new_prefix: &str) -> Result<usize> {
+    debug!(
+      table = "code_chunks",
+      operation = "rename_prefix",
+      old_prefix = %old_prefix,
+      new_prefix = %new_prefix,
+      "Renaming files with prefix"
+    );
+
     // Get all files matching the old prefix
     let old_escaped = old_prefix.replace('\'', "''");
     let filter = format!("file_path LIKE '{}%'", old_escaped);
@@ -145,6 +195,7 @@ impl ProjectDb {
     let chunks = self.list_code_chunks(Some(&filter), None).await?;
 
     if chunks.is_empty() {
+      debug!(old_prefix = %old_prefix, "No chunks found for prefix rename");
       return Ok(0);
     }
 
@@ -173,11 +224,26 @@ impl ProjectDb {
       files_renamed.insert(chunk.file_path.clone());
     }
 
+    debug!(
+      old_prefix = %old_prefix,
+      new_prefix = %new_prefix,
+      files_renamed = files_renamed.len(),
+      "Prefix rename complete"
+    );
+
     Ok(files_renamed.len())
   }
 
   /// Update a code chunk (delete + add)
   pub async fn update_code_chunk(&self, chunk: &CodeChunk, vector: Option<&[f32]>) -> Result<()> {
+    trace!(
+      table = "code_chunks",
+      operation = "update",
+      id = %chunk.id,
+      file = %chunk.file_path,
+      "Updating code chunk"
+    );
+
     let table = self.code_chunks_table().await?;
 
     // Delete existing
@@ -198,6 +264,15 @@ impl ProjectDb {
     limit: usize,
     filter: Option<&str>,
   ) -> Result<Vec<(CodeChunk, f32)>> {
+    debug!(
+      table = "code_chunks",
+      operation = "search",
+      query_len = query_vector.len(),
+      limit = limit,
+      has_filter = filter.is_some(),
+      "Searching code chunks"
+    );
+
     let table = self.code_chunks_table().await?;
 
     let query = if let Some(f) = filter {
@@ -221,6 +296,13 @@ impl ProjectDb {
         chunks.push((chunk, distance));
       }
     }
+
+    debug!(
+      table = "code_chunks",
+      operation = "search",
+      results = chunks.len(),
+      "Search complete"
+    );
 
     Ok(chunks)
   }

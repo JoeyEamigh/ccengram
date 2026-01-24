@@ -2743,6 +2743,7 @@ dependencies = [
  "criterion",
  "engram-core",
  "thiserror 2.0.18",
+ "tracing",
  "uuid",
 ]
 

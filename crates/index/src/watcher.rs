@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 use thiserror::Error;
-use tracing::{debug, warn};
+use tracing::{debug, info, trace, warn};
 
 #[derive(Error, Debug)]
 pub enum WatchError {
@@ -38,6 +38,12 @@ pub struct FileWatcher {
   root: PathBuf,
 }
 
+impl Drop for FileWatcher {
+  fn drop(&mut self) {
+    info!(path = %self.root.display(), "File watcher stopped");
+  }
+}
+
 impl FileWatcher {
   /// Create a new file watcher for the given root directory
   pub fn new(root: &Path) -> Result<Self, WatchError> {
@@ -46,6 +52,12 @@ impl FileWatcher {
 
   /// Create a new file watcher with a custom poll interval
   pub fn with_poll_interval(root: &Path, poll_interval: Duration) -> Result<Self, WatchError> {
+    info!(
+      path = %root.display(),
+      poll_interval_ms = poll_interval.as_millis() as u64,
+      "Starting file watcher"
+    );
+
     let (tx, rx) = channel();
 
     let config = Config::default().with_poll_interval(poll_interval);
@@ -58,6 +70,8 @@ impl FileWatcher {
     )?;
 
     watcher.watch(root, RecursiveMode::Recursive)?;
+
+    info!(path = %root.display(), "File watcher started successfully");
 
     Ok(Self {
       _watcher: watcher,
@@ -125,6 +139,9 @@ impl FileWatcher {
     while let Some(change) = self.poll() {
       changes.push(change);
     }
+    if !changes.is_empty() {
+      trace!(count = changes.len(), "Collected pending file changes");
+    }
     changes
   }
 
@@ -133,11 +150,15 @@ impl FileWatcher {
 
     // Skip non-file events (but allow for renames where we need to check both paths)
     if path.is_dir() {
+      trace!(path = %path.display(), "Skipping directory event");
       return None;
     }
 
     let (kind, old_path) = match event.kind {
-      EventKind::Create(_) => (ChangeKind::Created, None),
+      EventKind::Create(_) => {
+        debug!(file = %path.display(), kind = "created", "File change detected");
+        (ChangeKind::Created, None)
+      }
       EventKind::Modify(notify::event::ModifyKind::Name(rename_mode)) => {
         // Handle rename events
         use notify::event::RenameMode;
@@ -179,8 +200,14 @@ impl FileWatcher {
           }
         }
       }
-      EventKind::Modify(_) => (ChangeKind::Modified, None),
-      EventKind::Remove(_) => (ChangeKind::Deleted, None),
+      EventKind::Modify(_) => {
+        debug!(file = %path.display(), kind = "modified", "File change detected");
+        (ChangeKind::Modified, None)
+      }
+      EventKind::Remove(_) => {
+        debug!(file = %path.display(), kind = "deleted", "File change detected");
+        (ChangeKind::Deleted, None)
+      }
       EventKind::Any => {
         debug!("Ignoring Any event for {:?}", path);
         return None;

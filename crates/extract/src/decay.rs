@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use engram_core::{Memory, Sector};
+use tracing::{debug, trace};
 
 /// Configuration for decay processing
 #[derive(Debug, Clone)]
@@ -45,6 +46,15 @@ pub fn apply_decay(memory: &mut Memory, now: DateTime<Utc>, config: &DecayConfig
   // Check if should be archived
   let should_archive = memory.salience < config.archive_threshold || days_since_access > config.max_idle_days as f32;
 
+  trace!(
+    memory_id = %memory.id,
+    old_salience = previous_salience,
+    new_salience = memory.salience,
+    days_idle = days_since_access,
+    should_archive = should_archive,
+    "Salience decayed"
+  );
+
   DecayResult {
     memory_id: memory.id,
     previous_salience,
@@ -56,7 +66,24 @@ pub fn apply_decay(memory: &mut Memory, now: DateTime<Utc>, config: &DecayConfig
 
 /// Apply decay to a batch of memories
 pub fn apply_decay_batch(memories: &mut [Memory], now: DateTime<Utc>, config: &DecayConfig) -> Vec<DecayResult> {
-  memories.iter_mut().map(|m| apply_decay(m, now, config)).collect()
+  debug!(memory_count = memories.len(), "Starting decay batch");
+
+  let results: Vec<DecayResult> = memories.iter_mut().map(|m| apply_decay(m, now, config)).collect();
+
+  let stats = DecayStats::from_results(&results);
+  debug!(
+    processed = stats.total_processed,
+    decayed = stats.decayed_count,
+    archive_candidates = stats.archive_candidates,
+    avg_salience_drop = stats.average_salience_drop,
+    "Decay batch complete"
+  );
+
+  if stats.archive_candidates > 0 {
+    debug!(count = stats.archive_candidates, "Archive candidates identified");
+  }
+
+  results
 }
 
 /// Calculate expected salience after a given number of days
@@ -68,7 +95,19 @@ pub fn predict_salience(current_salience: f32, importance: f32, sector: Sector, 
   let access_protection = (1.0 + access_count as f32).ln() * 0.02;
   let access_protection = access_protection.min(0.1);
 
-  (current_salience * decay_factor + access_protection).clamp(0.05, 1.0)
+  let predicted = (current_salience * decay_factor + access_protection).clamp(0.05, 1.0);
+
+  trace!(
+    current = current_salience,
+    predicted = predicted,
+    days = days,
+    sector = ?sector,
+    importance = importance,
+    access_count = access_count,
+    "Predicted salience"
+  );
+
+  predicted
 }
 
 /// Estimate days until memory reaches a target salience
@@ -80,6 +119,11 @@ pub fn days_until_salience(
   access_count: u32,
 ) -> Option<f32> {
   if current_salience <= target_salience {
+    trace!(
+      current = current_salience,
+      target = target_salience,
+      "Already at or below target salience"
+    );
     return Some(0.0);
   }
 
@@ -89,6 +133,11 @@ pub fn days_until_salience(
 
   // If target is below the floor due to access protection, it may never be reached
   if target_salience < access_protection + 0.05 {
+    trace!(
+      target = target_salience,
+      floor = access_protection + 0.05,
+      "Target below floor - will never reach"
+    );
     return None;
   }
 
@@ -101,11 +150,26 @@ pub fn days_until_salience(
 
   let adjusted_target = target_salience - access_protection;
   if adjusted_target <= 0.0 || adjusted_target >= current_salience {
+    trace!(
+      adjusted_target = adjusted_target,
+      current = current_salience,
+      "Invalid adjusted target"
+    );
     return None;
   }
 
   let days = -(adjusted_target / current_salience).ln() / effective_rate;
-  Some(days.max(0.0))
+  let result = days.max(0.0);
+
+  trace!(
+    current = current_salience,
+    target = target_salience,
+    days = result,
+    sector = ?sector,
+    "Estimated days until target salience"
+  );
+
+  Some(result)
 }
 
 /// Batch statistics for decay processing

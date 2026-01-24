@@ -11,7 +11,7 @@ use crate::watcher::{ChangeKind, FileChange, FileWatcher, WatchError};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use tracing::debug;
+use tracing::{debug, trace};
 
 /// Configuration for debounced watcher
 #[derive(Debug, Clone)]
@@ -62,31 +62,44 @@ impl PendingChange {
   }
 
   fn update(&mut self, kind: ChangeKind, old_path: Option<PathBuf>) {
+    let old_kind = self.kind.clone();
     self.last_seen = Instant::now();
     // Coalesce event types
     match (&self.kind, &kind) {
       // Create followed by modify is still a create
-      (ChangeKind::Created, ChangeKind::Modified) => {}
+      (ChangeKind::Created, ChangeKind::Modified) => {
+        trace!(from = ?old_kind, to = ?kind, result = ?self.kind, "Event coalesced: create+modify -> create");
+      }
       // Delete followed by create is a modify
-      (ChangeKind::Deleted, ChangeKind::Created) => self.kind = ChangeKind::Modified,
+      (ChangeKind::Deleted, ChangeKind::Created) => {
+        self.kind = ChangeKind::Modified;
+        trace!(from = ?old_kind, to = ?kind, result = ?self.kind, "Event coalesced: delete+create -> modified");
+      }
       // Create followed by delete cancels out
-      (ChangeKind::Created, ChangeKind::Deleted) => self.kind = ChangeKind::Deleted,
+      (ChangeKind::Created, ChangeKind::Deleted) => {
+        self.kind = ChangeKind::Deleted;
+        trace!(from = ?old_kind, to = ?kind, result = ?self.kind, "Event coalesced: create+delete -> deleted");
+      }
       // Rename followed by modify is still a rename
-      (ChangeKind::Renamed, ChangeKind::Modified) => {}
+      (ChangeKind::Renamed, ChangeKind::Modified) => {
+        trace!(from = ?old_kind, to = ?kind, result = ?self.kind, "Event coalesced: rename+modify -> rename");
+      }
       // Modified followed by rename becomes rename (preserve old_path from rename)
       (ChangeKind::Modified, ChangeKind::Renamed) => {
         self.kind = ChangeKind::Renamed;
         if old_path.is_some() {
           self.old_path = old_path;
         }
+        trace!(from = ?old_kind, to = ?kind, result = ?self.kind, "Event coalesced: modified+rename -> rename");
       }
       // Otherwise take the latest
       _ => {
-        self.kind = kind;
+        self.kind = kind.clone();
         // Update old_path if provided
         if old_path.is_some() {
           self.old_path = old_path;
         }
+        trace!(from = ?old_kind, to = ?kind, result = ?self.kind, "Event updated to latest");
       }
     }
   }
@@ -99,6 +112,17 @@ pub struct DebouncedWatcher {
   pending: HashMap<PathBuf, PendingChange>,
   gitignore_state: Option<GitignoreState>,
   gitignore_last_change: Option<Instant>,
+}
+
+impl Drop for DebouncedWatcher {
+  fn drop(&mut self) {
+    if !self.pending.is_empty() {
+      debug!(
+        pending = self.pending.len(),
+        "Debounced watcher stopping with pending events"
+      );
+    }
+  }
 }
 
 impl DebouncedWatcher {
@@ -158,6 +182,14 @@ impl DebouncedWatcher {
       self.pending.remove(&path);
     }
 
+    if !ready.is_empty() {
+      debug!(
+        count = ready.len(),
+        pending_remaining = self.pending.len(),
+        "Flushing debounced batch"
+      );
+    }
+
     ready
   }
 
@@ -174,6 +206,10 @@ impl DebouncedWatcher {
         old_path: pending.old_path,
       })
       .collect();
+
+    if !changes.is_empty() {
+      debug!(count = changes.len(), "Force flushing all pending changes");
+    }
 
     changes
   }
@@ -296,9 +332,16 @@ impl DebouncedWatcher {
       .file_name()
       .is_some_and(|n| n == ".gitignore" || n == ".ccengramignore")
     {
+      trace!(file = %change.path.display(), "Ignore file change detected, will check on next cycle");
       self.gitignore_last_change = None; // Reset to force check on next call
       return;
     }
+
+    trace!(
+      file = %change.path.display(),
+      kind = ?change.kind,
+      "Accumulating change event"
+    );
 
     // For rename events, remove any pending changes for the old path
     // since those are now stale (the file has been renamed)

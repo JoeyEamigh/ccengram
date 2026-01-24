@@ -2,6 +2,7 @@ use chrono::Utc;
 use engram_core::{CHARS_PER_TOKEN, ChunkType, CodeChunk, Language, compute_content_hash};
 use parser::{Definition, DefinitionKind, TreeSitterParser};
 use std::cell::RefCell;
+use tracing::{debug, trace};
 use uuid::Uuid;
 
 // Thread-local parser pool to avoid creating new parsers for each Chunker instance.
@@ -136,6 +137,23 @@ impl Chunker {
     file_hash: &str,
     old_content: Option<&str>,
   ) -> Vec<CodeChunk> {
+    debug!(
+      file = %file_path,
+      language = ?language,
+      size_bytes = source.len(),
+      incremental = old_content.is_some(),
+      "Starting file chunking"
+    );
+
+    // Warn about large files that may take longer to process
+    if source.len() > 100_000 {
+      debug!(
+        file = %file_path,
+        size_bytes = source.len(),
+        "Processing large file (>100KB)"
+      );
+    }
+
     // Don't clear tree cache when using incremental parsing with old content
     // This allows the parser to reuse the previous tree
     if old_content.is_none() {
@@ -147,14 +165,22 @@ impl Chunker {
 
     // Try AST-level chunking if enabled and language is supported
     if self.config.use_ast_chunking && self.supports_language(language) {
+      trace!(file = %file_path, "Attempting AST-level chunking");
       let chunks = self.chunk_by_definitions_incremental(source, &lines, file_path, language, file_hash, old_content);
       if !chunks.is_empty() {
+        trace!(
+          file = %file_path,
+          chunks = chunks.len(),
+          "AST chunking produced chunks"
+        );
         return chunks;
       }
+      trace!(file = %file_path, "No definitions found, falling back to line-based chunking");
       // Fall through to line-based if no definitions found
     }
 
     // Fallback: line-based chunking
+    trace!(file = %file_path, total_lines = total_lines, "Using line-based chunking");
     self.chunk_by_lines(source, &lines, file_path, language, file_hash, total_lines)
   }
 
@@ -178,6 +204,9 @@ impl Chunker {
     });
 
     if !parsed {
+      // Debug level, not warn - some files may legitimately fail to parse
+      // (e.g., partial files, generated code with syntax errors)
+      debug!(file = %file_path, language = ?language, "Parse failed, falling back to line-based chunking");
       return Vec::new();
     }
 
@@ -185,8 +214,15 @@ impl Chunker {
     let definitions = self.with_parser(|p| p.extract_definitions_cached(source, language));
 
     if definitions.is_empty() {
+      trace!(file = %file_path, "No definitions extracted from AST");
       return Vec::new();
     }
+
+    trace!(
+      file = %file_path,
+      definitions = definitions.len(),
+      "Extracted definitions from AST"
+    );
 
     // Extract file-level imports using the cached tree
     let file_imports = self.with_parser(|p| p.extract_imports(source, language));
@@ -260,6 +296,12 @@ impl Chunker {
 
     // Sort chunks by start line for consistent ordering
     chunks.sort_by_key(|c| c.start_line);
+
+    trace!(
+      file = %file_path,
+      chunks = chunks.len(),
+      "File chunking complete"
+    );
 
     chunks
   }
@@ -736,8 +778,21 @@ impl Chunker {
     file_hash: &str,
     total_lines: usize,
   ) -> Vec<CodeChunk> {
+    trace!(
+      file = %file_path,
+      total_lines = total_lines,
+      target_lines = self.config.target_lines,
+      "Using line-based chunking strategy"
+    );
+
     // Small files: single chunk
     if total_lines <= self.config.max_lines {
+      trace!(
+        file = %file_path,
+        total_lines = total_lines,
+        max_lines = self.config.max_lines,
+        "Small file, creating single chunk"
+      );
       let chunk_type = self.determine_chunk_type(source, language);
       let (imports, calls) = self.with_parser(|p| p.extract_imports_and_calls(source, language));
       let symbols = self.extract_symbols(source, language);
@@ -853,8 +908,14 @@ impl Chunker {
 
     // If no chunks were created, split evenly
     if chunks.is_empty() {
+      trace!(file = %file_path, "No semantic boundaries found, splitting evenly");
       self.split_evenly(lines, file_path, language, file_hash)
     } else {
+      trace!(
+        file = %file_path,
+        chunks = chunks.len(),
+        "Line-based chunking complete"
+      );
       chunks
     }
   }

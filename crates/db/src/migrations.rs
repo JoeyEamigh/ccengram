@@ -11,7 +11,7 @@ use chrono::Utc;
 use futures::TryStreamExt;
 use lancedb::query::ExecutableQuery;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Current schema version - increment when schema changes
 pub const CURRENT_SCHEMA_VERSION: i64 = 1;
@@ -57,8 +57,9 @@ impl ProjectDb {
     // Get current version
     let current_version = self.get_current_version().await?;
     info!(
-      "Current schema version: {}, target: {}",
-      current_version, CURRENT_SCHEMA_VERSION
+      from_version = current_version,
+      to_version = CURRENT_SCHEMA_VERSION,
+      "Checking migrations"
     );
 
     // Find and run pending migrations
@@ -69,22 +70,41 @@ impl ProjectDb {
       return Ok(Vec::new());
     }
 
+    info!(pending_count = pending.len(), "Starting migrations");
     let mut applied = Vec::new();
 
     for migration in pending {
       info!(
-        "Running migration {}: {} - {}",
-        migration.version, migration.name, migration.description
+        version = migration.version,
+        name = migration.name,
+        description = migration.description,
+        "Running migration"
       );
 
       // Apply the migration
-      self.apply_migration(migration).await?;
+      match self.apply_migration(migration).await {
+        Ok(()) => {
+          // Record it
+          let record = self.record_migration(migration).await?;
+          applied.push(record);
 
-      // Record it
-      let record = self.record_migration(migration).await?;
-      applied.push(record);
-
-      info!("Migration {} applied successfully", migration.version);
+          info!(
+            from_version = current_version,
+            to_version = migration.version,
+            name = migration.name,
+            "Migration completed"
+          );
+        }
+        Err(e) => {
+          error!(
+            version = migration.version,
+            name = migration.name,
+            err = %e,
+            "Migration failed"
+          );
+          return Err(e);
+        }
+      }
     }
 
     Ok(applied)

@@ -1,5 +1,6 @@
 use engram_core::Language;
 use std::path::Path;
+use tracing::trace;
 
 /// Simple language detection from file extension.
 /// This module provides a lightweight alternative to full tree-sitter parsing
@@ -8,7 +9,15 @@ use std::path::Path;
 /// Detect language from file path.
 pub fn detect_language(path: &Path) -> Option<Language> {
   let ext = path.extension()?.to_str()?;
-  Language::from_extension(ext)
+  let lang = Language::from_extension(ext);
+
+  if lang.is_some() {
+    trace!(file = %path.display(), language = ?lang, "Language detected");
+  } else {
+    trace!(file = %path.display(), extension = ext, "Unsupported file type");
+  }
+
+  lang
 }
 
 /// Check if a file should be indexed based on its language

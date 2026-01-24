@@ -12,7 +12,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 #[derive(Error, Debug)]
 pub enum CoordinationError {
@@ -89,6 +89,13 @@ impl WatcherCoordinator {
   ///
   /// Returns Ok(true) if lock was acquired, Ok(false) if already held by a live process
   pub fn try_acquire(&self, project_id: &str, project_path: &Path) -> Result<bool, CoordinationError> {
+    debug!(
+      project = %project_path.display(),
+      project_id = project_id,
+      pid = std::process::id(),
+      "Attempting to acquire watcher lock"
+    );
+
     fs::create_dir_all(&self.locks_dir)?;
 
     let lock_path = self.lock_path(project_path);
@@ -119,12 +126,23 @@ impl WatcherCoordinator {
     let lock = WatcherLock::new(project_id, &project_path.to_string_lossy());
     self.write_lock(&lock_path, &lock)?;
 
-    info!("Acquired watcher lock for project: {}", project_path.display());
+    info!(
+      project = %project_path.display(),
+      project_id = project_id,
+      pid = std::process::id(),
+      "Acquired watcher lock"
+    );
     Ok(true)
   }
 
   /// Release a lock for a project
   pub fn release(&self, project_path: &Path) -> Result<(), CoordinationError> {
+    debug!(
+      project = %project_path.display(),
+      pid = std::process::id(),
+      "Attempting to release watcher lock"
+    );
+
     let lock_path = self.lock_path(project_path);
 
     if lock_path.exists() {
@@ -132,15 +150,22 @@ impl WatcherCoordinator {
       if let Ok(lock) = self.read_lock(&lock_path) {
         if lock.pid == std::process::id() {
           fs::remove_file(&lock_path)?;
-          info!("Released watcher lock for project: {}", project_path.display());
+          info!(
+            project = %project_path.display(),
+            pid = std::process::id(),
+            "Released watcher lock"
+          );
         } else {
           warn!(
-            "Not releasing lock owned by different process {} (we are {})",
-            lock.pid,
-            std::process::id()
+            project = %project_path.display(),
+            owner_pid = lock.pid,
+            our_pid = std::process::id(),
+            "Lock ownership conflict - not releasing lock owned by different process"
           );
         }
       }
+    } else {
+      trace!(project = %project_path.display(), "No lock file found to release");
     }
 
     Ok(())
@@ -151,6 +176,7 @@ impl WatcherCoordinator {
     let lock_path = self.lock_path(project_path);
 
     if !lock_path.exists() {
+      trace!(project = %project_path.display(), "No lock file to update");
       return Ok(());
     }
 
@@ -158,6 +184,11 @@ impl WatcherCoordinator {
 
     // Only update if we own the lock
     if lock.pid != std::process::id() {
+      trace!(
+        project = %project_path.display(),
+        owner_pid = lock.pid,
+        "Skipping activity update - lock owned by different process"
+      );
       return Ok(());
     }
 
@@ -166,6 +197,12 @@ impl WatcherCoordinator {
       .unwrap_or_default()
       .as_secs();
     lock.indexed_files = indexed_files;
+
+    trace!(
+      project = %project_path.display(),
+      indexed_files = indexed_files,
+      "Updated lock activity"
+    );
 
     self.write_lock(&lock_path, &lock)?;
     Ok(())
@@ -202,10 +239,12 @@ impl WatcherCoordinator {
   /// List all active watchers
   pub fn list_active(&self) -> Result<Vec<WatcherLock>, CoordinationError> {
     if !self.locks_dir.exists() {
+      trace!(locks_dir = %self.locks_dir.display(), "Locks directory does not exist");
       return Ok(Vec::new());
     }
 
     let mut active = Vec::new();
+    let mut stale_count = 0;
 
     for entry in fs::read_dir(&self.locks_dir)? {
       let entry = entry?;
@@ -218,17 +257,25 @@ impl WatcherCoordinator {
               active.push(lock);
             } else {
               // Clean up stale lock
-              debug!("Removing stale lock: {:?}", path);
+              debug!(lock_file = %path.display(), pid = lock.pid, "Removing stale lock from dead process");
               let _ = fs::remove_file(&path);
+              stale_count += 1;
             }
           }
           Err(e) => {
-            warn!("Failed to read lock {:?}: {}", path, e);
+            warn!(lock_file = %path.display(), error = %e, "Corrupted lock file, removing");
             let _ = fs::remove_file(&path);
+            stale_count += 1;
           }
         }
       }
     }
+
+    debug!(
+      active_count = active.len(),
+      stale_removed = stale_count,
+      "Listed active watchers"
+    );
 
     Ok(active)
   }

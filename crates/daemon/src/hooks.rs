@@ -109,10 +109,20 @@ impl SegmentContext {
   /// Check if this segment has meaningful work to extract
   fn has_meaningful_work(&self) -> bool {
     // At least 3 tool calls OR file modifications OR completed tasks
-    self.tool_call_count() >= 3
+    let has_work = self.tool_call_count() >= 3
       || !self.files_modified.is_empty()
       || !self.completed_tasks.is_empty()
-      || !self.errors_encountered.is_empty()
+      || !self.errors_encountered.is_empty();
+    if !has_work {
+      debug!(
+        tool_calls = self.tool_call_count(),
+        files_modified = self.files_modified.len(),
+        completed_tasks = self.completed_tasks.len(),
+        errors = self.errors_encountered.len(),
+        "Segment has no meaningful work to extract"
+      );
+    }
+    has_work
   }
 
   /// Convert to LLM extraction context
@@ -527,11 +537,16 @@ impl HookHandler {
   async fn extract_memory(&self, content: &str, cwd: &str, _session_id: &str) -> Result<Option<String>, HookError> {
     // Skip if hooks are disabled
     if !self.hooks_enabled {
+      debug!("Skipping memory extraction: hooks disabled");
       return Ok(None);
     }
 
     // Skip if content is too short
     if content.len() < 20 {
+      debug!(
+        content_len = content.len(),
+        "Skipping memory extraction: content too short"
+      );
       return Ok(None);
     }
 
@@ -591,11 +606,16 @@ impl HookHandler {
   async fn store_extracted_memory(&self, extracted: &ExtractedMemory, cwd: &str) -> Result<Option<String>, HookError> {
     // Skip if hooks are disabled
     if !self.hooks_enabled {
+      debug!("Skipping LLM memory storage: hooks disabled");
       return Ok(None);
     }
 
     // Skip if content is too short
     if extracted.content.len() < 20 {
+      debug!(
+        content_len = extracted.content.len(),
+        "Skipping LLM memory storage: content too short"
+      );
       return Ok(None);
     }
 
@@ -829,7 +849,8 @@ impl HookHandler {
 
   /// Handle a hook event
   pub async fn handle(&self, event: HookEvent, params: serde_json::Value) -> Result<serde_json::Value, HookError> {
-    debug!("Processing hook event: {:?}", event);
+    let session_id = params.get("session_id").and_then(|v| v.as_str()).unwrap_or("unknown");
+    info!(event = ?event, session_id = %session_id, "Hook event received");
 
     // Touch session on any hook to update last-seen time
     if let Some(session_id) = params.get("session_id").and_then(|v| v.as_str()) {
@@ -966,7 +987,7 @@ impl HookHandler {
     let cwd = params.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
     let prompt = params.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
 
-    debug!("User prompt in session {}: {} chars", session_id, prompt.len());
+    debug!(session_id = %session_id, prompt_len = prompt.len(), "User prompt received");
 
     // Get the bound project path (or resolve from cwd as fallback)
     let project_path = self.get_session_project_path(session_id, cwd).await;
@@ -1048,7 +1069,7 @@ impl HookHandler {
       .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
     let tool_result = params.get("tool_result");
 
-    debug!("Tool used in session {}: {}", session_id, tool_name);
+    debug!(session_id = %session_id, tool = %tool_name, "Tool use recorded");
 
     let cwd = params.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
     // Get the bound project path (or resolve from cwd as fallback)
@@ -1190,7 +1211,7 @@ impl HookHandler {
     let cwd = params.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
     let summary = params.get("summary").and_then(|v| v.as_str());
 
-    info!("Pre-compact trigger for session {}", session_id);
+    info!(session_id = %session_id, has_summary = summary.is_some(), "Pre-compact trigger");
 
     // Get the bound project path (or resolve from cwd as fallback)
     let project_path = self.get_session_project_path(session_id, cwd).await;
@@ -1254,7 +1275,7 @@ impl HookHandler {
     let cwd = params.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
     let summary = params.get("summary").and_then(|v| v.as_str());
 
-    info!("Stop event for session {}", session_id);
+    info!(session_id = %session_id, has_summary = summary.is_some(), "Stop event");
 
     // Get the bound project path (or resolve from cwd as fallback)
     let project_path = self.get_session_project_path(session_id, cwd).await;
@@ -1315,7 +1336,7 @@ impl HookHandler {
   async fn on_subagent_stop(&self, params: serde_json::Value) -> Result<serde_json::Value, HookError> {
     let session_id = params.get("session_id").and_then(|v| v.as_str()).unwrap_or("unknown");
 
-    debug!("Subagent stop for session {}", session_id);
+    debug!(session_id = %session_id, "Subagent stop");
 
     Ok(serde_json::to_value(SimpleHookResult {
       status: "ok".to_string(),
