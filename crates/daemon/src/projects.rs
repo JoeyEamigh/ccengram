@@ -653,6 +653,7 @@ impl ProjectRegistry {
 }
 
 /// Holds context for processing a file change
+#[derive(Clone)]
 pub(crate) struct FileChangeContext {
   pub change_path: PathBuf,
   pub relative_path: String,

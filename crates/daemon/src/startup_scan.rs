@@ -647,7 +647,7 @@ impl StartupScanner {
       }
 
       // Build FileChangeContext for each file
-      let file_contexts: Vec<FileChangeContext> = files_to_index
+      let all_file_contexts: Vec<FileChangeContext> = files_to_index
         .iter()
         .map(|path| FileChangeContext {
           change_path: root.join(path),
@@ -658,28 +658,48 @@ impl StartupScanner {
         })
         .collect();
 
-      // Use the existing batch processing function
+      // Process in batches to limit memory usage
+      // Each batch: prepare files -> embed -> write to DB -> optimize (flush)
+      const INDEX_BATCH_SIZE: usize = 50;
       let content_cache = Arc::new(crate::cache::FileContentCache::new());
       let project_id = db.project_id().as_str().to_string();
+      let db_arc = Arc::new(db.clone_connection().await?);
+      let mut total_code = 0;
+      let mut total_docs = 0;
 
-      let (indexed_code, indexed_docs) = process_file_changes_batched(
-        file_contexts,
-        Arc::new(db.clone_connection().await?),
-        embedding,
-        project_id,
-        root.to_path_buf(),
-        config.docs.clone(),
-        content_cache,
-        self.config.parallelism,
-      )
-      .await;
+      for (batch_idx, batch) in all_file_contexts.chunks(INDEX_BATCH_SIZE).enumerate() {
+        let batch_vec: Vec<FileChangeContext> = batch.to_vec();
+        let batch_size = batch_vec.len();
 
-      apply_result.files_indexed = result.added.len().min(indexed_code + indexed_docs);
-      apply_result.files_reindexed = result.modified.len().min(indexed_code + indexed_docs);
-      self
-        .state
-        .processed_files
-        .fetch_add(indexed_code + indexed_docs, Ordering::Relaxed);
+        let (indexed_code, indexed_docs) = process_file_changes_batched(
+          batch_vec,
+          Arc::clone(&db_arc),
+          embedding.clone(),
+          project_id.clone(),
+          root.to_path_buf(),
+          config.docs.clone(),
+          Arc::clone(&content_cache),
+          self.config.parallelism,
+        )
+        .await;
+
+        total_code += indexed_code;
+        total_docs += indexed_docs;
+        self
+          .state
+          .processed_files
+          .fetch_add(indexed_code + indexed_docs, Ordering::Relaxed);
+
+        // Optimize after each batch to flush data and free memory
+        if let Err(e) = db_arc.optimize_indexes().await {
+          debug!("Index optimization after batch {} failed (non-fatal): {}", batch_idx, e);
+        } else {
+          trace!("Optimized indexes after batch {} ({} files)", batch_idx, batch_size);
+        }
+      }
+
+      apply_result.files_indexed = result.added.len().min(total_code + total_docs);
+      apply_result.files_reindexed = result.modified.len().min(total_code + total_docs);
     }
 
     apply_result.apply_duration = start.elapsed();
