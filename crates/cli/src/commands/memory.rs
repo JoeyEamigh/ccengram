@@ -3,7 +3,9 @@
 use anyhow::{Context, Result};
 use cli::to_daemon_request;
 use daemon::connect_or_start;
-use ipc::{MemoryDeleteParams, MemoryGetParams, MemoryListDeletedParams, MemoryListParams, MemoryRestoreParams, Method, Request};
+use ipc::{
+  MemoryDeleteParams, MemoryGetParams, MemoryListDeletedParams, MemoryListParams, MemoryRestoreParams, Method, Request,
+};
 use tracing::error;
 
 /// Show detailed memory by ID
@@ -26,7 +28,10 @@ pub async fn cmd_show(memory_id: &str, related: bool, json_output: bool) -> Resu
     params,
   };
 
-  let response = client.request(to_daemon_request(request)).await.context("Failed to get memory")?;
+  let response = client
+    .request(to_daemon_request(request))
+    .await
+    .context("Failed to get memory")?;
 
   if let Some(err) = response.error {
     error!("Error: {}", err.message);
@@ -125,7 +130,10 @@ pub async fn cmd_delete(memory_id: &str, hard: bool) -> Result<()> {
     params,
   };
 
-  let response = client.request(to_daemon_request(request)).await.context("Failed to delete memory")?;
+  let response = client
+    .request(to_daemon_request(request))
+    .await
+    .context("Failed to delete memory")?;
 
   if let Some(err) = response.error {
     error!("Delete error: {}", err.message);
@@ -161,7 +169,10 @@ pub async fn cmd_export(output: Option<&str>, format: &str) -> Result<()> {
     params,
   };
 
-  let response = client.request(to_daemon_request(request)).await.context("Failed to list memories")?;
+  let response = client
+    .request(to_daemon_request(request))
+    .await
+    .context("Failed to list memories")?;
 
   if let Some(err) = response.error {
     error!("Export error: {}", err.message);
@@ -232,7 +243,10 @@ pub async fn cmd_restore(memory_id: &str) -> Result<()> {
     params,
   };
 
-  let response = client.request(to_daemon_request(request)).await.context("Failed to restore memory")?;
+  let response = client
+    .request(to_daemon_request(request))
+    .await
+    .context("Failed to restore memory")?;
 
   if let Some(err) = response.error {
     error!("Restore error: {}", err.message);

@@ -17,7 +17,10 @@ pub async fn cmd_projects_list(json_output: bool) -> Result<()> {
     params: ProjectsListParams,
   };
 
-  let response = client.request(to_daemon_request(request)).await.context("Failed to list projects")?;
+  let response = client
+    .request(to_daemon_request(request))
+    .await
+    .context("Failed to list projects")?;
 
   if let Some(err) = response.error {
     error!("Error: {}", err.message);
@@ -89,7 +92,10 @@ pub async fn cmd_projects_show(project: &str, json_output: bool) -> Result<()> {
     params,
   };
 
-  let response = client.request(to_daemon_request(request)).await.context("Failed to get project info")?;
+  let response = client
+    .request(to_daemon_request(request))
+    .await
+    .context("Failed to get project info")?;
 
   if let Some(err) = response.error {
     error!("Error: {}", err.message);
@@ -176,7 +182,10 @@ pub async fn cmd_projects_clean(project: &str, force: bool) -> Result<()> {
     params,
   };
 
-  let response = client.request(to_daemon_request(request)).await.context("Failed to clean project")?;
+  let response = client
+    .request(to_daemon_request(request))
+    .await
+    .context("Failed to clean project")?;
 
   if let Some(err) = response.error {
     error!("Error: {}", err.message);
@@ -222,7 +231,10 @@ pub async fn cmd_projects_clean_all(force: bool) -> Result<()> {
     params: ProjectsCleanAllParams,
   };
 
-  let response = client.request(to_daemon_request(request)).await.context("Failed to clean all projects")?;
+  let response = client
+    .request(to_daemon_request(request))
+    .await
+    .context("Failed to clean all projects")?;
 
   if let Some(err) = response.error {
     error!("Error: {}", err.message);

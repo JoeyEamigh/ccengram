@@ -103,6 +103,79 @@ impl ProjectDb {
     Ok(())
   }
 
+  /// Rename a file by updating file_path for all its chunks (preserves embeddings)
+  ///
+  /// This is more efficient than delete + re-index because it preserves existing
+  /// embeddings and other computed data.
+  pub async fn rename_file(&self, old_path: &str, new_path: &str) -> Result<usize> {
+    let table = self.code_chunks_table().await?;
+
+    // Get chunks for the old path to count and update
+    let chunks = self.get_chunks_for_file(old_path).await?;
+    let count = chunks.len();
+
+    if count == 0 {
+      return Ok(0);
+    }
+
+    // LanceDB update: set file_path = new_path where file_path = old_path
+    // Escape single quotes in paths
+    let old_escaped = old_path.replace('\'', "''");
+    let new_escaped = new_path.replace('\'', "''");
+
+    table
+      .update()
+      .only_if(format!("file_path = '{}'", old_escaped))
+      .column("file_path", format!("'{}'", new_escaped))
+      .execute()
+      .await?;
+
+    Ok(count)
+  }
+
+  /// Batch rename files with common prefix change (for folder renames)
+  ///
+  /// Example: rename_files_with_prefix("src/old/", "src/new/") will update
+  /// all files starting with "src/old/" to start with "src/new/".
+  pub async fn rename_files_with_prefix(&self, old_prefix: &str, new_prefix: &str) -> Result<usize> {
+    // Get all files matching the old prefix
+    let old_escaped = old_prefix.replace('\'', "''");
+    let filter = format!("file_path LIKE '{}%'", old_escaped);
+
+    let chunks = self.list_code_chunks(Some(&filter), None).await?;
+
+    if chunks.is_empty() {
+      return Ok(0);
+    }
+
+    // Group chunks by file path for counting unique files
+    let mut files_renamed = std::collections::HashSet::new();
+
+    // Update each file's path
+    let table = self.code_chunks_table().await?;
+
+    for chunk in &chunks {
+      if files_renamed.contains(&chunk.file_path) {
+        continue;
+      }
+
+      let new_path = chunk.file_path.replacen(old_prefix, new_prefix, 1);
+      let old_path_escaped = chunk.file_path.replace('\'', "''");
+      let new_path_escaped = new_path.replace('\'', "''");
+
+      table
+        .update()
+        .only_if(format!("file_path = '{}'", old_path_escaped))
+        .column("file_path", format!("'{}'", new_path_escaped))
+        .execute()
+        .await?;
+
+      files_renamed.insert(chunk.file_path.clone());
+    }
+
+    Ok(files_renamed.len())
+  }
+
   /// Update a code chunk (delete + add)
   pub async fn update_code_chunk(&self, chunk: &CodeChunk, vector: Option<&[f32]>) -> Result<()> {
     let table = self.code_chunks_table().await?;
@@ -624,5 +697,83 @@ mod tests {
     let (_temp, db) = create_test_db().await;
     // Should not error on empty input
     db.delete_chunks_for_files(&[]).await.unwrap();
+  }
+
+  #[tokio::test]
+  async fn test_rename_file() {
+    let (_temp, db) = create_test_db().await;
+
+    let mut c1 = create_test_chunk();
+    c1.file_path = "/old/path/file.rs".to_string();
+    let mut c2 = create_test_chunk();
+    c2.file_path = "/old/path/file.rs".to_string();
+    let mut c3 = create_test_chunk();
+    c3.file_path = "/other/file.rs".to_string();
+
+    db.add_code_chunk(&c1, None).await.unwrap();
+    db.add_code_chunk(&c2, None).await.unwrap();
+    db.add_code_chunk(&c3, None).await.unwrap();
+
+    // Rename the file
+    let renamed = db.rename_file("/old/path/file.rs", "/new/path/file.rs").await.unwrap();
+    assert_eq!(renamed, 2); // Two chunks were renamed
+
+    // Verify chunks are at new path
+    let chunks = db.get_chunks_for_file("/new/path/file.rs").await.unwrap();
+    assert_eq!(chunks.len(), 2);
+
+    // Verify old path has no chunks
+    let old_chunks = db.get_chunks_for_file("/old/path/file.rs").await.unwrap();
+    assert!(old_chunks.is_empty());
+
+    // Verify other file is unchanged
+    let other_chunks = db.get_chunks_for_file("/other/file.rs").await.unwrap();
+    assert_eq!(other_chunks.len(), 1);
+  }
+
+  #[tokio::test]
+  async fn test_rename_file_not_found() {
+    let (_temp, db) = create_test_db().await;
+
+    // Renaming a non-existent file should return 0
+    let renamed = db.rename_file("/nonexistent.rs", "/new.rs").await.unwrap();
+    assert_eq!(renamed, 0);
+  }
+
+  #[tokio::test]
+  async fn test_rename_files_with_prefix() {
+    let (_temp, db) = create_test_db().await;
+
+    let mut c1 = create_test_chunk();
+    c1.file_path = "src/old/a.rs".to_string();
+    let mut c2 = create_test_chunk();
+    c2.file_path = "src/old/b.rs".to_string();
+    let mut c3 = create_test_chunk();
+    c3.file_path = "src/old/nested/c.rs".to_string();
+    let mut c4 = create_test_chunk();
+    c4.file_path = "src/other/d.rs".to_string();
+
+    db.add_code_chunk(&c1, None).await.unwrap();
+    db.add_code_chunk(&c2, None).await.unwrap();
+    db.add_code_chunk(&c3, None).await.unwrap();
+    db.add_code_chunk(&c4, None).await.unwrap();
+
+    // Rename folder
+    let renamed = db.rename_files_with_prefix("src/old/", "src/new/").await.unwrap();
+    assert_eq!(renamed, 3); // Three files were renamed
+
+    // Verify files are at new paths
+    let a_chunks = db.get_chunks_for_file("src/new/a.rs").await.unwrap();
+    assert_eq!(a_chunks.len(), 1);
+
+    let b_chunks = db.get_chunks_for_file("src/new/b.rs").await.unwrap();
+    assert_eq!(b_chunks.len(), 1);
+
+    let c_chunks = db.get_chunks_for_file("src/new/nested/c.rs").await.unwrap();
+    assert_eq!(c_chunks.len(), 1);
+
+    // Verify other file is unchanged
+    let d_chunks = db.get_chunks_for_file("src/other/d.rs").await.unwrap();
+    assert_eq!(d_chunks.len(), 1);
   }
 }

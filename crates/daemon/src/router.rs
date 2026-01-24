@@ -13,24 +13,17 @@ use tracing::{debug, info, warn};
 
 // Import typed result/params from IPC for type-safe responses
 pub use ipc::{
-  StatusResult, PingResult, ShutdownResult,
-  MemorySearchResult, MemorySearchItem, MemoryGetResult, MemoryDetail,
-  MemoryAddResult, MemoryUpdateResult, MemoryDeleteResult, MemoryListResult,
-  MemoryTimelineResult, TimelineEntry, MemoryRelatedResult, MemoryRestoreResult,
-  MemoryListDeletedResult, MemorySupersedeResult,
-  CodeSearchResult, CodeChunkItem, CodeContextResult, CodeChunkDetail,
-  CodeIndexResult, CodeStatsResult, LanguageStats, CodeCallersResult,
-  CodeCalleesResult, CodeListResult, CodeImportChunkResult, CodeMemoriesResult,
-  CodeRelatedResult, CodeContextFullResult,
-  ExploreResult, ExploreResultItem, ExploreHints, ContextResult, ContextItem,
-  DocsSearchResult, DocSearchItem, DocContextResult, DocDetail, DocsIngestResult,
-  WatchStatusResult, WatchStartResult, WatchStopResult,
-  EntityListResult, EntityItem, EntityGetResult, EntityDetail, EntityRelationship,
-  ProjectsListResult, ProjectInfo as IpcProjectInfo, ProjectCleanResult,
-  HealthCheckResult, HealthCheck, ProjectStatsResult, MigrateEmbeddingResult,
-  RelationshipAddResult, RelationshipListResult, RelationshipItem,
-  RelationshipDeleteResult, RelationshipRelatedResult,
-  HookResult,
+  CodeCalleesResult, CodeCallersResult, CodeChunkDetail, CodeChunkItem, CodeContextFullResult, CodeContextResult,
+  CodeImportChunkResult, CodeIndexResult, CodeListResult, CodeMemoriesResult, CodeRelatedResult, CodeSearchResult,
+  CodeStatsResult, ContextItem, ContextResult, DocContextResult, DocDetail, DocSearchItem, DocsIngestResult,
+  DocsSearchResult, EntityDetail, EntityGetResult, EntityItem, EntityListResult, EntityRelationship, ExploreHints,
+  ExploreResult, ExploreResultItem, HealthCheck, HealthCheckResult, HookResult, LanguageStats, MemoryAddResult,
+  MemoryDeleteResult, MemoryDetail, MemoryGetResult, MemoryListDeletedResult, MemoryListResult, MemoryRelatedResult,
+  MemoryRestoreResult, MemorySearchItem, MemorySearchResult, MemorySupersedeResult, MemoryTimelineResult,
+  MemoryUpdateResult, MigrateEmbeddingResult, PingResult, ProjectCleanResult, ProjectInfo as IpcProjectInfo,
+  ProjectStatsResult, ProjectsListResult, RelationshipAddResult, RelationshipDeleteResult, RelationshipItem,
+  RelationshipListResult, RelationshipRelatedResult, ShutdownResult, StatusResult, TimelineEntry, WatchStartResult,
+  WatchStatusResult, WatchStopResult,
 };
 
 // ============================================================================
@@ -683,7 +676,14 @@ impl IndexProgress {
     }
   }
 
-  pub fn indexing(processed: u32, total: u32, chunks: u32, current_file: Option<String>, bytes_processed: u64, total_bytes: u64) -> Self {
+  pub fn indexing(
+    processed: u32,
+    total: u32,
+    chunks: u32,
+    current_file: Option<String>,
+    bytes_processed: u64,
+    total_bytes: u64,
+  ) -> Self {
     let percent = if total > 0 { (processed * 100) / total } else { 0 };
     Self {
       phase: "indexing".to_string(),
@@ -965,10 +965,7 @@ impl Router {
     match request.method.as_str() {
       // Streaming-enabled methods
       "code_index" => {
-        self
-          .tool_handler
-          .code_index_streaming(request, progress_tx)
-          .await;
+        self.tool_handler.code_index_streaming(request, progress_tx).await;
       }
 
       // All other methods fall back to single response
@@ -1052,10 +1049,10 @@ impl Router {
     let embedding_info = {
       let guard = self.embedding_provider.lock().await;
       (*guard).as_ref().map(|provider| EmbeddingInfo {
-          name: provider.name().to_string(),
-          model: provider.model_id().to_string(),
-          dimensions: provider.dimensions(),
-        })
+        name: provider.name().to_string(),
+        model: provider.model_id().to_string(),
+        dimensions: provider.dimensions(),
+      })
     };
 
     // Get process memory (if available on Linux)
@@ -1119,9 +1116,12 @@ impl Router {
     let guard = self.shutdown_handle.lock().await;
     if let Some(ref handle) = *guard {
       handle.shutdown();
-      Response::success(request.id, ShutdownResult {
-        message: "shutting_down".to_string(),
-      })
+      Response::success(
+        request.id,
+        ShutdownResult {
+          message: "shutting_down".to_string(),
+        },
+      )
     } else {
       Response::error(request.id, -32000, "Shutdown handle not available")
     }
@@ -1288,7 +1288,12 @@ impl Router {
       );
     }
 
-    Response::success(request.id, ProjectsCleanAllResult { projects_removed: count })
+    Response::success(
+      request.id,
+      ProjectsCleanAllResult {
+        projects_removed: count,
+      },
+    )
   }
 
   async fn handle_hook(&self, request: Request) -> Response {
@@ -1329,7 +1334,7 @@ impl Default for Router {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use ipc::{Method, PingParams, MetricsParams};
+  use ipc::{Method, MetricsParams, PingParams};
 
   /// Helper to create a wire-format Request from typed IPC params
   fn make_request<P: serde::Serialize>(id: u64, method: Method, params: P) -> Request {

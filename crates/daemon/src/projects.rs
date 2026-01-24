@@ -1222,8 +1222,10 @@ fn run_watcher_loop(
       }
     }
 
-    // Collect and filter changes into FileChangeContext
-    let mut file_contexts: Vec<FileChangeContext> = Vec::new();
+    // Separate rename events from other changes
+    // Renames are processed first to preserve embeddings
+    let mut rename_events: Vec<(String, String)> = Vec::new();
+    let mut other_changes: Vec<index::FileChange> = Vec::new();
 
     for change in changes {
       // Skip config file (already handled)
@@ -1237,6 +1239,66 @@ fn run_watcher_loop(
         continue;
       }
 
+      // Handle rename events specially
+      if change.kind == ChangeKind::Renamed {
+        if let Some(ref old_path) = change.old_path {
+          // Get relative paths for both old and new
+          let old_relative = match old_path.strip_prefix(root) {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => continue,
+          };
+          let new_relative = match change.path.strip_prefix(root) {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(_) => continue,
+          };
+
+          debug!("Detected rename: {} -> {}", old_relative, new_relative);
+          rename_events.push((old_relative, new_relative));
+        } else {
+          // No old_path, treat as regular modified event
+          other_changes.push(index::FileChange {
+            path: change.path,
+            kind: ChangeKind::Modified,
+            old_path: None,
+          });
+        }
+      } else {
+        other_changes.push(change);
+      }
+    }
+
+    // Process renames first (update paths in DB, preserve embeddings)
+    if !rename_events.is_empty()
+      && let Ok(rt) = tokio::runtime::Handle::try_current()
+    {
+      let db_clone = Arc::clone(&db);
+      let content_cache_clone = Arc::clone(&content_cache);
+      let root_clone = root.to_path_buf();
+
+      for (old_path, new_path) in rename_events {
+        let renamed = rt.block_on(async { db_clone.rename_file(&old_path, &new_path).await });
+
+        match renamed {
+          Ok(count) => {
+            if count > 0 {
+              info!("Renamed {} -> {} ({} chunks)", old_path, new_path, count);
+              files_indexed += 1; // Count as an indexed operation
+
+              // Update content cache: remove old key, file will be added with new key on next read
+              content_cache_clone.remove(&root_clone, &old_path);
+            }
+          }
+          Err(e) => {
+            warn!("Failed to rename {} -> {}: {}", old_path, new_path, e);
+          }
+        }
+      }
+    }
+
+    // Collect and filter remaining changes into FileChangeContext
+    let mut file_contexts: Vec<FileChangeContext> = Vec::new();
+
+    for change in other_changes {
       // Get relative path
       let relative_path = match change.path.strip_prefix(root) {
         Ok(p) => p.to_string_lossy().to_string(),

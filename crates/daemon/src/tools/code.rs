@@ -9,11 +9,10 @@ use db::{CheckpointType, IndexCheckpoint, ProjectDb};
 use engram_core::{CodeChunk, MemoryType};
 use index::{Chunker, Scanner, compute_gitignore_hash};
 use ipc::{
-  CodeCallerItem, CodeCalleeItem, CodeCalleesResponse, CodeCallersResponse, CodeChunkFullDetail,
-  CodeContextResponse, CodeContextSection, CodeContextSections, CodeFullCallee, CodeFullCaller,
-  CodeFullDoc, CodeFullMemory, CodeFullSibling, CodeContextFullResponse, CodeImportResult,
-  CodeIndexDryRunResult, CodeIndexStreamingResult, CodeListItem, CodeMemoriesResponse,
-  CodeMemoryItem, CodeRelatedItem, CodeRelatedResponse,
+  CodeCalleeItem, CodeCalleesResponse, CodeCallerItem, CodeCallersResponse, CodeChunkFullDetail,
+  CodeContextFullResponse, CodeContextResponse, CodeContextSection, CodeContextSections, CodeFullCallee,
+  CodeFullCaller, CodeFullDoc, CodeFullMemory, CodeFullSibling, CodeImportResult, CodeIndexDryRunResult,
+  CodeIndexStreamingResult, CodeListItem, CodeMemoriesResponse, CodeMemoryItem, CodeRelatedItem, CodeRelatedResponse,
 };
 use parser::import_matches_file;
 use serde::Deserialize;

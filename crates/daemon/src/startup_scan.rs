@@ -121,6 +121,12 @@ pub enum FileChange {
   Unchanged {
     path: String,
   },
+  /// File was renamed (same content hash, different path)
+  Renamed {
+    old_path: String,
+    new_path: String,
+    hash: String,
+  },
 }
 
 /// Results from scanning
@@ -129,6 +135,8 @@ pub struct ScanResult {
   pub deleted: Vec<String>,
   pub added: Vec<String>,
   pub modified: Vec<String>,
+  /// Files that were renamed (old_path, new_path)
+  pub renamed: Vec<(String, String)>,
   pub unchanged_count: usize,
   pub scan_duration: Duration,
   pub errors: Vec<String>,
@@ -136,11 +144,11 @@ pub struct ScanResult {
 
 impl ScanResult {
   pub fn total_changes(&self) -> usize {
-    self.deleted.len() + self.added.len() + self.modified.len()
+    self.deleted.len() + self.added.len() + self.modified.len() + self.renamed.len()
   }
 
   pub fn is_empty(&self) -> bool {
-    self.deleted.is_empty() && self.added.is_empty() && self.modified.is_empty()
+    self.deleted.is_empty() && self.added.is_empty() && self.modified.is_empty() && self.renamed.is_empty()
   }
 }
 
@@ -150,6 +158,8 @@ pub struct ApplyResult {
   pub files_deleted: usize,
   pub files_indexed: usize,
   pub files_reindexed: usize,
+  /// Files renamed (path updated, embeddings preserved)
+  pub files_renamed: usize,
   pub apply_duration: Duration,
   pub errors: Vec<String>,
 }
@@ -292,16 +302,18 @@ impl StartupScanner {
         FileChange::Added { path, .. } => result.added.push(path),
         FileChange::Modified { path, .. } => result.modified.push(path),
         FileChange::Unchanged { .. } => result.unchanged_count += 1,
+        FileChange::Renamed { old_path, new_path, .. } => result.renamed.push((old_path, new_path)),
       }
     }
 
     self.state.finish();
 
     info!(
-      "Scan complete: {} new, {} deleted, {} modified, {} unchanged ({:.2}s)",
+      "Scan complete: {} new, {} deleted, {} modified, {} renamed, {} unchanged ({:.2}s)",
       result.added.len(),
       result.deleted.len(),
       result.modified.len(),
+      result.renamed.len(),
       result.unchanged_count,
       result.scan_duration.as_secs_f64()
     );
@@ -370,16 +382,69 @@ impl StartupScanner {
   ) -> Vec<FileChange> {
     let mut changes = Vec::new();
 
-    // Find deleted files (in DB but not on filesystem)
-    for path in indexed.keys() {
+    // Phase 1: Build maps of deleted and added files by hash for rename detection
+    // A rename is detected when exactly one deleted file and one added file share the same hash
+    let mut deleted_by_hash: HashMap<String, Vec<&String>> = HashMap::new();
+    let mut added_by_hash: HashMap<String, Vec<(&String, &FilesystemFile)>> = HashMap::new();
+
+    // Collect deleted files (in DB but not on filesystem)
+    for (path, db_file) in indexed {
       if !filesystem.contains_key(path) {
-        changes.push(FileChange::Deleted { path: path.clone() });
+        deleted_by_hash.entry(db_file.file_hash.clone()).or_default().push(path);
       }
     }
 
-    // Find new and modified files
+    // Collect added files (on filesystem but not in DB)
     if self.config.mode != ScanMode::DeletedOnly {
       for (path, fs_file) in filesystem {
+        if !indexed.contains_key(path) {
+          added_by_hash
+            .entry(fs_file.current_hash.clone())
+            .or_default()
+            .push((path, fs_file));
+        }
+      }
+    }
+
+    // Phase 2: Match 1:1 pairs as renames (same hash, different path)
+    let mut renamed_old_paths = std::collections::HashSet::new();
+    let mut renamed_new_paths = std::collections::HashSet::new();
+
+    for (hash, deleted_paths) in &deleted_by_hash {
+      if let Some(added_files) = added_by_hash.get(hash) {
+        // Only match as rename if exactly one deleted and one added file share this hash
+        // Multiple files with same hash are ambiguous - treat as delete + add
+        if deleted_paths.len() == 1 && added_files.len() == 1 {
+          let old_path = deleted_paths[0];
+          let (new_path, _) = added_files[0];
+
+          changes.push(FileChange::Renamed {
+            old_path: old_path.clone(),
+            new_path: new_path.clone(),
+            hash: hash.clone(),
+          });
+
+          renamed_old_paths.insert(old_path.clone());
+          renamed_new_paths.insert(new_path.clone());
+        }
+      }
+    }
+
+    // Phase 3: Emit remaining deletes (excluding renames)
+    for (path, db_file) in indexed {
+      if !filesystem.contains_key(path) && !renamed_old_paths.contains(path) {
+        changes.push(FileChange::Deleted { path: path.clone() });
+        debug!("File deleted: {} (hash={})", path, db_file.file_hash);
+      }
+    }
+
+    // Phase 4: Find new and modified files (excluding renames)
+    if self.config.mode != ScanMode::DeletedOnly {
+      for (path, fs_file) in filesystem {
+        if renamed_new_paths.contains(path) {
+          continue; // Already handled as rename
+        }
+
         match indexed.get(path) {
           None => {
             // New file
@@ -471,7 +536,35 @@ impl StartupScanner {
 
     let mut apply_result = ApplyResult::default();
 
-    // Step 1: Delete chunks for removed files
+    // Step 1: Process renames (update paths, preserve embeddings)
+    // Do this first before deletes to avoid accidentally deleting renamed files
+    if !result.renamed.is_empty() {
+      self.state.set_phase("Processing renamed files").await;
+      info!("Processing {} renamed files", result.renamed.len());
+
+      for (old_path, new_path) in &result.renamed {
+        if self.is_cancelled() {
+          self.state.finish();
+          return Err(ScanError::Cancelled);
+        }
+
+        match db.rename_file(old_path, new_path).await {
+          Ok(count) => {
+            if count > 0 {
+              debug!("Renamed {} -> {} ({} chunks)", old_path, new_path, count);
+              apply_result.files_renamed += 1;
+            }
+          }
+          Err(e) => {
+            warn!("Failed to rename {} -> {}: {}", old_path, new_path, e);
+            apply_result.errors.push(format!("Rename error: {}", e));
+          }
+        }
+        self.state.processed_files.fetch_add(1, Ordering::Relaxed);
+      }
+    }
+
+    // Step 2: Delete chunks for removed files
     if !result.deleted.is_empty() {
       self.state.set_phase("Deleting stale chunks").await;
       info!("Deleting chunks for {} removed files", result.deleted.len());
@@ -496,7 +589,7 @@ impl StartupScanner {
       }
     }
 
-    // Step 2: Index new and modified files
+    // Step 3: Index new and modified files
     let files_to_index: Vec<&String> = result.added.iter().chain(result.modified.iter()).collect();
 
     if !files_to_index.is_empty() {
@@ -554,10 +647,11 @@ impl StartupScanner {
     self.state.finish();
 
     info!(
-      "Reconciliation complete: {} deleted, {} indexed, {} re-indexed ({:.2}s)",
+      "Reconciliation complete: {} deleted, {} indexed, {} re-indexed, {} renamed ({:.2}s)",
       apply_result.files_deleted,
       apply_result.files_indexed,
       apply_result.files_reindexed,
+      apply_result.files_renamed,
       apply_result.apply_duration.as_secs_f64()
     );
 
@@ -791,12 +885,13 @@ mod tests {
       deleted: vec!["a.rs".to_string()],
       added: vec!["b.rs".to_string(), "c.rs".to_string()],
       modified: vec!["d.rs".to_string()],
+      renamed: vec![],
       unchanged_count: 10,
       scan_duration: Duration::from_secs(1),
       errors: vec![],
     };
 
-    assert_eq!(result.total_changes(), 4);
+    assert_eq!(result.total_changes(), 4); // 1 deleted + 2 added + 1 modified + 0 renamed
     assert!(!result.is_empty());
 
     let empty_result = ScanResult::default();
@@ -952,6 +1047,155 @@ mod tests {
     assert_eq!(result.files_deleted, 0);
     assert_eq!(result.files_indexed, 0);
     assert_eq!(result.files_reindexed, 0);
+    assert_eq!(result.files_renamed, 0);
     assert!(result.errors.is_empty());
+  }
+
+  #[test]
+  fn test_classify_renames() {
+    let scanner = StartupScanner::new(StartupScanConfig::default());
+
+    let mut indexed = HashMap::new();
+    indexed.insert(
+      "old/path/file.rs".to_string(),
+      IndexedFile {
+        file_path: "old/path/file.rs".to_string(),
+        file_hash: "same_hash".to_string(),
+        indexed_at_ms: 1000,
+        chunk_count: 1,
+      },
+    );
+    indexed.insert(
+      "other.rs".to_string(),
+      IndexedFile {
+        file_path: "other.rs".to_string(),
+        file_hash: "other_hash".to_string(),
+        indexed_at_ms: 1000,
+        chunk_count: 1,
+      },
+    );
+
+    // old/path/file.rs renamed to new/path/file.rs (same hash, different path)
+    let mut filesystem = HashMap::new();
+    filesystem.insert(
+      "new/path/file.rs".to_string(),
+      FilesystemFile {
+        file_path: "new/path/file.rs".to_string(),
+        current_hash: "same_hash".to_string(),
+        mtime: 2000,
+        size: 100,
+      },
+    );
+    filesystem.insert(
+      "other.rs".to_string(),
+      FilesystemFile {
+        file_path: "other.rs".to_string(),
+        current_hash: "other_hash".to_string(),
+        mtime: 2000,
+        size: 100,
+      },
+    );
+
+    let changes = scanner.classify_changes(&indexed, &filesystem);
+
+    let renamed: Vec<_> = changes
+      .iter()
+      .filter_map(|c| match c {
+        FileChange::Renamed { old_path, new_path, .. } => Some((old_path.clone(), new_path.clone())),
+        _ => None,
+      })
+      .collect();
+
+    assert_eq!(renamed.len(), 1);
+    assert_eq!(renamed[0].0, "old/path/file.rs");
+    assert_eq!(renamed[0].1, "new/path/file.rs");
+
+    // other.rs should be unchanged
+    let unchanged_count = changes
+      .iter()
+      .filter(|c| matches!(c, FileChange::Unchanged { .. }))
+      .count();
+    assert_eq!(unchanged_count, 1);
+
+    // No deletes or adds (rename was detected)
+    let deleted_count = changes
+      .iter()
+      .filter(|c| matches!(c, FileChange::Deleted { .. }))
+      .count();
+    let added_count = changes.iter().filter(|c| matches!(c, FileChange::Added { .. })).count();
+    assert_eq!(deleted_count, 0);
+    assert_eq!(added_count, 0);
+  }
+
+  #[test]
+  fn test_classify_renames_ambiguous_hash() {
+    // When multiple files have the same hash, don't treat as rename (ambiguous)
+    let scanner = StartupScanner::new(StartupScanConfig::default());
+
+    let mut indexed = HashMap::new();
+    indexed.insert(
+      "a.rs".to_string(),
+      IndexedFile {
+        file_path: "a.rs".to_string(),
+        file_hash: "same_hash".to_string(),
+        indexed_at_ms: 1000,
+        chunk_count: 1,
+      },
+    );
+    indexed.insert(
+      "b.rs".to_string(),
+      IndexedFile {
+        file_path: "b.rs".to_string(),
+        file_hash: "same_hash".to_string(), // Same hash as a.rs
+        indexed_at_ms: 1000,
+        chunk_count: 1,
+      },
+    );
+
+    // Both files deleted, one new file with same hash
+    let mut filesystem = HashMap::new();
+    filesystem.insert(
+      "c.rs".to_string(),
+      FilesystemFile {
+        file_path: "c.rs".to_string(),
+        current_hash: "same_hash".to_string(),
+        mtime: 2000,
+        size: 100,
+      },
+    );
+
+    let changes = scanner.classify_changes(&indexed, &filesystem);
+
+    // Should NOT detect rename (ambiguous - two deleted files with same hash)
+    let renamed_count = changes
+      .iter()
+      .filter(|c| matches!(c, FileChange::Renamed { .. }))
+      .count();
+    assert_eq!(renamed_count, 0);
+
+    // Should have 2 deletes and 1 add
+    let deleted_count = changes
+      .iter()
+      .filter(|c| matches!(c, FileChange::Deleted { .. }))
+      .count();
+    let added_count = changes.iter().filter(|c| matches!(c, FileChange::Added { .. })).count();
+    assert_eq!(deleted_count, 2);
+    assert_eq!(added_count, 1);
+  }
+
+  #[test]
+  fn test_scan_result_includes_renamed() {
+    let result = ScanResult {
+      deleted: vec!["a.rs".to_string()],
+      added: vec!["b.rs".to_string()],
+      modified: vec!["c.rs".to_string()],
+      renamed: vec![("old.rs".to_string(), "new.rs".to_string())],
+      unchanged_count: 5,
+      scan_duration: Duration::from_secs(1),
+      errors: vec![],
+    };
+
+    assert_eq!(result.total_changes(), 4); // 1 deleted + 1 added + 1 modified + 1 renamed
+    assert!(!result.is_empty());
   }
 }

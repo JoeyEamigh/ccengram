@@ -27,6 +27,8 @@ pub enum ChangeKind {
 pub struct FileChange {
   pub path: PathBuf,
   pub kind: ChangeKind,
+  /// Original path for rename events (None for other event types)
+  pub old_path: Option<PathBuf>,
 }
 
 /// File system watcher for code indexing
@@ -129,15 +131,56 @@ impl FileWatcher {
   fn process_event(&self, event: Event) -> Option<FileChange> {
     let path = event.paths.first()?.clone();
 
-    // Skip non-file events
+    // Skip non-file events (but allow for renames where we need to check both paths)
     if path.is_dir() {
       return None;
     }
 
-    let kind = match event.kind {
-      EventKind::Create(_) => ChangeKind::Created,
-      EventKind::Modify(_) => ChangeKind::Modified,
-      EventKind::Remove(_) => ChangeKind::Deleted,
+    let (kind, old_path) = match event.kind {
+      EventKind::Create(_) => (ChangeKind::Created, None),
+      EventKind::Modify(notify::event::ModifyKind::Name(rename_mode)) => {
+        // Handle rename events
+        use notify::event::RenameMode;
+        match rename_mode {
+          RenameMode::Both => {
+            // Both paths available: paths[0] = old, paths[1] = new
+            if event.paths.len() >= 2 {
+              let old = event.paths[0].clone();
+              let new = event.paths[1].clone();
+
+              // Skip if the new path is a directory
+              if new.is_dir() {
+                return None;
+              }
+
+              debug!("Rename event: {:?} -> {:?}", old, new);
+              return Some(FileChange {
+                path: new,
+                kind: ChangeKind::Renamed,
+                old_path: Some(old),
+              });
+            }
+            // Fallback if only one path (shouldn't happen for Both mode)
+            (ChangeKind::Modified, None)
+          }
+          RenameMode::From => {
+            // Only "from" path available - treat as delete, will coalesce with "to" in debouncer
+            debug!("Rename From event (treating as delete): {:?}", path);
+            (ChangeKind::Deleted, None)
+          }
+          RenameMode::To => {
+            // Only "to" path available - treat as create, will coalesce with "from" in debouncer
+            debug!("Rename To event (treating as create): {:?}", path);
+            (ChangeKind::Created, None)
+          }
+          RenameMode::Any | RenameMode::Other => {
+            // Generic rename - treat as modified
+            (ChangeKind::Modified, None)
+          }
+        }
+      }
+      EventKind::Modify(_) => (ChangeKind::Modified, None),
+      EventKind::Remove(_) => (ChangeKind::Deleted, None),
       EventKind::Any => {
         debug!("Ignoring Any event for {:?}", path);
         return None;
@@ -152,7 +195,7 @@ impl FileWatcher {
       }
     };
 
-    Some(FileChange { path, kind })
+    Some(FileChange { path, kind, old_path })
   }
 }
 
@@ -201,5 +244,31 @@ mod tests {
   fn test_change_kind_equality() {
     assert_eq!(ChangeKind::Created, ChangeKind::Created);
     assert_ne!(ChangeKind::Created, ChangeKind::Modified);
+    assert_eq!(ChangeKind::Renamed, ChangeKind::Renamed);
+  }
+
+  #[test]
+  fn test_file_change_with_old_path() {
+    let change = FileChange {
+      path: PathBuf::from("/new/path.rs"),
+      kind: ChangeKind::Renamed,
+      old_path: Some(PathBuf::from("/old/path.rs")),
+    };
+
+    assert_eq!(change.kind, ChangeKind::Renamed);
+    assert!(change.old_path.is_some());
+    assert_eq!(change.old_path.unwrap(), PathBuf::from("/old/path.rs"));
+  }
+
+  #[test]
+  fn test_file_change_without_old_path() {
+    let change = FileChange {
+      path: PathBuf::from("/test/file.rs"),
+      kind: ChangeKind::Created,
+      old_path: None,
+    };
+
+    assert_eq!(change.kind, ChangeKind::Created);
+    assert!(change.old_path.is_none());
   }
 }

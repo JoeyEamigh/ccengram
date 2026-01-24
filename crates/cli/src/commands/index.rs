@@ -4,7 +4,10 @@ use crate::IndexCommand;
 use anyhow::{Context, Result};
 use cli::to_daemon_request;
 use daemon::connect_or_start;
-use ipc::{CodeImportChunkParams, CodeIndexParams, CodeListParams, CodeStatsParams, DocsIngestParams, Method, ProjectStatsParams, Request};
+use ipc::{
+  CodeImportChunkParams, CodeIndexParams, CodeListParams, CodeStatsParams, DocsIngestParams, Method,
+  ProjectStatsParams, Request,
+};
 use std::io::{IsTerminal, Write};
 use std::path::Path;
 use tracing::{debug, error, warn};
@@ -69,7 +72,10 @@ pub async fn cmd_index_file(path: &str, title: Option<&str>, _force: bool) -> Re
       params,
     };
 
-    let response = client.request(to_daemon_request(request)).await.context("Failed to index document")?;
+    let response = client
+      .request(to_daemon_request(request))
+      .await
+      .context("Failed to index document")?;
 
     if let Some(err) = response.error {
       error!("Index error: {}", err.message);
@@ -99,7 +105,10 @@ pub async fn cmd_index_file(path: &str, title: Option<&str>, _force: bool) -> Re
       params,
     };
 
-    let response = client.request(to_daemon_request(request)).await.context("Failed to index code file")?;
+    let response = client
+      .request(to_daemon_request(request))
+      .await
+      .context("Failed to index code file")?;
 
     if let Some(err) = response.error {
       error!("Index error: {}", err.message);
@@ -156,7 +165,10 @@ pub async fn cmd_index_docs_impl(directory: Option<&str>, force: bool, stats: bo
       params,
     };
 
-    let response = client.request(to_daemon_request(request)).await.context("Failed to get stats")?;
+    let response = client
+      .request(to_daemon_request(request))
+      .await
+      .context("Failed to get stats")?;
 
     if let Some(err) = response.error {
       error!("Stats error: {}", err.message);
@@ -296,9 +308,7 @@ pub async fn cmd_index_code(force: bool, stats: bool, export: Option<&str>, load
 
   // Handle --stats
   if stats {
-    let params = CodeStatsParams {
-      cwd: Some(cwd.clone()),
-    };
+    let params = CodeStatsParams { cwd: Some(cwd.clone()) };
 
     let request = Request {
       id: Some(1),
@@ -306,7 +316,10 @@ pub async fn cmd_index_code(force: bool, stats: bool, export: Option<&str>, load
       params,
     };
 
-    let response = client.request(to_daemon_request(request)).await.context("Failed to get index stats")?;
+    let response = client
+      .request(to_daemon_request(request))
+      .await
+      .context("Failed to get index stats")?;
 
     if let Some(err) = response.error {
       error!("Stats error: {}", err.message);
@@ -375,7 +388,10 @@ pub async fn cmd_index_code(force: bool, stats: bool, export: Option<&str>, load
       params,
     };
 
-    let response = client.request(to_daemon_request(request)).await.context("Failed to export index")?;
+    let response = client
+      .request(to_daemon_request(request))
+      .await
+      .context("Failed to export index")?;
 
     if let Some(err) = response.error {
       error!("Export error: {}", err.message);
@@ -478,7 +494,10 @@ pub async fn cmd_index_code(force: bool, stats: bool, export: Option<&str>, load
       params,
     };
 
-    let mut stream = client.request_streaming(to_daemon_request(request)).await.context("Failed to start indexing")?;
+    let mut stream = client
+      .request_streaming(to_daemon_request(request))
+      .await
+      .context("Failed to start indexing")?;
 
     let mut last_progress_len = 0;
     let mut final_result = None;
@@ -526,7 +545,10 @@ pub async fn cmd_index_code(force: bool, stats: bool, export: Option<&str>, load
             if current.is_empty() {
               format!("{} {}% ({}/{}) {} chunks", bar, percent, processed, total, chunks)
             } else {
-              format!("{} {}% ({}/{}) {} chunks - {}", bar, percent, processed, total, chunks, current)
+              format!(
+                "{} {}% ({}/{}) {} chunks - {}",
+                bar, percent, processed, total, chunks, current
+              )
             }
           }
           "complete" => {
@@ -583,7 +605,10 @@ pub async fn cmd_index_code(force: bool, stats: bool, export: Option<&str>, load
       params,
     };
 
-    let response = client.request(to_daemon_request(request)).await.context("Failed to index code")?;
+    let response = client
+      .request(to_daemon_request(request))
+      .await
+      .context("Failed to index code")?;
 
     if let Some(err) = response.error {
       error!("Index error: {}", err.message);

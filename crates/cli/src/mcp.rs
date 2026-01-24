@@ -167,7 +167,10 @@ pub async fn cmd_mcp() -> Result<()> {
           && !obj.contains_key("cwd")
           && let Ok(cwd) = std::env::current_dir()
         {
-          obj.insert("cwd".to_string(), serde_json::Value::String(cwd.to_string_lossy().to_string()));
+          obj.insert(
+            "cwd".to_string(),
+            serde_json::Value::String(cwd.to_string_lossy().to_string()),
+          );
         }
 
         // Parse the tool name into a Method enum via serde deserialization

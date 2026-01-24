@@ -35,7 +35,10 @@ pub async fn cmd_hook(name: &str) -> Result<()> {
       params,
     };
 
-    let response = client.request(to_daemon_request(request)).await.context("Failed to send hook to daemon")?;
+    let response = client
+      .request(to_daemon_request(request))
+      .await
+      .context("Failed to send hook to daemon")?;
 
     if let Some(err) = response.error {
       error!("Hook error: {}", err.message);

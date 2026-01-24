@@ -1,7 +1,7 @@
 use crate::projects::ProjectRegistry;
 use crate::router::{
-  PostToolUseHookResult, PreCompactHookResult, SessionEndHookResult, SessionStartHookResult,
-  SimpleHookResult, StopHookResult, UserPromptHookResult,
+  PostToolUseHookResult, PreCompactHookResult, SessionEndHookResult, SessionStartHookResult, SimpleHookResult,
+  StopHookResult, UserPromptHookResult,
 };
 use crate::session_tracker::{SessionId, SessionTracker};
 use embedding::EmbeddingProvider;

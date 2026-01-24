@@ -3,7 +3,10 @@
 use anyhow::{Context, Result};
 use cli::to_daemon_request;
 use daemon::{connect_or_start, default_socket_path};
-use ipc::{HealthCheckParams, MemoryDeleteParams, MemoryListParams, MetricsParams, Method, PingParams, ProjectStatsParams, Request, StatusParams};
+use ipc::{
+  HealthCheckParams, MemoryDeleteParams, MemoryListParams, Method, MetricsParams, PingParams, ProjectStatsParams,
+  Request, StatusParams,
+};
 use tracing::error;
 
 /// Show statistics
@@ -17,7 +20,10 @@ pub async fn cmd_stats() -> Result<()> {
     params: MetricsParams,
   };
 
-  let metrics_response = client.request(to_daemon_request(request)).await.context("Failed to get metrics")?;
+  let metrics_response = client
+    .request(to_daemon_request(request))
+    .await
+    .context("Failed to get metrics")?;
 
   println!("CCEngram Statistics");
   println!("===================\n");
@@ -118,9 +124,7 @@ pub async fn cmd_stats() -> Result<()> {
   let stats_request = Request {
     id: Some(2),
     method: Method::ProjectStats,
-    params: ProjectStatsParams {
-      cwd: Some(cwd),
-    },
+    params: ProjectStatsParams { cwd: Some(cwd) },
   };
 
   let stats_response = client
@@ -431,7 +435,10 @@ pub async fn cmd_archive(before: Option<&str>, threshold: f32, dry_run: bool) ->
     },
   };
 
-  let response = client.request(to_daemon_request(request)).await.context("Failed to list memories")?;
+  let response = client
+    .request(to_daemon_request(request))
+    .await
+    .context("Failed to list memories")?;
 
   if let Some(err) = response.error {
     error!("Archive error: {}", err.message);

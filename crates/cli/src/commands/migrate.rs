@@ -35,12 +35,13 @@ pub async fn cmd_migrate(dry_run: bool, force: bool) -> Result<()> {
   let stats_request = Request {
     id: Some(1),
     method: Method::ProjectStats,
-    params: ProjectStatsParams {
-      cwd: Some(cwd.clone()),
-    },
+    params: ProjectStatsParams { cwd: Some(cwd.clone()) },
   };
 
-  let stats_response = client.request(to_daemon_request(stats_request)).await.context("Failed to get stats")?;
+  let stats_response = client
+    .request(to_daemon_request(stats_request))
+    .await
+    .context("Failed to get stats")?;
 
   let mut memory_count = 0u64;
   let mut code_count = 0u64;
@@ -80,9 +81,7 @@ pub async fn cmd_migrate(dry_run: bool, force: bool) -> Result<()> {
 
   // Note: force flag is handled at CLI level, daemon always performs migration
   let _ = force; // Acknowledge unused for now until ipc adds force field
-  let params = MigrateEmbeddingParams {
-    cwd: Some(cwd),
-  };
+  let params = MigrateEmbeddingParams { cwd: Some(cwd) };
 
   let request = Request {
     id: Some(1),
@@ -90,7 +89,10 @@ pub async fn cmd_migrate(dry_run: bool, force: bool) -> Result<()> {
     params,
   };
 
-  let response = client.request(to_daemon_request(request)).await.context("Failed to migrate embeddings")?;
+  let response = client
+    .request(to_daemon_request(request))
+    .await
+    .context("Failed to migrate embeddings")?;
 
   if let Some(err) = response.error {
     error!("Migration error: {}", err.message);

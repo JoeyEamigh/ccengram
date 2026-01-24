@@ -40,6 +40,8 @@ impl Default for DebounceConfig {
 struct PendingChange {
   kind: ChangeKind,
   last_seen: Instant,
+  /// Original path for rename operations (None for other operations)
+  old_path: Option<PathBuf>,
 }
 
 impl PendingChange {
@@ -47,10 +49,19 @@ impl PendingChange {
     Self {
       kind,
       last_seen: Instant::now(),
+      old_path: None,
     }
   }
 
-  fn update(&mut self, kind: ChangeKind) {
+  fn with_old_path(kind: ChangeKind, old_path: PathBuf) -> Self {
+    Self {
+      kind,
+      last_seen: Instant::now(),
+      old_path: Some(old_path),
+    }
+  }
+
+  fn update(&mut self, kind: ChangeKind, old_path: Option<PathBuf>) {
     self.last_seen = Instant::now();
     // Coalesce event types
     match (&self.kind, &kind) {
@@ -60,8 +71,23 @@ impl PendingChange {
       (ChangeKind::Deleted, ChangeKind::Created) => self.kind = ChangeKind::Modified,
       // Create followed by delete cancels out
       (ChangeKind::Created, ChangeKind::Deleted) => self.kind = ChangeKind::Deleted,
+      // Rename followed by modify is still a rename
+      (ChangeKind::Renamed, ChangeKind::Modified) => {}
+      // Modified followed by rename becomes rename (preserve old_path from rename)
+      (ChangeKind::Modified, ChangeKind::Renamed) => {
+        self.kind = ChangeKind::Renamed;
+        if old_path.is_some() {
+          self.old_path = old_path;
+        }
+      }
       // Otherwise take the latest
-      _ => self.kind = kind,
+      _ => {
+        self.kind = kind;
+        // Update old_path if provided
+        if old_path.is_some() {
+          self.old_path = old_path;
+        }
+      }
     }
   }
 }
@@ -122,6 +148,7 @@ impl DebouncedWatcher {
         ready.push(FileChange {
           path: path.clone(),
           kind: pending.kind.clone(),
+          old_path: pending.old_path.clone(),
         });
         to_remove.push(path.clone());
       }
@@ -144,6 +171,7 @@ impl DebouncedWatcher {
       .map(|(path, pending)| FileChange {
         path,
         kind: pending.kind,
+        old_path: pending.old_path,
       })
       .collect();
 
@@ -272,9 +300,29 @@ impl DebouncedWatcher {
       return;
     }
 
+    // For rename events, remove any pending changes for the old path
+    // since those are now stale (the file has been renamed)
+    if change.kind == ChangeKind::Renamed
+      && let Some(ref old_path) = change.old_path
+    {
+      self.pending.remove(old_path);
+      debug!(
+        "Rename detected: {:?} -> {:?}, removed stale pending for old path",
+        old_path, change.path
+      );
+    }
+
     // Accumulate the change
     if let Some(pending) = self.pending.get_mut(&change.path) {
-      pending.update(change.kind);
+      pending.update(change.kind, change.old_path);
+    } else if change.kind == ChangeKind::Renamed {
+      if let Some(old_path) = change.old_path {
+        self
+          .pending
+          .insert(change.path, PendingChange::with_old_path(change.kind, old_path));
+      } else {
+        self.pending.insert(change.path, PendingChange::new(change.kind));
+      }
     } else {
       self.pending.insert(change.path, PendingChange::new(change.kind));
     }
@@ -367,18 +415,30 @@ mod tests {
   fn test_pending_change_coalescing() {
     // Create + Modify = Create
     let mut pending = PendingChange::new(ChangeKind::Created);
-    pending.update(ChangeKind::Modified);
+    pending.update(ChangeKind::Modified, None);
     assert_eq!(pending.kind, ChangeKind::Created);
 
     // Delete + Create = Modified
     let mut pending = PendingChange::new(ChangeKind::Deleted);
-    pending.update(ChangeKind::Created);
+    pending.update(ChangeKind::Created, None);
     assert_eq!(pending.kind, ChangeKind::Modified);
 
     // Create + Delete = Delete
     let mut pending = PendingChange::new(ChangeKind::Created);
-    pending.update(ChangeKind::Deleted);
+    pending.update(ChangeKind::Deleted, None);
     assert_eq!(pending.kind, ChangeKind::Deleted);
+
+    // Rename + Modify = Rename (preserve rename info)
+    let mut pending = PendingChange::with_old_path(ChangeKind::Renamed, PathBuf::from("/old/path"));
+    pending.update(ChangeKind::Modified, None);
+    assert_eq!(pending.kind, ChangeKind::Renamed);
+    assert!(pending.old_path.is_some());
+
+    // Modified + Rename = Rename (acquires rename info)
+    let mut pending = PendingChange::new(ChangeKind::Modified);
+    pending.update(ChangeKind::Renamed, Some(PathBuf::from("/old/path")));
+    assert_eq!(pending.kind, ChangeKind::Renamed);
+    assert_eq!(pending.old_path.unwrap(), PathBuf::from("/old/path"));
   }
 
   #[test]

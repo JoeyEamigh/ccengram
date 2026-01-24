@@ -2,8 +2,8 @@
 
 use super::ToolHandler;
 use crate::router::{
-  DeletedResult, EntityFullResult, EntityListItem, EntityMemoryLink, MemorySummary, RelatedMemoryItem, RelationshipInfo,
-  RelationshipListItem, RelationshipResult, Request, Response, TopEntityItem,
+  DeletedResult, EntityFullResult, EntityListItem, EntityMemoryLink, MemorySummary, RelatedMemoryItem,
+  RelationshipInfo, RelationshipListItem, RelationshipResult, Request, Response, TopEntityItem,
 };
 use engram_core::{MemoryId, RelationshipType};
 use serde::Deserialize;

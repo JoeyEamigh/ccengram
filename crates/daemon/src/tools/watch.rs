@@ -1,7 +1,7 @@
 //! File watcher and code statistics tool methods
 
 use super::ToolHandler;
-use crate::router::{Request, Response, WatchStartResult, WatchStopResult, WatchStatusResult, CodeStatsResult};
+use crate::router::{CodeStatsResult, Request, Response, WatchStartResult, WatchStatusResult, WatchStopResult};
 use crate::startup_scan::StartupScanConfig;
 use engram_core::{Config, ScanMode};
 use serde::Deserialize;

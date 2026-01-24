@@ -57,7 +57,10 @@ pub async fn cmd_search(
     params,
   };
 
-  let response = client.request(to_daemon_request(request)).await.context("Failed to search memories")?;
+  let response = client
+    .request(to_daemon_request(request))
+    .await
+    .context("Failed to search memories")?;
 
   if let Some(err) = response.error {
     error!("Search error: {}", err.message);
@@ -154,7 +157,10 @@ pub async fn cmd_search_code(
     params,
   };
 
-  let response = client.request(to_daemon_request(request)).await.context("Failed to search code")?;
+  let response = client
+    .request(to_daemon_request(request))
+    .await
+    .context("Failed to search code")?;
 
   if let Some(err) = response.error {
     error!("Code search error: {}", err.message);
@@ -226,7 +232,10 @@ pub async fn cmd_search_docs(
     params,
   };
 
-  let response = client.request(to_daemon_request(request)).await.context("Failed to search documents")?;
+  let response = client
+    .request(to_daemon_request(request))
+    .await
+    .context("Failed to search documents")?;
 
   if let Some(err) = response.error {
     error!("Document search error: {}", err.message);

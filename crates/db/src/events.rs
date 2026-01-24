@@ -345,7 +345,9 @@ mod tests {
     let event = Event::memory(
       "test-memory-123",
       EventType::Created,
-      payload(MemoryCreatedPayload { content: "test".to_string() }),
+      payload(MemoryCreatedPayload {
+        content: "test".to_string(),
+      }),
     );
 
     db.log_event(&event).await.unwrap();
@@ -366,7 +368,11 @@ mod tests {
     let events = vec![
       Event::memory("mem-1", EventType::Created, payload(EmptyPayload)),
       Event::memory("mem-1", EventType::Accessed, payload(EmptyPayload)),
-      Event::memory("mem-1", EventType::Reinforced, payload(ReinforcedPayload { amount: 0.1 })),
+      Event::memory(
+        "mem-1",
+        EventType::Reinforced,
+        payload(ReinforcedPayload { amount: 0.1 }),
+      ),
     ];
 
     db.log_events(&events).await.unwrap();

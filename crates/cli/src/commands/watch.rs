@@ -28,9 +28,7 @@ pub async fn cmd_watch(
     .unwrap_or_else(|_| ".".to_string());
 
   if stop {
-    let params = WatchStopParams {
-      cwd: Some(cwd),
-    };
+    let params = WatchStopParams { cwd: Some(cwd) };
 
     let request = Request {
       id: Some(1),
@@ -38,7 +36,10 @@ pub async fn cmd_watch(
       params,
     };
 
-    let response = client.request(to_daemon_request(request)).await.context("Failed to stop watcher")?;
+    let response = client
+      .request(to_daemon_request(request))
+      .await
+      .context("Failed to stop watcher")?;
 
     if let Some(err) = response.error {
       error!("Stop error: {}", err.message);
@@ -50,9 +51,7 @@ pub async fn cmd_watch(
   }
 
   if status {
-    let params = WatchStatusParams {
-      cwd: Some(cwd),
-    };
+    let params = WatchStatusParams { cwd: Some(cwd) };
 
     let request = Request {
       id: Some(1),
@@ -60,7 +59,10 @@ pub async fn cmd_watch(
       params,
     };
 
-    let response = client.request(to_daemon_request(request)).await.context("Failed to get watcher status")?;
+    let response = client
+      .request(to_daemon_request(request))
+      .await
+      .context("Failed to get watcher status")?;
 
     if let Some(err) = response.error {
       error!("Status error: {}", err.message);
@@ -122,7 +124,10 @@ pub async fn cmd_watch(
     params,
   };
 
-  let response = client.request(to_daemon_request(request)).await.context("Failed to start watcher")?;
+  let response = client
+    .request(to_daemon_request(request))
+    .await
+    .context("Failed to start watcher")?;
 
   if let Some(err) = response.error {
     error!("Watch error: {}", err.message);
@@ -146,9 +151,7 @@ pub async fn cmd_watch(
   let stop_request = Request {
     id: Some(1),
     method: Method::WatchStop,
-    params: WatchStopParams {
-      cwd: Some(cwd),
-    },
+    params: WatchStopParams { cwd: Some(cwd) },
   };
   let _ = client.request(to_daemon_request(stop_request)).await;
 
