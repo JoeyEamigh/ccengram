@@ -52,8 +52,8 @@ pub async fn cmd_daemon(
         config.embedding.provider = EmbeddingProvider::OpenRouter;
         // Also set default model for openrouter if using default ollama model
         if config.embedding.model == "qwen3-embedding" {
-          config.embedding.model = "openai/text-embedding-3-small".to_string();
-          config.embedding.dimensions = 1536;
+          config.embedding.model = "qwen/qwen3-embedding-8b".to_string();
+          config.embedding.dimensions = 4096;
         }
         info!("Using OpenRouter embedding provider (override)");
       }

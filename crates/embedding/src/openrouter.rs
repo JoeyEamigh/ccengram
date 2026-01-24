@@ -8,8 +8,8 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, info, trace, warn};
 
 const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/embeddings";
-const DEFAULT_MODEL: &str = "openai/text-embedding-3-small";
-const DEFAULT_DIMENSIONS: usize = 1536;
+const DEFAULT_MODEL: &str = "qwen/qwen3-embedding-8b";
+const DEFAULT_DIMENSIONS: usize = 4096;
 /// Default max batch size for OpenRouter.
 /// OpenRouter accepts multiple texts per request, but very large batches
 /// may hit token limits or timeout. 64 is a reasonable default.

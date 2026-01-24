@@ -887,7 +887,7 @@ preset = "{preset_name}"
 provider = "ollama"
 
 # Model name
-model = "qwen3-embedding"
+model = "qwen3-embedding" # would be "qwen/qwen3-embedding-8b" for openrouter
 
 # Embedding dimensions (must match model output)
 # WARNING: Changing dimensions requires re-embedding all data!
