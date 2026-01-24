@@ -22,6 +22,27 @@ pub struct AccuracyMetrics {
     pub hint_utility: f64,
     /// Suggestion quality: % of suggestions leading to useful results (target ≥50%)
     pub suggestion_quality: f64,
+
+    // === Exploration-specific metrics ===
+
+    /// Convergence rate: how quickly discoveries plateau (1.0 = all early, target ≥0.7)
+    #[serde(default)]
+    pub convergence_rate: f64,
+    /// Average information gain per step (new discoveries / total expected, target ≥0.3)
+    #[serde(default)]
+    pub avg_info_gain: f64,
+    /// Context bloat: % of context calls with no new info (target ≤0.3)
+    #[serde(default)]
+    pub context_bloat: f64,
+    /// Navigation efficiency: optimal_hops / actual_hops (target ≥0.5)
+    #[serde(default)]
+    pub navigation_efficiency: f64,
+    /// Dead end ratio: % of steps with no useful discoveries (target ≤0.2)
+    #[serde(default)]
+    pub dead_end_ratio: f64,
+
+    // === Debug fields ===
+
     /// Files found (for debugging)
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub files_found: Vec<String>,
@@ -69,6 +90,13 @@ pub struct AccuracyMetricsBuilder {
     hint_relevance: Vec<bool>,         // true if hint was relevant
     suggestion_usefulness: Vec<bool>,  // true if suggestion was useful
     step_found_core: Option<usize>,    // step index when first core result found
+
+    // Exploration metrics (set directly, computed externally by session)
+    convergence_rate: Option<f64>,
+    avg_info_gain: Option<f64>,
+    context_bloat: Option<f64>,
+    navigation_efficiency: Option<f64>,
+    dead_end_ratio: Option<f64>,
 }
 
 impl AccuracyMetricsBuilder {
@@ -145,6 +173,38 @@ impl AccuracyMetricsBuilder {
         self
     }
 
+    // === Exploration metric setters ===
+
+    /// Set convergence rate (computed externally by session).
+    pub fn set_convergence_rate(mut self, rate: f64) -> Self {
+        self.convergence_rate = Some(rate);
+        self
+    }
+
+    /// Set average information gain (computed externally by session).
+    pub fn set_avg_info_gain(mut self, gain: f64) -> Self {
+        self.avg_info_gain = Some(gain);
+        self
+    }
+
+    /// Set context bloat (computed externally by session).
+    pub fn set_context_bloat(mut self, bloat: f64) -> Self {
+        self.context_bloat = Some(bloat);
+        self
+    }
+
+    /// Set navigation efficiency (computed externally by session).
+    pub fn set_navigation_efficiency(mut self, efficiency: f64) -> Self {
+        self.navigation_efficiency = Some(efficiency);
+        self
+    }
+
+    /// Set dead end ratio (computed externally by session).
+    pub fn set_dead_end_ratio(mut self, ratio: f64) -> Self {
+        self.dead_end_ratio = Some(ratio);
+        self
+    }
+
     /// Build the final metrics.
     pub fn build(self) -> AccuracyMetrics {
         // Calculate file recall
@@ -174,6 +234,13 @@ impl AccuracyMetricsBuilder {
             top3_noise,
             hint_utility,
             suggestion_quality,
+            // Exploration metrics (default to neutral values if not set)
+            convergence_rate: self.convergence_rate.unwrap_or(1.0),
+            avg_info_gain: self.avg_info_gain.unwrap_or(0.0),
+            context_bloat: self.context_bloat.unwrap_or(0.0),
+            navigation_efficiency: self.navigation_efficiency.unwrap_or(1.0),
+            dead_end_ratio: self.dead_end_ratio.unwrap_or(0.0),
+            // Debug fields
             files_found,
             files_missed,
             symbols_found,

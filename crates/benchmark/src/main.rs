@@ -4,6 +4,7 @@
 
 use anyhow::Result;
 use benchmark::{
+    indexing::IndexingBenchmark,
     repos::{default_cache_dir, prepare_repo, RepoCache, RepoRegistry, TargetRepo},
     reports::{generate_reports, ComparisonReport},
     scenarios::{
@@ -116,6 +117,29 @@ enum Commands {
         #[arg(long)]
         cache_dir: Option<PathBuf>,
     },
+
+    /// Benchmark indexing performance
+    IndexPerf {
+        /// Repositories to benchmark (comma-separated: zed,vscode or 'all')
+        #[arg(short, long, default_value = "all")]
+        repos: String,
+
+        /// Number of iterations per repository
+        #[arg(short, long, default_value = "3")]
+        iterations: usize,
+
+        /// Output directory for results
+        #[arg(short, long, default_value = "./benchmark-results")]
+        output: PathBuf,
+
+        /// Force cold start (clear index before each iteration)
+        #[arg(long)]
+        cold: bool,
+
+        /// Cache directory for repositories
+        #[arg(long)]
+        cache_dir: Option<PathBuf>,
+    },
 }
 
 #[tokio::main]
@@ -161,6 +185,13 @@ async fn main() -> Result<()> {
             repo,
             cache_dir,
         } => clean_cache(all, repo, cache_dir),
+        Commands::IndexPerf {
+            repos,
+            iterations,
+            output,
+            cold,
+            cache_dir,
+        } => run_indexing_benchmark(repos, iterations, output, cold, cache_dir).await,
     }
 }
 
@@ -387,6 +418,58 @@ fn list_scenarios(scenarios_dir: Option<PathBuf>, detailed: bool) -> Result<()> 
             );
         }
     }
+
+    Ok(())
+}
+
+async fn run_indexing_benchmark(
+    repos: String,
+    iterations: usize,
+    output: PathBuf,
+    cold: bool,
+    cache_dir: Option<PathBuf>,
+) -> Result<()> {
+    let targets: Vec<TargetRepo> = if repos == "all" {
+        TargetRepo::all().to_vec()
+    } else {
+        repos
+            .split(',')
+            .filter_map(|s| TargetRepo::from_name(s.trim()))
+            .collect()
+    };
+
+    if targets.is_empty() {
+        anyhow::bail!("No valid repositories specified. Use: zed, vscode, or 'all'");
+    }
+
+    info!(
+        "Running indexing benchmark: {} repos, {} iterations, cold={}",
+        targets.len(),
+        iterations,
+        cold
+    );
+
+    // Create benchmark runner
+    let socket_path = IndexingBenchmark::default_socket_path();
+    let benchmark = IndexingBenchmark::new(&socket_path, cache_dir);
+
+    // Check daemon
+    if !benchmark.check_daemon().await {
+        anyhow::bail!(
+            "CCEngram daemon is not running. Start it with: ccengram daemon\n\
+             Socket: {}",
+            socket_path
+        );
+    }
+
+    // Run benchmark
+    let report = benchmark.run(&targets, iterations, cold).await?;
+
+    // Save reports
+    report.save(&output)?;
+
+    // Print summary
+    println!("\n{}", report.to_markdown());
 
     Ok(())
 }

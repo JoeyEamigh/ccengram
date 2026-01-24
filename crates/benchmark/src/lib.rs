@@ -12,6 +12,7 @@
 //! - **Reports**: JSON (machine-readable) and Markdown (human-readable)
 
 pub mod ground_truth;
+pub mod indexing;
 pub mod metrics;
 pub mod repos;
 pub mod reports;
@@ -19,6 +20,7 @@ pub mod scenarios;
 pub mod session;
 
 pub use ground_truth::{Annotations, CallGraph, NoisePatterns};
+pub use indexing::{IndexingBenchmark, IndexingComparison, IndexingReport};
 pub use metrics::{AccuracyMetrics, PerformanceMetrics};
 pub use repos::{RepoConfig, RepoRegistry};
 pub use reports::{BenchmarkReport, ComparisonReport};

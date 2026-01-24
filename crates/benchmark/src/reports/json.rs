@@ -75,6 +75,19 @@ pub struct AggregateAccuracy {
     pub avg_mrr: f64,
     /// Average noise ratio
     pub avg_noise_ratio: f64,
+
+    // === Exploration metrics ===
+
+    /// Average convergence rate
+    pub avg_convergence_rate: f64,
+    /// Average hint utility
+    pub avg_hint_utility: f64,
+    /// Average suggestion quality
+    pub avg_suggestion_quality: f64,
+    /// Average context bloat
+    pub avg_context_bloat: f64,
+    /// Average dead end ratio
+    pub avg_dead_end_ratio: f64,
 }
 
 impl BenchmarkReport {
@@ -161,6 +174,11 @@ impl BenchmarkReport {
                 avg_symbol_recall: 0.0,
                 avg_mrr: 0.0,
                 avg_noise_ratio: 0.0,
+                avg_convergence_rate: 0.0,
+                avg_hint_utility: 0.0,
+                avg_suggestion_quality: 0.0,
+                avg_context_bloat: 0.0,
+                avg_dead_end_ratio: 0.0,
             };
         }
 
@@ -171,6 +189,11 @@ impl BenchmarkReport {
             avg_symbol_recall: results.iter().map(|r| r.accuracy.symbol_recall).sum::<f64>() / n,
             avg_mrr: results.iter().map(|r| r.accuracy.mrr).sum::<f64>() / n,
             avg_noise_ratio: results.iter().map(|r| r.accuracy.noise_ratio).sum::<f64>() / n,
+            avg_convergence_rate: results.iter().map(|r| r.accuracy.convergence_rate).sum::<f64>() / n,
+            avg_hint_utility: results.iter().map(|r| r.accuracy.hint_utility).sum::<f64>() / n,
+            avg_suggestion_quality: results.iter().map(|r| r.accuracy.suggestion_quality).sum::<f64>() / n,
+            avg_context_bloat: results.iter().map(|r| r.accuracy.context_bloat).sum::<f64>() / n,
+            avg_dead_end_ratio: results.iter().map(|r| r.accuracy.dead_end_ratio).sum::<f64>() / n,
         }
     }
 
@@ -243,6 +266,11 @@ mod tests {
                 top3_noise: 0.0,
                 hint_utility: 0.7,
                 suggestion_quality: 0.5,
+                convergence_rate: 0.85,
+                avg_info_gain: 0.4,
+                context_bloat: 0.1,
+                navigation_efficiency: 0.7,
+                dead_end_ratio: 0.1,
                 files_found: vec!["found.rs".to_string()],
                 files_missed: vec!["missed.rs".to_string()],
                 symbols_found: vec!["Found".to_string()],

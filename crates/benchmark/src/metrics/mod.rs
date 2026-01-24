@@ -31,6 +31,14 @@ pub struct MetricTargets {
     pub hint_utility: f64,
     /// Suggestion quality target (≥50%)
     pub suggestion_quality: f64,
+    /// Convergence rate target (≥70%)
+    pub convergence_rate: f64,
+    /// Navigation efficiency target (≥50%)
+    pub navigation_efficiency: f64,
+    /// Max context bloat (≤30%)
+    pub context_bloat: f64,
+    /// Max dead end ratio (≤20%)
+    pub dead_end_ratio: f64,
 }
 
 impl Default for MetricTargets {
@@ -44,6 +52,10 @@ impl Default for MetricTargets {
             top3_noise: 0.10,
             hint_utility: 0.60,
             suggestion_quality: 0.50,
+            convergence_rate: 0.70,
+            navigation_efficiency: 0.50,
+            context_bloat: 0.30,
+            dead_end_ratio: 0.20,
         }
     }
 }

@@ -72,6 +72,21 @@ Options:
       --cache-dir <DIR>   Custom cache directory
 ```
 
+### `index-perf` - Initial Indexing Performance
+
+```bash
+ccengram-bench index-perf [OPTIONS]
+
+Options:
+  -r, --repos <LIST>      Repositories to benchmark: zed, vscode, or 'all' [default: all]
+  -i, --iterations <N>    Number of iterations per repo [default: 3]
+  -o, --output <DIR>      Output directory for results [default: ./benchmark-results]
+      --cold              Clear index between iterations (cold start testing)
+      --cache-dir <DIR>   Custom cache directory
+```
+
+Measures initial indexing performance including scan time, chunking throughput, and resource usage.
+
 ### `list` - Show Available Scenarios
 
 ```bash
@@ -136,14 +151,28 @@ query = "What is the Action type and how is it dispatched?"
 depends_on_previous = true
 
 [success]
-min_discovery_score = 0.7   # File recall target
-max_noise_ratio = 0.25      # Maximum acceptable noise
-max_steps_to_core = 3       # Steps to find first core result
+min_discovery_score = 0.7       # File recall target
+max_noise_ratio = 0.25          # Maximum acceptable noise
+max_steps_to_core = 3           # Steps to find first core result
+min_convergence_rate = 0.7      # How quickly discoveries plateau
+max_context_bloat = 0.3         # Max % of useless context calls
+min_navigation_efficiency = 0.5 # optimal/actual hops
+min_suggestion_quality = 0.5    # % of useful suggestions
+max_dead_end_ratio = 0.2        # Max % of wasted queries
 ```
 
 ## Metrics
 
-### Performance Metrics
+### Indexing Performance Metrics
+
+| Metric | Description |
+|--------|-------------|
+| **Scan Duration** | Time to scan repository files |
+| **Index Duration** | Time to chunk, embed, and store |
+| **Files/Second** | Indexing throughput |
+| **Peak Memory** | Maximum memory during indexing |
+
+### Search Performance Metrics
 
 | Metric | Description |
 |--------|-------------|
@@ -165,6 +194,16 @@ max_steps_to_core = 3       # Steps to find first core result
 | **Top-3 Noise** | Noise in top 3 results | <= 10% |
 | **Hint Utility** | % of callers/callees that are relevant | >= 60% |
 | **Suggestion Quality** | % of suggestions leading to useful results | >= 50% |
+
+### Exploration Quality Metrics
+
+| Metric | Description | Target |
+|--------|-------------|--------|
+| **Convergence Rate** | How quickly discoveries plateau (1.0 = finds things early) | >= 70% |
+| **Navigation Efficiency** | optimal_hops / actual_hops to reach targets | >= 50% |
+| **Context Bloat** | % of context calls that provided no new information | <= 30% |
+| **Dead End Ratio** | % of queries that found nothing useful | <= 20% |
+| **Info Gain** | Average new discoveries per step | >= 0.3 |
 
 ## Ground Truth
 
@@ -237,12 +276,20 @@ Machine-readable format for CI integration:
     "pass_rate": 0.75,
     "performance": {
       "avg_search_latency_p50_ms": 45,
-      "avg_search_latency_p95_ms": 120
+      "avg_search_latency_p95_ms": 120,
+      "avg_context_latency_p50_ms": 28,
+      "total_queries": 42
     },
     "accuracy": {
       "avg_file_recall": 0.82,
       "avg_symbol_recall": 0.78,
-      "avg_noise_ratio": 0.18
+      "avg_mrr": 0.58,
+      "avg_noise_ratio": 0.18,
+      "avg_convergence_rate": 0.75,
+      "avg_hint_utility": 0.62,
+      "avg_suggestion_quality": 0.55,
+      "avg_context_bloat": 0.22,
+      "avg_dead_end_ratio": 0.15
     }
   },
   "scenarios": [...]
@@ -259,14 +306,21 @@ Human-readable summary with pass/fail indicators:
 **Run:** 2024-01-15 10:30:00
 **Pass Rate:** 75% (3/4)
 
-## Summary
+## Accuracy
 
-| Scenario | Status | File Recall | Noise | Latency p50 |
-|----------|--------|-------------|-------|-------------|
-| zed-command-system | PASS | 85% | 15% | 42ms |
-| zed-lsp-integration | PASS | 78% | 22% | 51ms |
-| vscode-extensions | FAIL | 45% | 35% | 38ms |
-| vscode-editor-core | PASS | 72% | 18% | 55ms |
+| Scenario | File Recall | Symbol Recall | MRR | Noise | Steps |
+|----------|-------------|---------------|-----|-------|-------|
+| zed-command-system | ✅ 85% | ✅ 78% | ✅ 0.65 | ✅ 15% | ✅ 2 |
+| zed-lsp-integration | ✅ 78% | ✅ 72% | ✅ 0.58 | ⚠️ 22% | ✅ 3 |
+| vscode-extensions | ❌ 45% | ❌ 40% | ❌ 0.32 | ❌ 35% | ❌ 5 |
+
+## Exploration Quality
+
+| Scenario | Convergence | Nav Efficiency | Hint Utility | Context Bloat | Dead Ends |
+|----------|-------------|----------------|--------------|---------------|-----------|
+| zed-command-system | ✅ 85% | ✅ 72% | ⚠️ 58% | ✅ 18% | ✅ 10% |
+| zed-lsp-integration | ✅ 78% | ✅ 65% | ✅ 68% | ✅ 22% | ✅ 15% |
+| vscode-extensions | ❌ 45% | ❌ 35% | ❌ 42% | ❌ 45% | ❌ 38% |
 ```
 
 ### Comparison Report
@@ -298,6 +352,7 @@ crates/benchmark/
 │   ├── lib.rs                # Public API
 │   ├── main.rs               # CLI (ccengram-bench)
 │   ├── session.rs            # Multi-step exploration state
+│   ├── indexing.rs           # Initial indexing benchmarks
 │   ├── repos/
 │   │   ├── mod.rs            # Repository management
 │   │   ├── registry.rs       # Zed/VSCode configs
@@ -372,6 +427,8 @@ depends_on_previous = true
 min_discovery_score = 0.6
 max_noise_ratio = 0.3
 max_steps_to_core = 2
+min_convergence_rate = 0.6
+max_context_bloat = 0.35
 ```
 
 ## Troubleshooting

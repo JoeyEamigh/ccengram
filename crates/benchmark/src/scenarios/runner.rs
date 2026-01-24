@@ -1,9 +1,9 @@
 //! Scenario execution against the daemon.
 
-use super::{Scenario, Step};
+use super::{Expected, Scenario, Step};
 use crate::ground_truth::load_scenario_annotations;
 use crate::metrics::{AccuracyMetrics, PerformanceMetrics, ResourceMonitor};
-use crate::session::ExplorationSession;
+use crate::session::{ExplorationSession, HintType};
 use crate::{BenchmarkError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -134,7 +134,7 @@ impl ScenarioRunner {
             // Take resource snapshot before step
             resource_monitor.snapshot();
 
-            match self.execute_step(step, i, &mut session).await {
+            match self.execute_step(step, i, &mut session, &expected).await {
                 Ok(result) => {
                     step_results.push(result);
                 }
@@ -195,8 +195,12 @@ impl ScenarioRunner {
         step: &Step,
         index: usize,
         session: &mut ExplorationSession,
+        expected: &Expected,
     ) -> Result<StepResult> {
         let start = Instant::now();
+
+        // Check if query uses a previous suggestion
+        session.check_suggestion_used(&step.query);
 
         // Build explore request
         let request = serde_json::json!({
@@ -249,6 +253,59 @@ impl ScenarioRunner {
             .flatten()
             .collect();
 
+        // Record MRR data - check if each result is relevant
+        for (rank, r) in results.iter().enumerate() {
+            let file = r.get("file").and_then(|f| f.as_str()).unwrap_or("");
+            let result_symbols: Vec<&str> = r
+                .get("symbols")
+                .and_then(|s| s.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
+
+            let is_relevant = self.is_result_relevant(file, &result_symbols, expected);
+            session.record_result_rank(is_relevant, rank + 1);
+        }
+
+        // Extract hints from expanded context
+        for r in results {
+            let id = r.get("id").and_then(|id| id.as_str()).unwrap_or("");
+            if let Some(context) = r.get("context") {
+                // Record caller hints
+                if let Some(callers) = context.get("callers").and_then(|c| c.as_array()) {
+                    for caller in callers {
+                        if let Some(target) = caller.get("file").and_then(|f| f.as_str()) {
+                            session.record_hint(id, HintType::Caller, target);
+                        }
+                    }
+                }
+                // Record callee hints
+                if let Some(callees) = context.get("callees").and_then(|c| c.as_array()) {
+                    for callee in callees {
+                        if let Some(target) = callee.get("file").and_then(|f| f.as_str()) {
+                            session.record_hint(id, HintType::Callee, target);
+                        }
+                    }
+                }
+                // Record sibling hints
+                if let Some(siblings) = context.get("siblings").and_then(|c| c.as_array()) {
+                    for sibling in siblings {
+                        if let Some(target) = sibling.get("file").and_then(|f| f.as_str()) {
+                            session.record_hint(id, HintType::Sibling, target);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Extract and record suggestions
+        if let Some(suggestions) = result.get("suggestions").and_then(|s| s.as_array()) {
+            let suggestion_strs: Vec<String> = suggestions
+                .iter()
+                .filter_map(|s| s.as_str().map(String::from))
+                .collect();
+            session.record_suggestions(&suggestion_strs);
+        }
+
         // Record in session
         session.record_explore_step(
             &step.query,
@@ -257,6 +314,9 @@ impl ScenarioRunner {
             &symbols_found,
             latency,
         );
+
+        // Record step discoveries for convergence tracking
+        session.record_step_discoveries(expected);
 
         // Execute context requests if specified
         if !step.context_ids.is_empty() {
@@ -290,9 +350,37 @@ impl ScenarioRunner {
         })
     }
 
+    /// Check if a result is relevant to the expected values.
+    fn is_result_relevant(&self, file: &str, symbols: &[&str], expected: &Expected) -> bool {
+        // Check if file matches expected files
+        for expected_file in &expected.must_find_files {
+            if let Ok(pattern) = glob::Pattern::new(expected_file)
+                && pattern.matches(file)
+            {
+                return true;
+            }
+            if file.ends_with(expected_file) || file == expected_file {
+                return true;
+            }
+        }
+
+        // Check if any symbol matches expected symbols
+        for symbol in symbols {
+            if expected.must_find_symbols.contains(&symbol.to_string()) {
+                return true;
+            }
+        }
+
+        false
+    }
+
     /// Execute a context request.
     async fn execute_context(&self, id: &str, session: &mut ExplorationSession) -> Result<()> {
         let start = Instant::now();
+
+        // Track files/symbols before context call
+        let files_before = session.discovered_files().len();
+        let symbols_before = session.discovered_symbols().len();
 
         let request = serde_json::json!({
             "jsonrpc": "2.0",
@@ -316,7 +404,49 @@ impl ScenarioRunner {
             )));
         }
 
-        session.record_context_call(id, latency);
+        // Extract new files/symbols from context response
+        let result = response.get("result");
+        if let Some(ctx) = result {
+            // Extract files from callers/callees
+            let mut new_files = Vec::new();
+            let mut new_symbols = Vec::new();
+
+            for section in ["callers", "callees", "siblings"] {
+                if let Some(items) = ctx.get(section).and_then(|s| s.as_array()) {
+                    for item in items {
+                        if let Some(file) = item.get("file").and_then(|f| f.as_str())
+                            && !session.discovered_files().contains(file)
+                        {
+                            new_files.push(file.to_string());
+                        }
+                        if let Some(syms) = item.get("symbols").and_then(|s| s.as_array()) {
+                            for sym in syms {
+                                if let Some(s) = sym.as_str()
+                                    && !session.discovered_symbols().contains(s)
+                                {
+                                    new_symbols.push(s.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Mark hints as followed (context call = following a hint)
+            session.mark_hint_followed(id);
+
+            // Record context call latency
+            session.record_context_call(id, latency);
+
+            // Record context value (how many new things it revealed)
+            let new_file_count = session.discovered_files().len() - files_before + new_files.len();
+            let new_symbol_count = session.discovered_symbols().len() - symbols_before + new_symbols.len();
+            session.record_context_value(id, new_file_count, new_symbol_count);
+        } else {
+            session.record_context_call(id, latency);
+            session.record_context_value(id, 0, 0);
+        }
+
         Ok(())
     }
 

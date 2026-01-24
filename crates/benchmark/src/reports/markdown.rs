@@ -21,6 +21,7 @@ impl MarkdownReport {
         Self::write_summary(&mut content, results);
         Self::write_performance_table(&mut content, results);
         Self::write_accuracy_table(&mut content, results);
+        Self::write_exploration_table(&mut content, results);
         Self::write_scenario_details(&mut content, results);
 
         Self { content }
@@ -165,6 +166,91 @@ impl MarkdownReport {
         let _ = writeln!(out);
     }
 
+    fn write_exploration_table(out: &mut String, results: &[ScenarioResult]) {
+        let targets = MetricTargets::default();
+
+        let _ = writeln!(out, "## Exploration Quality");
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "| Scenario | Convergence | Nav Efficiency | Hint Utility | Context Bloat | Dead Ends |"
+        );
+        let _ = writeln!(out, "|----------|-------------|----------------|--------------|---------------|-----------|");
+
+        for result in results {
+            let convergence_icon = if result.accuracy.convergence_rate >= targets.convergence_rate {
+                "✅"
+            } else if result.accuracy.convergence_rate >= targets.convergence_rate * 0.8 {
+                "⚠️"
+            } else {
+                "❌"
+            };
+
+            let nav_icon = if result.accuracy.navigation_efficiency >= targets.navigation_efficiency {
+                "✅"
+            } else if result.accuracy.navigation_efficiency >= targets.navigation_efficiency * 0.8 {
+                "⚠️"
+            } else {
+                "❌"
+            };
+
+            let hint_icon = if result.accuracy.hint_utility >= targets.hint_utility {
+                "✅"
+            } else if result.accuracy.hint_utility >= targets.hint_utility * 0.8 {
+                "⚠️"
+            } else {
+                "❌"
+            };
+
+            // Context bloat: lower is better
+            let bloat_icon = if result.accuracy.context_bloat <= targets.context_bloat {
+                "✅"
+            } else if result.accuracy.context_bloat <= targets.context_bloat * 1.2 {
+                "⚠️"
+            } else {
+                "❌"
+            };
+
+            // Dead end ratio: lower is better
+            let dead_end_icon = if result.accuracy.dead_end_ratio <= targets.dead_end_ratio {
+                "✅"
+            } else if result.accuracy.dead_end_ratio <= targets.dead_end_ratio * 1.2 {
+                "⚠️"
+            } else {
+                "❌"
+            };
+
+            let _ = writeln!(
+                out,
+                "| {} | {} {:.0}% | {} {:.0}% | {} {:.0}% | {} {:.0}% | {} {:.0}% |",
+                result.scenario_id,
+                convergence_icon,
+                result.accuracy.convergence_rate * 100.0,
+                nav_icon,
+                result.accuracy.navigation_efficiency * 100.0,
+                hint_icon,
+                result.accuracy.hint_utility * 100.0,
+                bloat_icon,
+                result.accuracy.context_bloat * 100.0,
+                dead_end_icon,
+                result.accuracy.dead_end_ratio * 100.0
+            );
+        }
+        let _ = writeln!(out);
+
+        // Targets legend
+        let _ = writeln!(
+            out,
+            "**Targets:** Convergence ≥{:.0}%, Nav Efficiency ≥{:.0}%, Hint Utility ≥{:.0}%, Context Bloat ≤{:.0}%, Dead Ends ≤{:.0}%",
+            targets.convergence_rate * 100.0,
+            targets.navigation_efficiency * 100.0,
+            targets.hint_utility * 100.0,
+            targets.context_bloat * 100.0,
+            targets.dead_end_ratio * 100.0
+        );
+        let _ = writeln!(out);
+    }
+
     fn write_scenario_details(out: &mut String, results: &[ScenarioResult]) {
         let _ = writeln!(out, "## Scenario Details");
         let _ = writeln!(out);
@@ -303,6 +389,11 @@ mod tests {
                 top3_noise: 0.0,
                 hint_utility: 0.7,
                 suggestion_quality: 0.5,
+                convergence_rate: 0.85,
+                avg_info_gain: 0.4,
+                context_bloat: 0.1,
+                navigation_efficiency: 0.7,
+                dead_end_ratio: 0.1,
                 files_found: vec!["found.rs".to_string()],
                 files_missed: vec!["missed.rs".to_string()],
                 symbols_found: vec!["Found".to_string()],

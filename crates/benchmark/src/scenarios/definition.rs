@@ -111,6 +111,24 @@ pub struct SuccessCriteria {
     /// Minimum hint utility score
     #[serde(default)]
     pub min_hint_utility: Option<f64>,
+
+    // === Exploration-specific criteria ===
+
+    /// Minimum convergence rate (how quickly discoveries plateau, target >= 0.7)
+    #[serde(default)]
+    pub min_convergence_rate: Option<f64>,
+    /// Maximum context bloat (% of empty context calls, target <= 0.3)
+    #[serde(default)]
+    pub max_context_bloat: Option<f64>,
+    /// Minimum navigation efficiency (optimal_hops/actual_hops, target >= 0.5)
+    #[serde(default)]
+    pub min_navigation_efficiency: Option<f64>,
+    /// Minimum suggestion quality (% of useful suggestions, target >= 0.5)
+    #[serde(default)]
+    pub min_suggestion_quality: Option<f64>,
+    /// Maximum dead end ratio (% of steps with no discoveries, target <= 0.2)
+    #[serde(default)]
+    pub max_dead_end_ratio: Option<f64>,
 }
 
 fn default_min_discovery_score() -> f64 {
@@ -133,6 +151,11 @@ impl Default for SuccessCriteria {
             max_steps_to_core: default_max_steps_to_core(),
             min_mrr: None,
             min_hint_utility: None,
+            min_convergence_rate: None,
+            max_context_bloat: None,
+            min_navigation_efficiency: None,
+            min_suggestion_quality: None,
+            max_dead_end_ratio: None,
         }
     }
 }
