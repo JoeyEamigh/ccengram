@@ -39,7 +39,6 @@ pub fn compile_query(grammar: &TsLanguage, source: &str) -> Option<Query> {
   match Query::new(grammar, source) {
     Ok(q) => Some(q),
     Err(e) => {
-      #[cfg(debug_assertions)]
       eprintln!("Query compilation error: {:?}", e);
       None
     }
