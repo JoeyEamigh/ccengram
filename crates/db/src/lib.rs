@@ -11,6 +11,7 @@ pub mod memories;
 pub mod memory_entities;
 pub mod memory_relationships;
 pub mod migrations;
+pub mod references;
 pub mod schema;
 pub mod session_memories;
 pub mod sessions;
@@ -25,10 +26,12 @@ pub use events::{EntityType as EventEntityType, Event, EventType};
 pub use extraction_segments::{ExtractionSegment, ExtractionStats, ExtractionTrigger};
 pub use index_checkpoints::{CheckpointType, IndexCheckpoint};
 pub use migrations::{CURRENT_SCHEMA_VERSION, MIGRATIONS, Migration, MigrationRecord};
+pub use references::{CodeReference, ReferenceType};
 pub use schema::{
-  DEFAULT_VECTOR_DIM, code_chunks_schema, document_metadata_schema, documents_schema, entities_schema, events_schema,
-  extraction_segments_schema, index_checkpoints_schema, memories_schema, memory_entities_schema,
-  memory_relationships_schema, segment_accumulators_schema, session_memories_schema, sessions_schema,
+  DEFAULT_VECTOR_DIM, code_chunks_schema, code_references_schema, document_metadata_schema, documents_schema,
+  entities_schema, events_schema, extraction_segments_schema, index_checkpoints_schema, memories_schema,
+  memory_entities_schema, memory_relationships_schema, segment_accumulators_schema, session_memories_schema,
+  sessions_schema,
 };
 pub use session_memories::{SessionMemoryLink, SessionStats, UsageType};
 pub use sessions::Session;

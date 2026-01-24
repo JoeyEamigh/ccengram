@@ -646,18 +646,17 @@ impl ToolHandler {
   }
 
   /// Count callers for a code chunk.
+  ///
+  /// Uses the pre-computed caller_count field when available, falling back
+  /// to the code_references table for efficient indexed lookups.
   async fn count_callers(&self, db: &db::ProjectDb, chunk: &CodeChunk) -> usize {
-    let mut count = 0;
-    for symbol in &chunk.symbols {
-      let pattern = format!("%{}%", symbol);
-      if let Ok(chunks) = db
-        .list_code_chunks(Some(&format!("calls LIKE '{}'", pattern)), Some(100))
-        .await
-      {
-        count += chunks.len();
-      }
+    // Use pre-computed count if available
+    if chunk.caller_count > 0 {
+      return chunk.caller_count as usize;
     }
-    count
+
+    // Fall back to code_references table lookup
+    db.count_callers_for_symbols(&chunk.symbols).await.unwrap_or(0)
   }
 
   /// Count related memories for a code chunk.
@@ -750,49 +749,65 @@ impl ToolHandler {
   }
 
   /// Get callers for a code chunk.
+  ///
+  /// Uses the code_references table for efficient indexed lookups instead of
+  /// LIKE queries on JSON columns.
   async fn get_callers(&self, db: &db::ProjectDb, chunk: &CodeChunk, limit: usize) -> Vec<CallInfo> {
     let mut callers = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
 
-    for symbol in &chunk.symbols {
-      let pattern = format!("%{}%", symbol);
-      if let Ok(chunks) = db
-        .list_code_chunks(Some(&format!("calls LIKE '{}'", pattern)), Some(limit))
-        .await
-      {
-        for caller in chunks {
-          if caller.id != chunk.id {
-            callers.push(CallInfo {
-              id: caller.id.to_string(),
-              file: caller.file_path.clone(),
-              lines: (caller.start_line, caller.end_line),
-              preview: truncate_preview(&caller.content, 100),
-              symbols: Some(caller.symbols.clone()),
-            });
+    // Get caller chunk IDs from references table
+    if let Ok(caller_refs) = db.get_callers_for_symbols(&chunk.symbols, limit * 2).await {
+      for (source_chunk_id, _target_symbol) in caller_refs {
+        // Skip self-references and duplicates
+        if source_chunk_id == chunk.id.to_string() || seen_ids.contains(&source_chunk_id) {
+          continue;
+        }
+        seen_ids.insert(source_chunk_id.clone());
+
+        // Look up the caller chunk to get full details
+        if let Ok(Some(caller)) = db.get_code_chunk_by_id_or_prefix(&source_chunk_id).await {
+          callers.push(CallInfo {
+            id: caller.id.to_string(),
+            file: caller.file_path.clone(),
+            lines: (caller.start_line, caller.end_line),
+            preview: truncate_preview(&caller.content, 100),
+            symbols: Some(caller.symbols.clone()),
+          });
+
+          if callers.len() >= limit {
+            break;
           }
         }
       }
-
-      if callers.len() >= limit {
-        break;
-      }
     }
 
-    callers.truncate(limit);
     callers
   }
 
   /// Get callees for a code chunk.
+  ///
+  /// Uses the code_references table when possible, falling back to symbol
+  /// lookup for definitions. The references table stores the target_chunk_id
+  /// when resolved.
   async fn get_callees(&self, db: &db::ProjectDb, chunk: &CodeChunk, limit: usize) -> Vec<CallInfo> {
     let mut callees = Vec::new();
+    let mut seen_symbols = std::collections::HashSet::new();
 
-    for call in &chunk.calls {
-      // Try to find the definition
-      if let Ok(chunks) = db
-        .list_code_chunks(Some(&format!("symbols LIKE '%{}%'", call.replace('\'', "''"))), Some(3))
-        .await
-      {
-        for callee in chunks {
-          if callee.id != chunk.id && callee.symbols.iter().any(|s| s == call) {
+    // Get callees from references table
+    if let Ok(callee_refs) = db.get_callees_for_chunk(&chunk.id.to_string(), limit * 2).await {
+      for (target_symbol, target_chunk_id) in callee_refs {
+        // Skip duplicates
+        if seen_symbols.contains(&target_symbol) {
+          continue;
+        }
+        seen_symbols.insert(target_symbol.clone());
+
+        // If we have a resolved target_chunk_id, use it directly
+        if let Some(ref chunk_id) = target_chunk_id
+          && let Ok(Some(callee)) = db.get_code_chunk_by_id_or_prefix(chunk_id).await
+        {
+          if callee.id != chunk.id {
             callees.push(CallInfo {
               id: callee.id.to_string(),
               file: callee.file_path.clone(),
@@ -800,13 +815,28 @@ impl ToolHandler {
               preview: truncate_preview(&callee.content, 100),
               symbols: Some(callee.symbols.clone()),
             });
-            break;
+          }
+        } else {
+          // Fall back to symbol lookup (still uses LIKE, but only for unresolved refs)
+          let filter = format!("symbols LIKE '%\"{}%'", target_symbol.replace('\'', "''"));
+          if let Ok(chunks) = db.list_code_chunks(Some(&filter), Some(1)).await
+            && let Some(callee) = chunks.into_iter().next()
+            && callee.id != chunk.id
+            && callee.symbols.iter().any(|s| s == &target_symbol)
+          {
+            callees.push(CallInfo {
+              id: callee.id.to_string(),
+              file: callee.file_path.clone(),
+              lines: (callee.start_line, callee.end_line),
+              preview: truncate_preview(&callee.content, 100),
+              symbols: Some(callee.symbols.clone()),
+            });
           }
         }
-      }
 
-      if callees.len() >= limit {
-        break;
+        if callees.len() >= limit {
+          break;
+        }
       }
     }
 

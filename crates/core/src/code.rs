@@ -80,6 +80,17 @@ pub struct CodeChunk {
   /// Used to skip re-embedding when only file position changes
   #[serde(default)]
   pub content_hash: Option<String>,
+
+  // === Pre-computed relationship counts for fast hint computation ===
+  /// Number of chunks that call symbols defined in this chunk
+  /// Pre-computed during indexing to avoid expensive LIKE queries
+  #[serde(default)]
+  pub caller_count: u32,
+
+  /// Number of unique symbols this chunk calls
+  /// Pre-computed during indexing to avoid expensive LIKE queries
+  #[serde(default)]
+  pub callee_count: u32,
 }
 
 impl CodeChunk {

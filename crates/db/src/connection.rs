@@ -7,9 +7,10 @@ use thiserror::Error;
 use tracing::{debug, info, warn};
 
 use crate::schema::{
-  DEFAULT_VECTOR_DIM, code_chunks_schema, document_metadata_schema, documents_schema, entities_schema, events_schema,
-  extraction_segments_schema, index_checkpoints_schema, memories_schema, memory_entities_schema,
-  memory_relationships_schema, segment_accumulators_schema, session_memories_schema, sessions_schema,
+  DEFAULT_VECTOR_DIM, code_chunks_schema, code_references_schema, document_metadata_schema, documents_schema,
+  entities_schema, events_schema, extraction_segments_schema, index_checkpoints_schema, memories_schema,
+  memory_entities_schema, memory_relationships_schema, segment_accumulators_schema, session_memories_schema,
+  sessions_schema,
 };
 
 #[derive(Error, Debug)]
@@ -191,6 +192,15 @@ impl ProjectDb {
         .await?;
     }
 
+    if !table_names.contains(&"code_references".to_string()) {
+      debug!("Creating code_references table");
+      self
+        .connection
+        .create_empty_table("code_references", code_references_schema())
+        .execute()
+        .await?;
+    }
+
     Ok(())
   }
 
@@ -257,6 +267,11 @@ impl ProjectDb {
   /// Get the extraction_segments table
   pub async fn extraction_segments_table(&self) -> Result<lancedb::Table> {
     Ok(self.connection.open_table("extraction_segments").execute().await?)
+  }
+
+  /// Get the code_references table
+  pub async fn code_references_table(&self) -> Result<lancedb::Table> {
+    Ok(self.connection.open_table("code_references").execute().await?)
   }
 
   /// Create vector indexes on tables that support vector search

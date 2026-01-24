@@ -1,7 +1,7 @@
-use db::{ProjectDb, default_data_dir};
+use db::{CodeReference, ProjectDb, default_data_dir};
 use embedding::EmbeddingProvider;
 use engram_core::{ChunkParams, Config, DocumentChunk, DocumentId, DocumentSource, ProjectId, chunk_text};
-use index::{ChangeKind, Chunker, DebounceConfig, DebouncedWatcher, Scanner, WatcherCoordinator, should_ignore};
+use index::{ChangeKind, Chunker, DebounceConfig, DebouncedWatcher, GITIGNORE_CACHE, Scanner, WatcherCoordinator};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -673,6 +673,33 @@ async fn process_file_change(
             ctx.relative_path
           );
           code_indexed = true;
+
+          // Extract and store references for efficient caller/callee lookups
+          // This replaces the expensive LIKE queries on JSON columns
+          let references: Vec<CodeReference> = chunks_with_vectors
+            .iter()
+            .flat_map(|(chunk, _)| {
+              chunk
+                .calls
+                .iter()
+                .map(|call| CodeReference::from_call(&project_id, &chunk.id.to_string(), call))
+            })
+            .collect();
+
+          if !references.is_empty() {
+            // Delete old references for chunks in this file (by chunk IDs)
+            let chunk_ids: Vec<String> = chunks_with_vectors.iter().map(|(c, _)| c.id.to_string()).collect();
+            if let Err(e) = db.delete_references_for_chunks(&chunk_ids).await {
+              warn!("Failed to delete old references for {}: {}", ctx.relative_path, e);
+            }
+
+            // Insert new references
+            if let Err(e) = db.insert_references(&references).await {
+              warn!("Failed to insert references for {}: {}", ctx.relative_path, e);
+            } else {
+              debug!("Inserted {} references for {}", references.len(), ctx.relative_path);
+            }
+          }
         }
       }
     }
@@ -762,8 +789,8 @@ fn run_watcher_loop(
         continue;
       }
 
-      // Skip if should be ignored
-      if should_ignore(&change.path) {
+      // Skip if should be ignored (uses cached gitignore patterns)
+      if GITIGNORE_CACHE.should_ignore(root, &change.path) {
         debug!("Ignoring change to {:?}", change.path);
         continue;
       }

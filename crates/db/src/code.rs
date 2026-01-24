@@ -289,6 +289,10 @@ fn code_chunk_to_batch(chunk: &CodeChunk, vector: Option<&[f32]>, vector_dim: us
   let embedding_text = StringArray::from(vec![chunk.embedding_text.clone()]);
   let content_hash = StringArray::from(vec![chunk.content_hash.clone()]);
 
+  // Pre-computed relationship counts
+  let caller_count = UInt32Array::from(vec![chunk.caller_count]);
+  let callee_count = UInt32Array::from(vec![chunk.callee_count]);
+
   // Handle vector - pad or truncate to match expected dimensions
   let vector_arr = if let Some(v) = vector {
     let mut vec_padded = v.to_vec();
@@ -332,6 +336,8 @@ fn code_chunk_to_batch(chunk: &CodeChunk, vector: Option<&[f32]>, vector_dim: us
       Arc::new(parent_definition),
       Arc::new(embedding_text),
       Arc::new(content_hash),
+      Arc::new(caller_count),
+      Arc::new(callee_count),
       Arc::new(vector_list),
     ],
   )?;
@@ -451,6 +457,16 @@ fn batch_to_code_chunk(batch: &RecordBatch, row: usize) -> Result<CodeChunk> {
   let embedding_text = get_string_opt("embedding_text").filter(|s| !s.is_empty());
   let content_hash = get_string_opt("content_hash").filter(|s| !s.is_empty());
 
+  // Pre-computed counts (optional for backwards compatibility with existing databases)
+  let get_u32_opt = |name: &str| -> Option<u32> {
+    batch
+      .column_by_name(name)
+      .and_then(|c| c.as_any().downcast_ref::<UInt32Array>())
+      .map(|a| a.value(row))
+  };
+  let caller_count = get_u32_opt("caller_count").unwrap_or(0);
+  let callee_count = get_u32_opt("callee_count").unwrap_or(0);
+
   Ok(CodeChunk {
     id: Uuid::parse_str(&id_str).map_err(|_| DbError::NotFound("invalid id".into()))?,
     file_path: get_string("file_path")?,
@@ -473,6 +489,8 @@ fn batch_to_code_chunk(batch: &RecordBatch, row: usize) -> Result<CodeChunk> {
     parent_definition,
     embedding_text,
     content_hash,
+    caller_count,
+    callee_count,
   })
 }
 
@@ -516,6 +534,8 @@ mod tests {
       parent_definition: None,
       embedding_text: None,
       content_hash: None,
+      caller_count: 0,
+      callee_count: 0,
     }
   }
 

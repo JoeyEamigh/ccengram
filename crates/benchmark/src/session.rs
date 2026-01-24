@@ -343,10 +343,7 @@ impl ExplorationSession {
   pub fn record_explore_bytes(&mut self, total_bytes: usize, useful_bytes: usize) {
     self.context_budget.total_bytes += total_bytes;
     self.context_budget.useful_bytes += useful_bytes;
-    self
-      .context_budget
-      .step_bytes
-      .push((total_bytes, useful_bytes));
+    self.context_budget.step_bytes.push((total_bytes, useful_bytes));
   }
 
   /// Record a call relationship discovered from explore/context hints.

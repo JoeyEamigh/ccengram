@@ -251,6 +251,8 @@ impl Chunker {
       parent_definition: None, // TODO: detect nested definitions
       embedding_text: Some(embedding_text),
       content_hash: Some(content_hash),
+      caller_count: 0, // Computed during reference extraction
+      callee_count: 0, // Computed during reference extraction
     }
   }
 
@@ -297,6 +299,8 @@ impl Chunker {
       parent_definition: None,
       embedding_text: None,
       content_hash: Some(content_hash),
+      caller_count: 0,
+      callee_count: 0,
     }
   }
 
@@ -605,6 +609,8 @@ impl Chunker {
         parent_definition: None,
         embedding_text: None,
         content_hash: Some(content_hash),
+        caller_count: 0,
+        callee_count: 0,
       }];
     }
 
@@ -646,6 +652,8 @@ impl Chunker {
           parent_definition: None,
           embedding_text: None,
           content_hash: Some(content_hash),
+          caller_count: 0,
+          callee_count: 0,
         });
 
         current_start = boundary;
@@ -682,6 +690,8 @@ impl Chunker {
         parent_definition: None,
         embedding_text: None,
         content_hash: Some(content_hash),
+        caller_count: 0,
+        callee_count: 0,
       });
     }
 
@@ -958,6 +968,8 @@ impl Chunker {
         parent_definition: None,
         embedding_text: None,
         content_hash: Some(content_hash),
+        caller_count: 0,
+        callee_count: 0,
       });
     }
 

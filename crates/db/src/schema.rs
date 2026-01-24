@@ -70,11 +70,28 @@ pub fn code_chunks_schema(vector_dim: usize) -> Arc<Schema> {
     Field::new("parent_definition", DataType::Utf8, true), // Parent for nested items
     Field::new("embedding_text", DataType::Utf8, true),  // Enriched text for embedding
     Field::new("content_hash", DataType::Utf8, true),    // Hash for detecting unchanged chunks
+    // Pre-computed relationship counts for fast hint computation
+    Field::new("caller_count", DataType::UInt32, false), // Chunks calling symbols in this chunk
+    Field::new("callee_count", DataType::UInt32, false), // Unique symbols this chunk calls
     Field::new(
       "vector",
       DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), vector_dim as i32),
       true,
     ),
+  ]))
+}
+
+/// Schema for code references table (tracks call relationships between chunks)
+/// Used for efficient caller/callee lookups without LIKE queries on JSON columns
+pub fn code_references_schema() -> Arc<Schema> {
+  Arc::new(Schema::new(vec![
+    Field::new("id", DataType::Utf8, false),              // Unique reference ID
+    Field::new("project_id", DataType::Utf8, false),      // Project UUID
+    Field::new("source_chunk_id", DataType::Utf8, false), // Chunk containing the call
+    Field::new("target_symbol", DataType::Utf8, false),   // Symbol being called
+    Field::new("target_chunk_id", DataType::Utf8, true),  // Resolved chunk (nullable until resolved)
+    Field::new("reference_type", DataType::Utf8, false),  // 'call', 'import', 'type_ref'
+    Field::new("created_at", DataType::Int64, false),     // Unix timestamp ms
   ]))
 }
 

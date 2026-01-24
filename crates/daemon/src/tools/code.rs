@@ -1036,6 +1036,8 @@ impl ToolHandler {
       parent_definition: None,
       embedding_text: None,
       content_hash: Some(content_hash),
+      caller_count: 0,
+      callee_count: 0,
     };
 
     // Generate embedding
@@ -1988,6 +1990,8 @@ mod tests {
       parent_definition: None,
       embedding_text: None,
       content_hash: None,
+      caller_count: 0,
+      callee_count: 0,
     }
   }
 

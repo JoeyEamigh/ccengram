@@ -157,7 +157,11 @@ impl LlmJudge {
       question_results.push(result);
     }
 
-    let overall_score = if total_weight > 0.0 { weighted_sum / total_weight } else { 1.0 };
+    let overall_score = if total_weight > 0.0 {
+      weighted_sum / total_weight
+    } else {
+      1.0
+    };
 
     let passed = judge_config
       .min_comprehension_score
@@ -373,7 +377,9 @@ mod tests {
       weight: 1.0,
     };
 
-    let result = judge.score_answer("The core types are Model and View.", &question).unwrap();
+    let result = judge
+      .score_answer("The core types are Model and View.", &question)
+      .unwrap();
 
     assert!((result.score - 2.0 / 3.0).abs() < 0.01);
     assert_eq!(result.concepts_found.len(), 2);

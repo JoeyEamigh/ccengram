@@ -69,6 +69,8 @@ export function function_{}(arg: number): number {{
     parent_definition: None,
     embedding_text: None,
     content_hash: None,
+    caller_count: 0,
+    callee_count: 0,
   }
 }
 

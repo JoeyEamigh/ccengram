@@ -145,11 +145,7 @@ impl ScenarioRunner {
       // Resolve templates in step if it depends on previous results
       let resolved_step = if step.has_templates() {
         let resolved = previous_results.resolve_step(step);
-        debug!(
-          "Executing step {} (resolved): {}",
-          i + 1,
-          resolved.query
-        );
+        debug!("Executing step {} (resolved): {}", i + 1, resolved.query);
         resolved
       } else {
         debug!("Executing step {}: {}", i + 1, step.query);
@@ -197,7 +193,8 @@ impl ScenarioRunner {
     performance.peak_memory_bytes = Some(resource_monitor.peak_memory());
     performance.avg_cpu_percent = Some(resource_monitor.avg_cpu());
 
-    let accuracy = session.compute_accuracy_metrics_with_paths(&expected, &scenario.success_criteria, &exploration_paths);
+    let accuracy =
+      session.compute_accuracy_metrics_with_paths(&expected, &scenario.success_criteria, &exploration_paths);
 
     // Determine if scenario passed
     let passed = errors.is_empty()
@@ -335,7 +332,12 @@ impl ScenarioRunner {
       })
       .count();
 
-    session.record_step_relevance(found_expected_file, found_expected_symbol, relevant_count, results.len());
+    session.record_step_relevance(
+      found_expected_file,
+      found_expected_symbol,
+      relevant_count,
+      results.len(),
+    );
 
     // Track callers and callees for adaptive templates
     let mut all_callers = Vec::new();

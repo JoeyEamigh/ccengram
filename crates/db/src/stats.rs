@@ -315,6 +315,8 @@ mod tests {
         parent_definition: None,
         embedding_text: None,
         content_hash: None,
+        caller_count: 0,
+        callee_count: 0,
       };
       db.add_code_chunk(&chunk, None).await.unwrap();
     }

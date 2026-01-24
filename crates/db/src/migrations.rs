@@ -356,6 +356,16 @@ impl ProjectDb {
         .await?;
     }
 
+    // Create code_references table
+    if !table_names.contains(&"code_references".to_string()) {
+      debug!("Migration v1: Creating code_references table");
+      self
+        .connection
+        .create_empty_table("code_references", code_references_schema())
+        .execute()
+        .await?;
+    }
+
     Ok(())
   }
 
