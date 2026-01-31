@@ -63,7 +63,7 @@ use crate::{
       },
       project::ProjectRequest,
       relationship::RelationshipRequest,
-      watch::{WatchRequest, WatchResponse, WatchStartResult, WatchStatusResult, WatchStopResult},
+      watch::{StartupScanInfo, WatchRequest, WatchResponse, WatchStartResult, WatchStatusResult, WatchStopResult},
     },
   },
   service::{
@@ -169,17 +169,16 @@ impl ProjectActor {
     let db = Arc::new(db);
 
     // Spawn indexer actor with a child cancellation token
-    // Calculate embedding batch size from config (use max_batch_size if set, otherwise auto-calculate)
-    let embedding_batch_size = project_config
-      .embedding
-      .max_batch_size
-      .unwrap_or_else(|| (project_config.embedding.context_length / 512).min(64));
+    // Calculate embedding batch size from config (use max_batch_size if set, otherwise default to 512)
+    // Both OpenRouter and Ollama handle their own internal limits, so 512 is a reasonable default.
+    let embedding_batch_size = project_config.embedding.max_batch_size.unwrap_or(512);
 
     let indexer_config = IndexerConfig {
       root: config.root.clone(),
       index: project_config.index.clone(),
       embedding_batch_size,
       embedding_context_length: project_config.embedding.context_length,
+      log_cache_stats: project_config.database.log_cache_stats,
     };
     let indexer = IndexerActor::spawn(indexer_config, Arc::clone(&db), embedding.clone(), cancel.child_token());
 
@@ -219,32 +218,32 @@ impl ProjectActor {
   /// - Request channel being closed
   async fn run(mut self) {
     info!(
-        project_id = %self.config.id,
-        root = %self.config.root.display(),
-        "ProjectActor started"
+      project_id = %self.config.id,
+      root = %self.config.root.display(),
+      "ProjectActor started"
     );
 
     loop {
       tokio::select! {
-          // Check cancellation first (biased)
-          biased;
+        // Check cancellation first (biased)
+        biased;
 
-          _ = self.cancel.cancelled() => {
-              info!(project_id = %self.config.id, "ProjectActor shutting down (cancelled)");
+        _ = self.cancel.cancelled() => {
+          info!(project_id = %self.config.id, "ProjectActor shutting down (cancelled)");
+          break;
+        }
+
+        msg = self.request_rx.recv() => {
+          match msg {
+            Some(msg) => {
+              self.handle_message(msg).await;
+            }
+            None => {
+              info!(project_id = %self.config.id, "ProjectActor shutting down (channel closed)");
               break;
+            }
           }
-
-          msg = self.request_rx.recv() => {
-              match msg {
-                  Some(msg) => {
-                      self.handle_message(msg).await;
-                  }
-                  None => {
-                      info!(project_id = %self.config.id, "ProjectActor shutting down (channel closed)");
-                      break;
-                  }
-              }
-          }
+        }
       }
     }
 
@@ -264,7 +263,7 @@ impl ProjectActor {
 
     // Shutdown indexer
     if let Err(e) = self.indexer.shutdown().await {
-      warn!(error = %e, "Failed to send shutdown to indexer");
+      debug!(error = %e, "Failed to send shutdown to indexer"); // this is fine
     }
   }
 
@@ -388,75 +387,110 @@ impl ProjectActor {
   ///
   /// If the project was previously indexed, performs a startup scan to detect
   /// file changes that occurred while the daemon was down.
-  async fn start_watcher(&mut self) -> Result<(), ProjectActorError> {
+  ///
+  /// Returns scan info if a startup scan was performed.
+  async fn start_watcher(&mut self) -> Result<Option<StartupScanInfo>, ProjectActorError> {
     if self.watcher_cancel.is_some() {
       debug!(project_id = %self.config.id, "Watcher already running");
-      return Ok(());
+      return Ok(None);
     }
 
     // Perform startup scan if project was previously indexed
-    if let Some(scan_result) = service::code::startup_scan::startup_scan(&self.db, &self.config.root).await {
-      if scan_result.was_indexed && scan_result.has_changes() {
-        info!(
-          project_id = %self.config.id,
-          added = scan_result.added.len(),
-          modified = scan_result.modified.len(),
-          deleted = scan_result.deleted.len(),
-          moved = scan_result.moved.len(),
-          "Startup scan detected changes, queueing reindex"
-        );
-
-        // Handle deleted files - remove from DB
-        for deleted_path in &scan_result.deleted {
-          if let Err(e) = self.db.delete_chunks_for_file(deleted_path).await {
-            warn!(path = %deleted_path, error = %e, "Failed to delete chunks for removed file");
-          }
-          if let Err(e) = self.db.delete_indexed_file(self.config.id.as_str(), deleted_path).await {
-            warn!(path = %deleted_path, error = %e, "Failed to delete indexed_file entry");
-          }
-        }
-
-        // Handle moved files - update paths in DB
-        for (old_path, new_path) in &scan_result.moved {
-          let new_relative = new_path
-            .strip_prefix(&self.config.root)
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| new_path.to_string_lossy().to_string());
-
-          // Handle both code and document files - one will be a no-op depending on file type
-          if let Err(e) = self.db.rename_file(old_path, &new_relative).await {
-            warn!(from = %old_path, to = %new_relative, error = %e, "Failed to rename code chunks");
-          }
-          if let Err(e) = self.db.rename_document(old_path, &new_relative).await {
-            warn!(from = %old_path, to = %new_relative, error = %e, "Failed to rename document chunks");
-          }
-          if let Err(e) = self
-            .db
-            .rename_indexed_file(self.config.id.as_str(), old_path, &new_relative)
-            .await
-          {
-            warn!(from = %old_path, to = %new_relative, error = %e, "Failed to rename indexed_file entry");
-          }
-        }
-
-        // Queue added and modified files for reindexing
-        let files_to_index = scan_result.files_to_index();
-        if !files_to_index.is_empty() {
-          debug!(
+    let scan_info =
+      if let Some(scan_result) = service::code::startup_scan::startup_scan(&self.db, &self.config.root).await {
+        let files_queued = if scan_result.was_indexed && scan_result.has_changes() {
+          info!(
             project_id = %self.config.id,
-            file_count = files_to_index.len(),
-            "Queueing files for reindex"
+            added = scan_result.added.len(),
+            modified = scan_result.modified.len(),
+            deleted = scan_result.deleted.len(),
+            moved = scan_result.moved.len(),
+            "Startup scan detected changes, queueing reindex"
           );
-          if let Err(e) = self.indexer.index_batch(files_to_index, None).await {
-            warn!(error = %e, "Failed to queue startup scan files for reindex");
+
+          // Handle deleted files - remove from DB (both code and document tables)
+          for deleted_path in &scan_result.deleted {
+            // Delete code chunks
+            if let Err(e) = self.db.delete_chunks_for_file(deleted_path).await {
+              warn!(path = %deleted_path, error = %e, "Failed to delete code chunks for removed file");
+            }
+            // Delete document chunks and metadata (no-op for code files)
+            if let Err(e) = self.db.delete_document_chunks_by_source(deleted_path).await {
+              warn!(path = %deleted_path, error = %e, "Failed to delete document chunks for removed file");
+            }
+            if let Err(e) = self.db.delete_document_by_source(deleted_path).await {
+              warn!(path = %deleted_path, error = %e, "Failed to delete document metadata for removed file");
+            }
+            // Delete indexed_files entry
+            if let Err(e) = self.db.delete_indexed_file(self.config.id.as_str(), deleted_path).await {
+              warn!(path = %deleted_path, error = %e, "Failed to delete indexed_file entry");
+            }
           }
-        }
-      } else if !scan_result.was_indexed {
-        debug!(project_id = %self.config.id, "Project not previously indexed, skipping startup scan");
+
+          // Optimize indexes after deletes to ensure deleted rows are compacted
+          // and no longer appear in vector search results
+          if !scan_result.deleted.is_empty()
+            && let Err(e) = self.db.optimize_indexes().await
+          {
+            warn!(error = %e, "Failed to optimize indexes after startup scan deletes");
+          }
+
+          // Handle moved files - update paths in DB
+          for (old_path, new_path) in &scan_result.moved {
+            let new_relative = new_path
+              .strip_prefix(&self.config.root)
+              .map(|p| p.to_string_lossy().to_string())
+              .unwrap_or_else(|_| new_path.to_string_lossy().to_string());
+
+            // Handle both code and document files - one will be a no-op depending on file type
+            if let Err(e) = self.db.rename_file(old_path, &new_relative).await {
+              warn!(from = %old_path, to = %new_relative, error = %e, "Failed to rename code chunks");
+            }
+            if let Err(e) = self.db.rename_document(old_path, &new_relative).await {
+              warn!(from = %old_path, to = %new_relative, error = %e, "Failed to rename document chunks");
+            }
+            if let Err(e) = self
+              .db
+              .rename_indexed_file(self.config.id.as_str(), old_path, &new_relative)
+              .await
+            {
+              warn!(from = %old_path, to = %new_relative, error = %e, "Failed to rename indexed_file entry");
+            }
+          }
+
+          // Queue added and modified files for reindexing
+          let files_to_index = scan_result.files_to_index();
+          let queued = files_to_index.len();
+          if !files_to_index.is_empty() {
+            debug!(
+              project_id = %self.config.id,
+              file_count = queued,
+              "Queueing files for reindex"
+            );
+            if let Err(e) = self.indexer.index_batch(files_to_index, None).await {
+              warn!(error = %e, "Failed to queue startup scan files for reindex");
+            }
+          }
+          queued
+        } else if !scan_result.was_indexed {
+          debug!(project_id = %self.config.id, "Project not previously indexed, skipping startup scan");
+          0
+        } else {
+          debug!(project_id = %self.config.id, "No changes detected during startup scan");
+          0
+        };
+
+        Some(StartupScanInfo {
+          was_indexed: scan_result.was_indexed,
+          files_added: scan_result.added.len(),
+          files_modified: scan_result.modified.len(),
+          files_deleted: scan_result.deleted.len(),
+          files_moved: scan_result.moved.len(),
+          files_queued,
+        })
       } else {
-        debug!(project_id = %self.config.id, "No changes detected during startup scan");
-      }
-    }
+        None
+      };
 
     let cancel = self.cancel.child_token();
     let watcher_config = WatcherConfig {
@@ -471,7 +505,7 @@ impl ProjectActor {
     self.watcher_cancel = Some(cancel);
 
     info!(project_id = %self.config.id, "Started watcher for {:?}", self.config.root);
-    Ok(())
+    Ok(scan_info)
   }
 
   /// Stop the file watcher for this project
@@ -855,23 +889,27 @@ impl ProjectActor {
         .await;
     }
 
-    // Create progress channel and spawn forwarder if streaming
-    let (progress_tx, mut progress_rx) = mpsc::channel::<super::message::IndexProgress>(64);
-    if stream {
+    // Create progress channel and spawn forwarder only if streaming
+    // IMPORTANT: If progress_tx is passed but progress_rx is not consumed, the channel
+    // will fill up and block the sender, causing a deadlock. Only create when needed.
+    let progress_tx = if stream {
+      let (progress_tx, mut progress_rx) = mpsc::channel::<super::message::IndexProgress>(64);
       tokio::spawn({
         let reply = reply.clone();
         async move {
           while let Some(progress) = progress_rx.recv().await {
-            let percent = progress.percent().min(99);
-            let msg = format!("Indexed {}/{} files", progress.processed, progress.total);
-            let _ = reply.send(ProjectActorResponse::progress(&msg, Some(percent))).await;
+            // Send rich progress info with stage details
+            let _ = reply.send(ProjectActorResponse::from_index_progress(&progress)).await;
           }
         }
       });
-    }
+      Some(progress_tx)
+    } else {
+      None
+    };
 
     // Run indexing via service
-    let result = service::code::index::run_indexing(&self.indexer, scan_result, Some(progress_tx)).await;
+    let result = service::code::index::run_indexing(&self.indexer, scan_result, progress_tx).await;
 
     // Mark scan as complete
     self.scan_in_progress = false;
@@ -1040,6 +1078,11 @@ impl ProjectActor {
                     chunk_type: None,
                     symbol_name: None,
                     symbols: caller.symbols.unwrap_or_default(),
+                    definition_kind: None,
+                    visibility: None,
+                    signature: None,
+                    docstring: None,
+                    parent_definition: None,
                     similarity: None,
                     confidence: None,
                     file_hash: None,
@@ -1122,10 +1165,11 @@ impl ProjectActor {
   async fn handle_watch(&mut self, _id: &str, req: WatchRequest, reply: mpsc::Sender<ProjectActorResponse>) {
     let response = match req {
       WatchRequest::Start(_) => match self.start_watcher().await {
-        Ok(()) => ProjectActorResponse::Done(ResponseData::Watch(WatchResponse::Start(WatchStartResult {
+        Ok(scan_info) => ProjectActorResponse::Done(ResponseData::Watch(WatchResponse::Start(WatchStartResult {
           status: "started".to_string(),
           path: self.config.root.to_string_lossy().to_string(),
           project_id: self.config.id.to_string(),
+          startup_scan: scan_info,
         }))),
         Err(e) => ProjectActorResponse::error(-32000, e.to_string()),
       },
@@ -1142,7 +1186,7 @@ impl ProjectActor {
         ProjectActorResponse::Done(ResponseData::Watch(WatchResponse::Status(WatchStatusResult {
           running,
           root: Some(self.config.root.to_string_lossy().to_string()),
-          pending_changes: 0,
+          pending_changes: self.indexer.pending_count(),
           project_id: self.config.id.to_string(),
           scanning: self.scan_in_progress,
           scan_progress: self.scan_progress.map(|(current, total)| [current, total]),
@@ -1354,6 +1398,32 @@ impl ProjectActor {
       ProjectRequest::CleanAll(_) => {
         // CleanAll is handled at the router level
         ProjectActorResponse::internal_error("Project clean-all should be handled by router")
+      }
+      ProjectRequest::Sessions(params) => {
+        // Build filter based on params
+        let filter = if params.active_only.unwrap_or(false) {
+          Some("ended_at IS NULL")
+        } else {
+          None
+        };
+
+        match self.db.list_sessions(filter, params.limit).await {
+          Ok(sessions) => {
+            use crate::ipc::project::SessionItem;
+            let items: Vec<SessionItem> = sessions
+              .into_iter()
+              .map(|s| SessionItem {
+                id: s.id,
+                started_at: s.started_at.to_rfc3339(),
+                ended_at: s.ended_at.map(|e| e.to_rfc3339()),
+                summary: s.summary,
+                user_prompt: s.user_prompt,
+              })
+              .collect();
+            ProjectActorResponse::Done(ResponseData::Project(ProjectResponse::Sessions(items)))
+          }
+          Err(e) => Self::service_error_response(ServiceError::from(e)),
+        }
       }
     };
 

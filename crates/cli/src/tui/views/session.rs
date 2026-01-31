@@ -8,6 +8,14 @@ use serde_json::Value;
 
 use crate::tui::theme::Theme;
 
+/// Which panel is focused
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Panel {
+  #[default]
+  Left,
+  Right,
+}
+
 /// Session timeline view state
 #[derive(Debug, Default)]
 pub struct SessionState {
@@ -17,6 +25,10 @@ pub struct SessionState {
   pub session_memories: Vec<Value>,
   pub loading: bool,
   pub error: Option<String>,
+  /// Which panel is focused
+  pub focus: Panel,
+  /// Scroll position for detail panel
+  pub detail_scroll: usize,
 }
 
 impl SessionState {
@@ -28,18 +40,42 @@ impl SessionState {
     self.sessions.get(self.selected)
   }
 
+  /// Toggle focus between panels
+  pub fn toggle_focus(&mut self) {
+    self.focus = match self.focus {
+      Panel::Left => Panel::Right,
+      Panel::Right => Panel::Left,
+    };
+  }
+
   pub fn select_next(&mut self) {
-    if self.sessions.is_empty() {
-      return;
+    match self.focus {
+      Panel::Left => {
+        if self.sessions.is_empty() {
+          return;
+        }
+        self.selected = (self.selected + 1).min(self.sessions.len() - 1);
+        self.detail_scroll = 0;
+      }
+      Panel::Right => {
+        self.detail_scroll = self.detail_scroll.saturating_add(1);
+      }
     }
-    self.selected = (self.selected + 1).min(self.sessions.len() - 1);
   }
 
   pub fn select_prev(&mut self) {
-    if self.sessions.is_empty() {
-      return;
+    match self.focus {
+      Panel::Left => {
+        if self.sessions.is_empty() {
+          return;
+        }
+        self.selected = self.selected.saturating_sub(1);
+        self.detail_scroll = 0;
+      }
+      Panel::Right => {
+        self.detail_scroll = self.detail_scroll.saturating_sub(1);
+      }
     }
-    self.selected = self.selected.saturating_sub(1);
   }
 
   pub fn toggle_expand(&mut self) {
@@ -80,7 +116,8 @@ impl Widget for SessionView<'_> {
 
 impl SessionView<'_> {
   fn render_timeline(&self, area: Rect, buf: &mut Buffer) {
-    let border_color = Theme::ACCENT;
+    let is_focused = self.state.focus == Panel::Left;
+    let border_color = if is_focused { Theme::ACCENT } else { Theme::OVERLAY };
 
     let block = Block::default()
       .title(format!("SESSION TIMELINE ({})", self.state.sessions.len()))
@@ -191,11 +228,14 @@ impl SessionView<'_> {
   }
 
   fn render_detail(&self, area: Rect, buf: &mut Buffer) {
+    let is_focused = self.state.focus == Panel::Right;
+    let border_color = if is_focused { Theme::ACCENT } else { Theme::OVERLAY };
+
     let block = Block::default()
       .title("SESSION DETAIL")
       .title_style(Style::default().fg(Theme::ACCENT).bold())
       .borders(Borders::ALL)
-      .border_style(Style::default().fg(Theme::OVERLAY));
+      .border_style(Style::default().fg(border_color));
 
     let inner = block.inner(area);
     block.render(area, buf);

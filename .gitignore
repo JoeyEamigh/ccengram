@@ -26,4 +26,4 @@ plugin/bin/
 coverage/
 
 /backup
-/bench-results
+/benchmark-results

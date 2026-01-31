@@ -21,7 +21,7 @@ impl ProjectDb {
   /// Add a relationship between two memories
   #[tracing::instrument(level = "trace", skip(self, relationship))]
   pub async fn add_relationship(&self, relationship: &MemoryRelationship) -> Result<()> {
-    let table = self.memory_relationships_table().await?;
+    let table = self.memory_relationships_table();
 
     let batch = relationship_to_batch(relationship)?;
     let batches = RecordBatchIterator::new(vec![Ok(batch)], memory_relationships_schema());
@@ -48,7 +48,7 @@ impl ProjectDb {
   /// Get all relationships for a memory (both from and to)
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn get_all_relationships(&self, memory_id: &MemoryId) -> Result<Vec<MemoryRelationship>> {
-    let table = self.memory_relationships_table().await?;
+    let table = self.memory_relationships_table();
 
     let results: Vec<RecordBatch> = table
       .query()
@@ -74,7 +74,7 @@ impl ProjectDb {
   /// Delete a relationship by ID
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn delete_relationship(&self, id: &Uuid) -> Result<()> {
-    let table = self.memory_relationships_table().await?;
+    let table = self.memory_relationships_table();
     table.delete(&format!("id = '{}'", id)).await?;
     Ok(())
   }

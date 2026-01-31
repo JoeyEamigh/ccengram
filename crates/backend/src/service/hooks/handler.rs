@@ -225,7 +225,7 @@ pub async fn handle_session_end(
   }
 
   if memories_promoted > 0 {
-    info!(
+    debug!(
       session_id = %session_id,
       promoted = memories_promoted,
       "Promoted session memories to project tier"
@@ -377,7 +377,7 @@ pub async fn handle_post_tool_use(
   let should_trigger = segment_ctx.completed_tasks.len() >= 3 && segment_ctx.tool_call_count() >= 5;
 
   if should_trigger && ctx.is_enabled() && ctx.use_llm_extraction() {
-    info!(
+    debug!(
       "Todo completion trigger: extracting memories for session {}",
       session_id
     );
@@ -404,7 +404,7 @@ pub async fn handle_pre_compact(
   let session_id = params.get("session_id").and_then(|v| v.as_str()).unwrap_or("unknown");
   let summary = params.get("summary").and_then(|v| v.as_str());
 
-  info!(session_id = %session_id, has_summary = summary.is_some(), "Pre-compact trigger");
+  debug!(session_id = %session_id, has_summary = summary.is_some(), "Pre-compact trigger");
 
   let mut memories_created = Vec::new();
 
@@ -470,7 +470,7 @@ pub async fn handle_stop(
   let session_id = params.get("session_id").and_then(|v| v.as_str()).unwrap_or("unknown");
   let summary = params.get("summary").and_then(|v| v.as_str());
 
-  info!(session_id = %session_id, has_summary = summary.is_some(), "Stop event");
+  debug!(session_id = %session_id, has_summary = summary.is_some(), "Stop event");
 
   let mut memories_created = Vec::new();
 

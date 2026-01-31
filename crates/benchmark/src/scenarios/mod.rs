@@ -25,7 +25,8 @@ pub async fn load_scenarios_from_dir(dir: &Path) -> Result<Vec<Scenario>> {
     return Ok(scenarios);
   }
 
-  while let Some(entry) = tokio::fs::read_dir(dir).await?.next_entry().await? {
+  let mut entries = tokio::fs::read_dir(dir).await?;
+  while let Some(entry) = entries.next_entry().await? {
     let path = entry.path();
     if path.extension().is_some_and(|e| e == "toml") {
       info!("Loading scenario: {}", path.display());

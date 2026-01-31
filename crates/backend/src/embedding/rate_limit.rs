@@ -6,13 +6,21 @@
 // The limiter supports a token-based refund mechanism for failed requests
 // that didn't actually consume API rate limit capacity (network errors,
 // server errors, etc.).
+//
+// FifoRateLimiter provides FIFO ordering using tokio::sync::Semaphore,
+// ensuring fair queuing under high load.
 
 use std::{
-  collections::VecDeque,
-  time::{Duration, Instant},
+  collections::HashMap,
+  sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+  },
+  time::Duration,
 };
 
-use tracing::trace;
+use tokio::{sync::Semaphore, task::AbortHandle};
+use tracing::{debug, trace};
 
 /// Token returned when recording a request, used for potential refunds.
 ///
@@ -21,14 +29,12 @@ use tracing::trace;
 /// Use this token to refund the slot and keep our local limiter accurate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RateLimitToken {
-  timestamp: Instant,
-  /// Unique identifier to distinguish tokens with same timestamp
   id: u64,
 }
 
 impl RateLimitToken {
-  fn new(timestamp: Instant, id: u64) -> Self {
-    Self { timestamp, id }
+  fn new(id: u64) -> Self {
+    Self { id }
   }
 }
 
@@ -46,9 +52,9 @@ pub struct RateLimitConfig {
 impl Default for RateLimitConfig {
   fn default() -> Self {
     Self {
-      max_requests: 70,
+      max_requests: 65,
       window: Duration::from_secs(10),
-      max_wait: Duration::from_secs(30),
+      max_wait: Duration::from_secs(600),
     }
   }
 }
@@ -56,11 +62,12 @@ impl Default for RateLimitConfig {
 impl RateLimitConfig {
   /// Create a config for OpenRouter (65 requests per 10s sliding window)
   /// OpenRouter's actual limit is 70/10s, but we use 65 for safety margin.
+  /// max_wait is 600s to handle sustained high throughput during initial indexing.
   pub fn for_openrouter() -> Self {
     Self {
       max_requests: 65,
       window: Duration::from_secs(10),
-      max_wait: Duration::from_secs(60),
+      max_wait: Duration::from_secs(600),
     }
   }
 
@@ -70,229 +77,168 @@ impl RateLimitConfig {
     Self {
       max_requests,
       window,
-      max_wait: Duration::from_secs(30),
+      max_wait: Duration::from_secs(600),
     }
   }
 }
 
-/// Sliding window rate limiter with refund support.
+// ============================================================================
+// FIFO Rate Limiter (recommended for production use)
+// ============================================================================
+
+/// FIFO rate limiter using tokio Semaphore for fair queuing.
 ///
-/// Tracks requests using timestamps and supports refunding slots when
-/// requests fail in ways that don't consume the API's rate limit capacity.
-#[derive(Debug)]
-pub struct SlidingWindowLimiter {
+/// This implementation guarantees FIFO ordering: requests are processed
+/// in the order they arrive, preventing starvation under high load.
+///
+/// The sliding window is implemented by:
+/// 1. Acquiring a semaphore permit (FIFO ordered)
+/// 2. Forgetting the permit (not dropping it)
+/// 3. Scheduling permit restoration after window duration
+///
+/// Refunds work by canceling the scheduled restoration and immediately
+/// restoring the permit.
+pub struct FifoRateLimiter {
+  semaphore: Arc<Semaphore>,
   config: RateLimitConfig,
-  /// Request records (timestamp, token_id) within the window
-  request_records: VecDeque<(Instant, u64)>,
-  /// Counter for generating unique token IDs
-  next_token_id: u64,
+  next_token_id: AtomicU64,
+  /// Track active tokens for refund support (maps token_id -> abort handle)
+  active_tokens: tokio::sync::Mutex<HashMap<u64, AbortHandle>>,
 }
 
-impl SlidingWindowLimiter {
+impl FifoRateLimiter {
   pub fn new(config: RateLimitConfig) -> Self {
-    let capacity = config.max_requests + 1;
+    debug!(
+      max_requests = config.max_requests,
+      window_ms = config.window.as_millis(),
+      max_wait_ms = config.max_wait.as_millis(),
+      "FIFO rate limiter initialized"
+    );
     Self {
+      semaphore: Arc::new(Semaphore::new(config.max_requests)),
       config,
-      request_records: VecDeque::with_capacity(capacity),
-      next_token_id: 0,
+      next_token_id: AtomicU64::new(0),
+      active_tokens: tokio::sync::Mutex::new(HashMap::new()),
     }
   }
 
-  /// Remove expired timestamps from the window
-  fn prune_expired(&mut self) {
-    let cutoff = Instant::now() - self.config.window;
-    let before_count = self.request_records.len();
-    while let Some(&(oldest_ts, _)) = self.request_records.front() {
-      if oldest_ts < cutoff {
-        self.request_records.pop_front();
-      } else {
-        break;
-      }
-    }
-    let pruned = before_count - self.request_records.len();
-    if pruned > 0 {
-      trace!(
-        pruned = pruned,
-        remaining = self.request_records.len(),
-        window_ms = self.config.window.as_millis(),
-        "Rate limit window reset, pruned expired timestamps"
-      );
-    }
-  }
-
-  /// Check if we can make a request now, and if not, how long to wait
-  fn check_and_wait_time(&mut self) -> Option<Duration> {
-    self.prune_expired();
-
-    if self.request_records.len() < self.config.max_requests {
-      // Under the limit, can proceed immediately
-      None
-    } else {
-      // At the limit - calculate when the oldest request will expire
-      if let Some(&(oldest_ts, _)) = self.request_records.front() {
-        let expires_at = oldest_ts + self.config.window;
-        let now = Instant::now();
-        if expires_at > now { Some(expires_at - now) } else { None }
-      } else {
-        None
-      }
-    }
-  }
-
-  /// Record a request and return a token that can be used to refund the slot.
+  /// Acquire a rate limit slot with FIFO ordering.
   ///
-  /// Use this when you need the ability to refund a slot if the request
-  /// fails in a way that didn't actually consume API rate limit capacity.
-  pub fn record_request_with_token(&mut self) -> RateLimitToken {
-    let ts = Instant::now();
-    let id = self.next_token_id;
-    self.next_token_id = self.next_token_id.wrapping_add(1);
-    self.request_records.push_back((ts, id));
-    RateLimitToken::new(ts, id)
-  }
+  /// Returns a token that can be used to refund the slot if the request
+  /// fails without consuming API rate limit capacity.
+  pub async fn acquire(&self) -> Result<RateLimitToken, super::EmbeddingError> {
+    // Acquire permit with FIFO ordering (semaphore guarantees this)
+    let permit = match tokio::time::timeout(self.config.max_wait, self.semaphore.acquire()).await {
+      Ok(Ok(permit)) => permit,
+      Ok(Err(_)) => return Err(super::EmbeddingError::ProviderError("Rate limiter closed".into())),
+      Err(_) => return Err(super::EmbeddingError::RateLimitExhausted(self.config.max_wait)),
+    };
 
-  /// Refund a rate limit slot using the token from `record_request_with_token`.
-  ///
-  /// Call this when a request fails due to:
-  /// - Network errors (request never reached the API)
-  /// - Timeouts (request may not have been processed)
-  /// - 5xx server errors (API-side failure before rate limiting)
-  ///
-  /// Do NOT refund for:
-  /// - 429 (rate limited) - the API counted this request
-  /// - 4xx errors - the request was processed
-  /// - Successful responses - obviously
-  ///
-  /// Returns true if the token was found and removed, false otherwise.
-  pub fn refund(&mut self, token: RateLimitToken) -> bool {
-    // Find and remove the matching record
-    if let Some(pos) = self
-      .request_records
-      .iter()
-      .position(|&(ts, id)| ts == token.timestamp && id == token.id)
+    // Forget the permit - we'll restore it after window duration
+    permit.forget();
+
+    // Generate token ID
+    let token_id = self.next_token_id.fetch_add(1, Ordering::Relaxed);
+
+    // Schedule permit restoration after window duration
+    let semaphore = self.semaphore.clone();
+    let window = self.config.window;
+    let handle = tokio::spawn(async move {
+      tokio::time::sleep(window).await;
+      semaphore.add_permits(1);
+      trace!("Rate limit slot restored after window expiry");
+    });
+
+    // Store abort handle for potential refund
     {
-      self.request_records.remove(pos);
-      trace!(
-        token_id = token.id,
-        remaining = self.request_records.len(),
-        "Rate limit slot refunded"
-      );
-      true
+      let mut tokens = self.active_tokens.lock().await;
+      tokens.insert(token_id, handle.abort_handle());
+    }
+
+    trace!(token_id, "Rate limit slot acquired (FIFO)");
+    Ok(RateLimitToken::new(token_id))
+  }
+
+  /// Refund a rate limit slot when a request fails without consuming API capacity.
+  ///
+  /// Call this for network errors, timeouts, and 5xx server errors.
+  /// Do NOT call for 429 or other 4xx errors.
+  pub async fn refund(&self, token: RateLimitToken) {
+    let mut tokens = self.active_tokens.lock().await;
+    if let Some(abort_handle) = tokens.remove(&token.id) {
+      // Cancel the scheduled permit restoration
+      abort_handle.abort();
+      // Immediately restore the permit
+      self.semaphore.add_permits(1);
+      trace!(token_id = token.id, "Rate limit slot refunded");
     } else {
-      // Token may have already expired and been pruned, that's fine
       trace!(
         token_id = token.id,
         "Rate limit refund: token not found (may have expired)"
       );
-      false
-    }
-  }
-
-  /// Check if a slot is available and record with token if so.
-  /// Returns Ok(token) if slot was acquired, or Err(wait_time) if we need to wait.
-  pub fn check_and_record_with_token(&mut self) -> Result<RateLimitToken, Duration> {
-    let wait = self.check_and_wait_time();
-    match wait {
-      None => Ok(self.record_request_with_token()),
-      Some(duration) => Err(duration),
     }
   }
 }
 
 #[cfg(test)]
 mod tests {
-
   use super::*;
 
-  #[test]
-  fn test_sliding_window_under_limit() {
+  #[tokio::test]
+  async fn test_fifo_under_limit() {
     let config = RateLimitConfig::new(5, Duration::from_secs(1));
-    let mut limiter = SlidingWindowLimiter::new(config);
+    let limiter = FifoRateLimiter::new(config);
 
     // First 5 requests should go through immediately
     for _ in 0..5 {
-      assert!(limiter.check_and_wait_time().is_none());
-      limiter.record_request_with_token();
+      let result = limiter.acquire().await;
+      assert!(result.is_ok(), "Should acquire slot under limit");
     }
   }
 
-  #[test]
-  fn test_sliding_window_at_limit() {
-    let config = RateLimitConfig::new(5, Duration::from_secs(10));
-    let mut limiter = SlidingWindowLimiter::new(config);
-
-    // Fill up the window
-    for _ in 0..5 {
-      limiter.record_request_with_token();
-    }
-
-    // 6th request should need to wait
-    let wait = limiter.check_and_wait_time();
-    assert!(wait.is_some());
-    assert!(wait.unwrap() <= Duration::from_secs(10));
-  }
-
-  #[test]
-  fn test_refund_nonexistent_token() {
-    let config = RateLimitConfig::new(5, Duration::from_secs(10));
-    let mut limiter = SlidingWindowLimiter::new(config);
-
-    // Create a fake token
-    let fake_token = RateLimitToken::new(Instant::now(), 99999);
-
-    // Refund should return false
-    assert!(!limiter.refund(fake_token));
-  }
-
-  #[test]
-  fn test_refund_already_expired() {
-    let config = RateLimitConfig::new(5, Duration::from_millis(10));
-    let mut limiter = SlidingWindowLimiter::new(config);
-
-    let token = limiter.record_request_with_token();
-
-    // Wait for window to expire
-    std::thread::sleep(Duration::from_millis(15));
-
-    // Token should be gone after prune
-    limiter.prune_expired();
-    assert!(!limiter.refund(token));
-  }
-
-  #[test]
-  fn test_check_and_record_with_token() {
-    let config = RateLimitConfig::new(2, Duration::from_secs(10));
-    let mut limiter = SlidingWindowLimiter::new(config);
-
-    // First two should succeed
-    let result1 = limiter.check_and_record_with_token();
-    assert!(result1.is_ok());
-
-    let result2 = limiter.check_and_record_with_token();
-    assert!(result2.is_ok());
-
-    // Third should fail with wait duration
-    let result3 = limiter.check_and_record_with_token();
-    assert!(result3.is_err());
-    assert!(result3.unwrap_err() <= Duration::from_secs(10));
-  }
-
-  #[test]
-  fn test_refund_restores_capacity() {
-    let config = RateLimitConfig::new(2, Duration::from_secs(10));
-    let mut limiter = SlidingWindowLimiter::new(config);
+  #[tokio::test]
+  async fn test_fifo_refund_restores_capacity() {
+    let config = RateLimitConfig {
+      max_requests: 2,
+      window: Duration::from_secs(10),
+      max_wait: Duration::from_millis(100),
+    };
+    let limiter = FifoRateLimiter::new(config);
 
     // Fill to capacity
-    let token1 = limiter.check_and_record_with_token().unwrap();
-    let _token2 = limiter.check_and_record_with_token().unwrap();
+    let token1 = limiter.acquire().await.expect("first acquire");
+    let _token2 = limiter.acquire().await.expect("second acquire");
 
-    // Can't proceed
-    assert!(limiter.check_and_record_with_token().is_err());
+    // Third should timeout (no slots available)
+    let result3 = limiter.acquire().await;
+    assert!(result3.is_err(), "Should fail when at capacity");
 
     // Refund first token
-    limiter.refund(token1);
+    limiter.refund(token1).await;
 
-    // Now can proceed again
-    assert!(limiter.check_and_record_with_token().is_ok());
+    // Now should succeed
+    let result4 = limiter.acquire().await;
+    assert!(result4.is_ok(), "Should succeed after refund");
+  }
+
+  #[tokio::test]
+  async fn test_fifo_window_expiry() {
+    let config = RateLimitConfig {
+      max_requests: 2,
+      window: Duration::from_millis(50),
+      max_wait: Duration::from_millis(200),
+    };
+    let limiter = FifoRateLimiter::new(config);
+
+    // Fill to capacity
+    let _token1 = limiter.acquire().await.expect("first acquire");
+    let _token2 = limiter.acquire().await.expect("second acquire");
+
+    // Wait for window to expire
+    tokio::time::sleep(Duration::from_millis(60)).await;
+
+    // Should succeed now that slots have expired
+    let result3 = limiter.acquire().await;
+    assert!(result3.is_ok(), "Should succeed after window expiry");
   }
 }

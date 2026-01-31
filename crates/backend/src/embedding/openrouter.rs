@@ -2,18 +2,17 @@ use std::{sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
 use tracing::{debug, error, info, trace, warn};
 
 use super::{
   EmbeddingError, EmbeddingMode, EmbeddingProvider,
-  rate_limit::{RateLimitConfig, RateLimitToken, SlidingWindowLimiter},
+  rate_limit::{FifoRateLimiter, RateLimitConfig, RateLimitToken},
 };
 use crate::config::EmbeddingConfig;
 
 const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/embeddings";
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OpenRouterProvider {
   client: reqwest::Client,
   api_key: String,
@@ -21,8 +20,8 @@ pub struct OpenRouterProvider {
   dimensions: usize,
   /// Maximum texts per batch request
   max_batch_size: usize,
-  /// Rate limiter for HTTP requests (shared across clones)
-  rate_limiter: Arc<Mutex<SlidingWindowLimiter>>,
+  /// FIFO rate limiter for HTTP requests (shared across clones)
+  rate_limiter: Arc<FifoRateLimiter>,
   /// Optional task instruction to prepend to queries.
   /// When Some and non-empty, queries are formatted as `Instruct: {instruction}\nQuery:{query}`.
   /// When None or empty, queries are embedded as-is.
@@ -41,7 +40,10 @@ impl OpenRouterProvider {
 
     let model = config.model.clone();
     let dimensions = config.dimensions;
-    let max_batch_size = config.max_batch_size.unwrap_or(64);
+    // OpenRouter embedding API can handle large batches - unlike Ollama, the entire
+    // request doesn't need to fit in context, just each individual text.
+    // Higher batch sizes = fewer HTTP requests = better throughput with rate limiting.
+    let max_batch_size = config.max_batch_size.unwrap_or(512);
     let query_instruction = config.query_instruction.clone();
 
     let has_instruction = query_instruction.as_ref().is_some_and(|s| !s.is_empty());
@@ -59,7 +61,7 @@ impl OpenRouterProvider {
       model,
       dimensions,
       max_batch_size,
-      rate_limiter: Arc::new(Mutex::new(SlidingWindowLimiter::new(RateLimitConfig::for_openrouter()))),
+      rate_limiter: Arc::new(FifoRateLimiter::new(RateLimitConfig::for_openrouter())),
       query_instruction,
     })
   }
@@ -95,47 +97,12 @@ impl OpenRouterProvider {
     }
   }
 
-  /// Acquire a rate limit slot, waiting if necessary.
+  /// Acquire a rate limit slot with FIFO ordering, waiting if necessary.
   ///
   /// Returns a `RateLimitToken` that can be used to refund the slot if the
   /// request fails in a way that didn't consume API rate limit capacity.
   async fn acquire_rate_limit_slot(&self) -> Result<RateLimitToken, EmbeddingError> {
-    use tokio::time::sleep;
-
-    let config = RateLimitConfig::for_openrouter();
-    let start = Instant::now();
-
-    loop {
-      let result = {
-        let mut limiter = self.rate_limiter.lock().await;
-        limiter.check_and_record_with_token()
-      };
-
-      match result {
-        Ok(token) => {
-          // Slot acquired
-          trace!(elapsed_ms = start.elapsed().as_millis(), "Rate limit slot acquired");
-          return Ok(token);
-        }
-        Err(wait) => {
-          // Check if we've exceeded max wait time
-          if start.elapsed() + wait > config.max_wait {
-            warn!(
-              max_wait_ms = config.max_wait.as_millis(),
-              elapsed_ms = start.elapsed().as_millis(),
-              "Rate limiter max wait time exceeded"
-            );
-            return Err(EmbeddingError::ProviderError(format!(
-              "Rate limit wait time exceeded ({:?})",
-              config.max_wait
-            )));
-          }
-
-          debug!(wait_ms = wait.as_millis(), "Rate limiter waiting for slot");
-          sleep(wait).await;
-        }
-      }
-    }
+    self.rate_limiter.acquire().await
   }
 
   /// Refund a rate limit slot when a request fails without consuming API capacity.
@@ -149,8 +116,7 @@ impl OpenRouterProvider {
   /// - 429 errors (OpenRouter counted the request against rate limit)
   /// - 4xx errors (request was processed)
   async fn refund_rate_limit_slot(&self, token: RateLimitToken) {
-    let mut limiter = self.rate_limiter.lock().await;
-    limiter.refund(token);
+    self.rate_limiter.refund(token).await;
   }
 
   /// Embed a single batch of texts (internal helper)
@@ -215,6 +181,7 @@ impl OpenRouterProvider {
     if !status.is_success() {
       let status_code = status.as_u16();
       let body = response.text().await.unwrap_or_default();
+      let body_preview: String = body.trim_start().chars().take(500).collect();
 
       // Refund for 5xx server errors - these didn't hit OpenRouter's rate limiter
       if status_code >= 500 {
@@ -222,6 +189,7 @@ impl OpenRouterProvider {
           status = %status,
           batch_size = texts.len(),
           model = %self.model,
+          body_preview = %body_preview,
           "OpenRouter server error, refunding rate limit slot"
         );
         self.refund_rate_limit_slot(token).await;
@@ -229,6 +197,7 @@ impl OpenRouterProvider {
         error!(
           status = %status,
           model = %self.model,
+          body_preview = %body_preview,
           "OpenRouter authentication failed"
         );
         // Don't refund - auth errors still count against rate limit
@@ -237,6 +206,7 @@ impl OpenRouterProvider {
           status = %status,
           batch_size = texts.len(),
           model = %self.model,
+          body_preview = %body_preview,
           "OpenRouter rate limit exceeded"
         );
         // Don't refund - 429 means OpenRouter counted this request
@@ -245,6 +215,7 @@ impl OpenRouterProvider {
           status = %status,
           batch_size = texts.len(),
           model = %self.model,
+          body_preview = %body_preview,
           "OpenRouter batch embedding failed"
         );
         // Don't refund 4xx errors - request was processed
@@ -252,32 +223,141 @@ impl OpenRouterProvider {
 
       return Err(EmbeddingError::ProviderError(format!(
         "OpenRouter returned {}: {}",
-        status, body
+        status,
+        body_preview.chars().take(300).collect::<String>()
       )));
     }
 
-    let result: EmbeddingResponse = response.json().await?;
+    // Read body as text first so we can log it on parse failure
+    let body_text = response.text().await.map_err(|e| {
+      warn!(
+        error = %e,
+        batch_size = texts.len(),
+        model = %self.model,
+        elapsed_ms = start.elapsed().as_millis(),
+        "Failed to read OpenRouter response body"
+      );
+      EmbeddingError::Network(format!("Failed to read response body: {}", e))
+    })?;
+
+    // First, check if OpenRouter returned an error response (can happen with 200 OK)
+    if let Ok(error_resp) = serde_json::from_str::<ErrorResponse>(&body_text) {
+      let provider = error_resp
+        .error
+        .metadata
+        .as_ref()
+        .and_then(|m| m.provider_name.as_deref())
+        .unwrap_or("unknown");
+
+      let body_preview: String = body_text.trim_start().chars().take(500).collect();
+      warn!(
+        provider = %provider,
+        message = %error_resp.error.message,
+        code = ?error_resp.error.code,
+        batch_size = texts.len(),
+        model = %self.model,
+        body_preview = %body_preview,
+        "OpenRouter returned error response from provider"
+      );
+
+      // TODO(debug): remove after debugging batch failures
+      // Log detailed stats about the failing batch
+      let total_chars: usize = texts.iter().map(|t| t.len()).sum();
+      let max_len = texts.iter().map(|t| t.len()).max().unwrap_or(0);
+      let min_len = texts.iter().map(|t| t.len()).min().unwrap_or(0);
+      let empty_count = texts.iter().filter(|t| t.is_empty()).count();
+      let very_long_count = texts.iter().filter(|t| t.len() > 8000).count();
+      let has_nulls = texts.iter().any(|t| t.contains('\0'));
+      warn!(
+        total_chars,
+        avg_len = total_chars / texts.len().max(1),
+        max_len,
+        min_len,
+        empty_count,
+        very_long_count,
+        has_nulls,
+        "[DEBUG] Batch stats for failed OpenRouter request"
+      );
+
+      return Err(EmbeddingError::ProviderError(format!(
+        "Provider '{}' failed: {}",
+        provider, error_resp.error.message
+      )));
+    }
+
+    let result: EmbeddingResponse = match serde_json::from_str(&body_text) {
+      Ok(r) => r,
+      Err(e) => {
+        // Check if this is a whitespace-only response (upstream provider timeout)
+        let printable_count = body_text.chars().filter(|c| !c.is_whitespace()).count();
+
+        if printable_count == 0 && !body_text.is_empty() {
+          // Upstream provider timed out - only sent keep-alive whitespace
+          // This is a transient issue, retry immediately without backoff
+          debug!(
+            batch_size = texts.len(),
+            model = %self.model,
+            elapsed_ms = start.elapsed().as_millis(),
+            "Upstream provider timeout (received only keep-alive data), will retry"
+          );
+          return Err(EmbeddingError::UpstreamTimeout);
+        }
+
+        // Actual parse error - log details for debugging
+        let trimmed = body_text.trim();
+        let body_preview: String = trimmed.chars().take(500).collect();
+        warn!(
+          error = %e,
+          batch_size = texts.len(),
+          model = %self.model,
+          elapsed_ms = start.elapsed().as_millis(),
+          printable_count,
+          body_preview = %body_preview,
+          "Failed to parse OpenRouter response JSON"
+        );
+        return Err(EmbeddingError::ParseError(format!(
+          "JSON parse error: {}. Response preview: {}",
+          e,
+          body_preview.chars().take(300).collect::<String>()
+        )));
+      }
+    };
+
     trace!(
       embeddings_count = result.data.len(),
       elapsed_ms = start.elapsed().as_millis(),
       "Parsed OpenRouter response"
     );
 
-    if result.data.len() != texts.len() {
+    let expected = texts.len();
+    let got = result.data.len();
+
+    if got < expected {
+      // Got fewer embeddings than inputs - this is a real error, we're missing data
       error!(
-        expected = texts.len(),
-        got = result.data.len(),
+        expected,
+        got,
         model = %self.model,
-        "Batch size mismatch in OpenRouter response"
+        "OpenRouter returned fewer embeddings than inputs"
       );
-      return Err(EmbeddingError::ProviderError(format!(
-        "Batch size mismatch: got {} embeddings for {} inputs",
-        result.data.len(),
-        texts.len()
-      )));
+      return Err(EmbeddingError::BatchSizeMismatch { expected, got });
     }
 
-    Ok(result.data.into_iter().map(|d| d.embedding).collect())
+    if got > expected {
+      // Got more embeddings than inputs - provider quirk, use first N with warning
+      warn!(
+        expected,
+        got,
+        extra = got - expected,
+        model = %self.model,
+        "OpenRouter returned more embeddings than inputs, using first {} (discarding {} extra)",
+        expected,
+        got - expected
+      );
+    }
+
+    // Take only the embeddings we need (handles both exact match and overflow)
+    Ok(result.data.into_iter().take(expected).map(|d| d.embedding).collect())
   }
 
   /// Embed texts with sub-batching and full concurrent processing.
@@ -368,6 +448,27 @@ struct EmbeddingResponse {
 #[derive(Debug, Deserialize)]
 struct EmbeddingData {
   embedding: Vec<f32>,
+}
+
+/// OpenRouter error response (returned with 200 OK when provider fails)
+#[derive(Debug, Deserialize)]
+struct ErrorResponse {
+  error: ErrorDetail,
+}
+
+#[derive(Debug, Deserialize)]
+struct ErrorDetail {
+  message: String,
+  #[serde(default)]
+  code: Option<i32>,
+  #[serde(default)]
+  metadata: Option<ErrorMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ErrorMetadata {
+  #[serde(default)]
+  provider_name: Option<String>,
 }
 
 #[async_trait]

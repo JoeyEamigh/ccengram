@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 use tracing::{debug, info, trace, warn};
 
 use crate::{
+  context::files::is_document_extension,
   db::{IndexedFile, ProjectDb},
   domain::code::Language,
 };
@@ -239,12 +240,11 @@ fn scan_source_files(root: &PathBuf, gitignore: Option<&Gitignore>) -> Vec<PathB
       continue;
     }
 
-    // Check if this is a supported language
+    // Check if this is a supported file type (code or document)
     if path
       .extension()
       .and_then(|ext| ext.to_str())
-      .and_then(Language::from_extension)
-      .is_some()
+      .is_some_and(|ext| Language::from_extension(ext).is_some() || is_document_extension(ext))
     {
       files.push(path.to_path_buf());
     }

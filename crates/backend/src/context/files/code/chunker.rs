@@ -2,7 +2,7 @@ use std::cell::RefCell;
 
 use chrono::Utc;
 use sha2::{Digest, Sha256};
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 use uuid::Uuid;
 
 use super::parser::{Definition, DefinitionKind, TreeSitterParser};
@@ -174,6 +174,65 @@ impl Chunker {
       "Starting file chunking"
     );
 
+    // Skip files with very few newlines - likely minified code, data files, or assets.
+    // These are expensive to embed and produce poor quality chunks.
+    // Heuristic: >10KB and >500 chars per line = probably minified/data/asset
+    let line_count = source.lines().count();
+    let chars_per_line = if line_count > 0 {
+      source.len() / line_count
+    } else {
+      source.len()
+    };
+    if source.len() > 10_000 && chars_per_line > 500 {
+      debug!(
+        file = %file_path,
+        size_bytes = source.len(),
+        line_count,
+        chars_per_line,
+        "Skipping file with very few newlines (likely minified code or data)"
+      );
+      return Vec::new();
+    }
+
+    // Skip highly repetitive files - likely data dumps (JSON fixtures, CSV-like data, etc.)
+    // These produce poor quality embeddings and waste resources.
+    // Only check files >20KB to avoid overhead on small files.
+    if source.len() > 20_000 {
+      use std::collections::HashSet;
+
+      let mut unique_lines = HashSet::new();
+      let mut total_lines_checked = 0usize;
+
+      for line in source.lines() {
+        total_lines_checked += 1;
+        unique_lines.insert(line);
+
+        // Early exit: after 500 lines, if <20% unique, it's repetitive data
+        if total_lines_checked >= 500 && unique_lines.len() * 5 < total_lines_checked {
+          debug!(
+            file = %file_path,
+            size_bytes = source.len(),
+            lines_checked = total_lines_checked,
+            unique_lines = unique_lines.len(),
+            "Skipping highly repetitive file (likely data dump)"
+          );
+          return Vec::new();
+        }
+      }
+
+      // Final check for files with 100-500 lines
+      if total_lines_checked > 100 && unique_lines.len() * 5 < total_lines_checked {
+        debug!(
+          file = %file_path,
+          size_bytes = source.len(),
+          total_lines = total_lines_checked,
+          unique_lines = unique_lines.len(),
+          "Skipping highly repetitive file (likely data dump)"
+        );
+        return Vec::new();
+      }
+    }
+
     // Warn about large files that may take longer to process
     if source.len() > 100_000 {
       debug!(
@@ -300,6 +359,23 @@ impl Chunker {
         // Only create chunk if region is meaningful (not just whitespace)
         let region_content: String = lines[(start - 1) as usize..end as usize].join("\n");
         if region_content.trim().is_empty() {
+          continue;
+        }
+
+        // Skip regions that are mostly structural characters (braces, newlines, etc.)
+        // These have no semantic value for embedding/search
+        let meaningful_chars = region_content
+          .chars()
+          .filter(|c| c.is_alphanumeric() || *c == '_')
+          .count();
+        if meaningful_chars < 10 {
+          trace!(
+            file = %file_path,
+            start_line = start,
+            end_line = end,
+            meaningful_chars,
+            "Skipping region with insufficient meaningful content"
+          );
           continue;
         }
 
@@ -1512,5 +1588,52 @@ pub fn main() {
       "should find helper_function call: {:?}",
       main_chunk.calls
     );
+  }
+
+  #[test]
+  fn test_skip_repetitive_data_files() {
+    // Simulate a large repetitive JSON-like data file (>20KB, <20% unique lines)
+    // This should be skipped by the repetition detection heuristic
+    let repeated_line = r#"  {"id": 1, "name": "test", "value": 12345},"#;
+    let unique_header = r#"{"data": ["#;
+    let unique_footer = r#"]}"#;
+
+    // Create ~25KB of repetitive content (~600 identical lines)
+    let mut source = String::with_capacity(30_000);
+    source.push_str(unique_header);
+    source.push('\n');
+    for _ in 0..600 {
+      source.push_str(repeated_line);
+      source.push('\n');
+    }
+    source.push_str(unique_footer);
+
+    assert!(source.len() > 20_000, "test file should be >20KB");
+
+    let mut chunker = Chunker::default();
+    let chunks = chunker.chunk(&source, "data.json", Language::Json, "hash123", None);
+
+    assert!(
+      chunks.is_empty(),
+      "highly repetitive files should produce no chunks, got {} chunks",
+      chunks.len()
+    );
+  }
+
+  #[test]
+  fn test_allow_non_repetitive_large_files() {
+    // A large file with diverse content should NOT be skipped
+    // Generate 600 unique lines (>20KB)
+    let mut source = String::with_capacity(30_000);
+    for i in 0..600 {
+      source.push_str(&format!("pub fn function_{}() {{ println!(\"{}\"); }}\n", i, i * 7));
+    }
+
+    assert!(source.len() > 20_000, "test file should be >20KB");
+
+    let mut chunker = Chunker::default();
+    let chunks = chunker.chunk(&source, "large.rs", Language::Rust, "hash123", None);
+
+    assert!(!chunks.is_empty(), "non-repetitive large files should produce chunks");
   }
 }

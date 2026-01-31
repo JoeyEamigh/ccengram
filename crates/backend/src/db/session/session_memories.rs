@@ -62,7 +62,7 @@ impl ProjectDb {
   /// Get all memory links for a session
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn get_session_memory_links(&self, session_id: &str) -> Result<Vec<SessionMemoryLink>> {
-    let table = self.session_memories_table().await?;
+    let table = self.session_memories_table();
 
     let results: Vec<RecordBatch> = table
       .query()
@@ -85,7 +85,7 @@ impl ProjectDb {
   /// Get all session links for a memory
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn get_memory_session_links(&self, memory_id: &str) -> Result<Vec<SessionMemoryLink>> {
-    let table = self.session_memories_table().await?;
+    let table = self.session_memories_table();
 
     let results: Vec<RecordBatch> = table
       .query()

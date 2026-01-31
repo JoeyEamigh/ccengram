@@ -16,11 +16,30 @@ use super::{IpcError, Request, RequestData, Response, ResponseData, ResponseScen
 
 type FramedStream = Framed<UnixStream, LinesCodec>;
 
+/// Progress info for a pipeline stage.
+#[derive(Debug, Clone, Default)]
+pub struct StageProgress {
+  /// Pipeline stage name (scanning, reading, parsing, embedding, writing)
+  pub stage: Option<String>,
+  /// Files processed in this stage
+  pub processed: Option<usize>,
+  /// Total files to process in this stage
+  pub total: Option<usize>,
+  /// Current file being processed
+  pub current_file: Option<String>,
+  /// Chunks created so far (populated during writing)
+  pub chunks_created: Option<usize>,
+}
+
 /// Update from a streaming request.
 #[derive(Debug, Clone)]
 pub enum StreamUpdate<T> {
-  /// Progress update with optional message and percent complete.
-  Progress { message: String, percent: Option<u8> },
+  /// Progress update with optional message, percent, and stage info.
+  Progress {
+    message: String,
+    percent: Option<u8>,
+    stage: StageProgress,
+  },
   /// Final result (success or error).
   Done(Result<T, IpcError>),
 }
@@ -197,10 +216,22 @@ impl Client {
                 None => StreamUpdate::Done(Err(IpcError::NoResult)),
               }
             } else {
-              // Progress update
+              // Progress update with stage info
+              let stage = progress
+                .as_ref()
+                .map(|p| StageProgress {
+                  stage: p.stage.clone(),
+                  processed: p.processed,
+                  total: p.total,
+                  current_file: p.current_file.clone(),
+                  chunks_created: p.chunks_created,
+                })
+                .unwrap_or_default();
+
               StreamUpdate::Progress {
                 message: progress.as_ref().map(|p| p.message.clone()).unwrap_or_default(),
                 percent: progress.as_ref().and_then(|p| p.percent),
+                stage,
               }
             }
           }

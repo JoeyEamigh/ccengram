@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{debug, info};
 
 use super::{
   lifecycle::{activity::KeepAlive, session::SessionTracker},
@@ -84,7 +84,7 @@ impl Scheduler {
     if self.config.daemon.log_retention_days > 0 {
       let deleted = self.cleanup_old_logs();
       if deleted > 0 {
-        info!("Cleaned up {} old log files at startup", deleted);
+        debug!("Cleaned up {} old log files at startup", deleted);
       }
     }
 
@@ -92,37 +92,37 @@ impl Scheduler {
 
     loop {
       tokio::select! {
-          biased;
+        biased;
 
-          _ = cancel.cancelled() => {
-              info!("Scheduler shutting down (cancelled)");
-              break;
-          }
+        _ = cancel.cancelled() => {
+          debug!("Scheduler shutting down (cancelled)");
+          break;
+        }
 
-          _ = decay_timer.tick() => {
-              info!("Running scheduled decay");
-              self.apply_decay().await;
-          }
+        _ = decay_timer.tick() => {
+          debug!("Running scheduled decay");
+          self.apply_decay().await;
+        }
 
-          _ = cleanup_timer.tick() => {
-              info!("Running scheduled session cleanup");
-              self.cleanup_stale_sessions().await;
-          }
+        _ = cleanup_timer.tick() => {
+          debug!("Running scheduled session cleanup");
+          self.cleanup_stale_sessions().await;
+        }
 
-          _ = log_cleanup_timer.tick() => {
-              if self.config.daemon.log_retention_days > 0 {
-                  let deleted = self.cleanup_old_logs();
-                  if deleted > 0 {
-                      info!("Cleaned up {} old log files", deleted);
-                  }
-              }
+        _ = log_cleanup_timer.tick() => {
+          if self.config.daemon.log_retention_days > 0 {
+            let deleted = self.cleanup_old_logs();
+            if deleted > 0 {
+              debug!("Cleaned up {} old log files", deleted);
+            }
           }
+        }
 
-          _ = idle_timer.tick() => {
-              if self.check_idle_shutdown(&cancel).await {
-                  break;
-              }
-          }
+        _ = idle_timer.tick() => {
+            if self.check_idle_shutdown(&cancel).await {
+                break;
+            }
+        }
       }
     }
 

@@ -8,6 +8,7 @@ use ccengram::ipc::{
   system::HealthCheckParams,
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::OnceCell;
 use tracing::{debug, info, warn};
 
 use super::{Expected, PreviousStepResults, Scenario, Step, TaskIntent, TaskRequirementsResult};
@@ -83,6 +84,8 @@ pub struct ScenarioRunner {
   annotations_dir: Option<PathBuf>,
   /// Optional LLM judge for comprehension evaluation
   llm_judge: Option<LlmJudge>,
+  /// Cached daemon PID for resource monitoring (lazily initialized)
+  daemon_pid: OnceCell<u32>,
 }
 
 impl ScenarioRunner {
@@ -92,7 +95,28 @@ impl ScenarioRunner {
       client,
       annotations_dir,
       llm_judge: None,
+      daemon_pid: OnceCell::new(),
     }
+  }
+
+  /// Get the daemon PID, fetching it if not cached.
+  async fn get_daemon_pid(&self) -> Result<u32> {
+    use ccengram::ipc::system::StatusParams;
+
+    let pid = self
+      .daemon_pid
+      .get_or_try_init(|| async {
+        let status = self
+          .client
+          .call(StatusParams)
+          .await
+          .map_err(|e| BenchmarkError::Execution(format!("Failed to get daemon status: {}", e)))?;
+
+        std::result::Result::<u32, BenchmarkError>::Ok(status.pid)
+      })
+      .await?;
+
+    Ok(*pid)
   }
 
   /// Enable LLM-as-judge evaluation for comprehension testing.
@@ -124,7 +148,8 @@ impl ScenarioRunner {
     let mut errors = Vec::new();
 
     // Initialize resource monitor for memory/CPU tracking
-    let mut resource_monitor = ResourceMonitor::new();
+    let daemon_pid = self.get_daemon_pid().await?;
+    let mut resource_monitor = ResourceMonitor::new(daemon_pid);
     resource_monitor.snapshot(); // Initial snapshot
 
     info!(

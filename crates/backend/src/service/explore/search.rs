@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use super::{
   suggestions::generate_suggestions,
   types::{ExpandedContext, ExploreContext, ExploreHints, ExploreResponse, ExploreResult, ExploreScope, SearchParams},
-  util::truncate_preview,
+  util::{semantic_code_preview, truncate_preview},
 };
 use crate::{
   db::ProjectDb,
@@ -65,17 +65,40 @@ pub async fn search(ctx: &ExploreContext<'_>, params: &SearchParams) -> Result<E
       // Compute hints
       let hints = compute_code_hints(ctx.db, &chunk).await;
 
+      // Use semantic preview that prioritizes signature/docstring
+      let preview = semantic_code_preview(&chunk, 300);
+
+      // Truncate docstring for result (first 2 lines)
+      let docstring = chunk.docstring.as_ref().map(|d| {
+        d.lines()
+          .filter(|l| !l.trim().is_empty())
+          .take(2)
+          .collect::<Vec<_>>()
+          .join(" ")
+      });
+
+      // Take top 5 imports/calls for quick context
+      let imports: Vec<String> = chunk.imports.iter().take(5).cloned().collect();
+      let calls: Vec<String> = chunk.calls.iter().take(5).cloned().collect();
+
       all_results.push(ExploreResult {
         id: chunk.id.to_string(),
         result_type: "code".to_string(),
         file: Some(chunk.file_path.clone()),
         lines: Some((chunk.start_line, chunk.end_line)),
-        preview: truncate_preview(&chunk.content, 200),
+        preview,
         symbols: chunk.symbols.clone(),
         language: Some(format!("{:?}", chunk.language).to_lowercase()),
         hints,
         context: None,
         score: similarity,
+        // Semantic metadata for relevance evaluation
+        definition_kind: chunk.definition_kind.clone(),
+        signature: chunk.signature.clone(),
+        docstring,
+        parent: chunk.parent_definition.clone(),
+        imports,
+        calls,
       });
     }
   }
@@ -101,6 +124,13 @@ pub async fn search(ctx: &ExploreContext<'_>, params: &SearchParams) -> Result<E
         hints,
         context: None,
         score: similarity * memory.salience, // Weight by salience
+        // Not applicable to memories
+        definition_kind: None,
+        signature: None,
+        docstring: None,
+        parent: None,
+        imports: vec![],
+        calls: vec![],
       });
     }
   }
@@ -129,6 +159,13 @@ pub async fn search(ctx: &ExploreContext<'_>, params: &SearchParams) -> Result<E
         hints,
         context: None,
         score: similarity,
+        // Not applicable to docs
+        definition_kind: None,
+        signature: None,
+        docstring: None,
+        parent: None,
+        imports: vec![],
+        calls: vec![],
       });
     }
   }

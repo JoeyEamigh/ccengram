@@ -58,18 +58,47 @@ fn format_explore_result(result: &ExploreResult, index: usize) -> String {
   output.push_str(&format!(" score=\"{:.2}\"", result.score));
   output.push_str(">\n");
 
+  // Definition kind and parent context (helps LLM evaluate relevance quickly)
+  if let Some(ref kind) = result.definition_kind {
+    let mut def_line = format!("Definition: {}", kind);
+    if let Some(ref parent) = result.parent {
+      def_line.push_str(&format!(" (in {})", parent));
+    }
+    output.push_str(&def_line);
+    output.push('\n');
+  }
+
   // Symbols
   if !result.symbols.is_empty() {
     output.push_str(&format!("Symbols: {}\n", result.symbols.join(", ")));
   }
 
-  // Hints
+  // Signature (most important for relevance - shows types, params, return)
+  if let Some(ref sig) = result.signature {
+    let clean_sig = sig.lines().map(|l| l.trim()).collect::<Vec<_>>().join(" ");
+    output.push_str(&format!("Signature: {}\n", truncate(&clean_sig, 150)));
+  }
+
+  // Docstring (natural language description)
+  if let Some(ref doc) = result.docstring {
+    output.push_str(&format!("Doc: {}\n", truncate(doc, 120)));
+  }
+
+  // Imports and calls (helps understand dependencies and behavior)
+  if !result.imports.is_empty() {
+    output.push_str(&format!("Uses: {}\n", result.imports.join(", ")));
+  }
+  if !result.calls.is_empty() {
+    output.push_str(&format!("Calls: {}\n", result.calls.join(", ")));
+  }
+
+  // Hints (navigation counts)
   let hints = format_hints(&result.hints);
   if !hints.is_empty() {
     output.push_str(&format!("Hints: {}\n", hints.join(" | ")));
   }
 
-  // Preview
+  // Preview (now contains semantic content, not just truncated code)
   output.push('\n');
   output.push_str(&format_code_block(&result.preview, result.language.as_deref()));
 
@@ -451,6 +480,12 @@ mod tests {
       },
       context: None,
       score: 0.95,
+      definition_kind: Some("function".to_string()),
+      signature: Some("fn test() -> Result<()>".to_string()),
+      docstring: Some("A test function".to_string()),
+      parent: Some("TestModule".to_string()),
+      imports: vec!["std::io".to_string()],
+      calls: vec!["helper".to_string()],
     };
 
     let output = format_explore_result(&result, 1);
@@ -459,6 +494,12 @@ mod tests {
     assert!(output.contains("lines=\"10-20\""));
     assert!(output.contains("5 callers"));
     assert!(output.contains("```rust"));
+    // New semantic fields
+    assert!(output.contains("Definition: function (in TestModule)"));
+    assert!(output.contains("Signature: fn test() -> Result<()>"));
+    assert!(output.contains("Doc: A test function"));
+    assert!(output.contains("Uses: std::io"));
+    assert!(output.contains("Calls: helper"));
   }
 
   #[test]
@@ -529,6 +570,12 @@ mod tests {
         memories: vec![],
       }),
       score: 0.95,
+      definition_kind: None,
+      signature: None,
+      docstring: None,
+      parent: None,
+      imports: vec![],
+      calls: vec![],
     };
 
     let output = format_explore_result(&result, 1);

@@ -26,13 +26,15 @@ mod reader;
 mod scanner;
 mod writer;
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+  path::PathBuf,
+  sync::{Arc, atomic::AtomicUsize},
+};
 
 use tokio::sync::{Mutex, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-pub use self::{embedder::EmbedderConfig, writer::WriterConfig};
 use self::{
   embedder::embedder_stage,
   parser::{parser_done_aggregator, parser_worker},
@@ -40,8 +42,15 @@ use self::{
   scanner::scanner_stage,
   writer::writer_stage,
 };
+pub use self::{
+  embedder::{EmbedderConfig, ProcessedFile},
+  writer::WriterConfig,
+};
 use crate::{
-  actor::{indexer::PipelineConfig, message::IndexProgress},
+  actor::{
+    indexer::PipelineConfig,
+    message::{IndexProgress, PipelineStage},
+  },
   context::files::Indexer,
   db::ProjectDb,
   embedding::{EmbeddingError, EmbeddingProvider},
@@ -89,24 +98,25 @@ pub async fn run_pipeline(
   // Create child cancellation token for this pipeline
   let pipeline_cancel = cancel.child_token();
 
-  // Keep a clone of progress_tx for sending final progress with chunk count
-  let final_progress_tx = progress_tx.clone();
-
-  // Spawn scanner stage
+  // Spawn scanner stage (fast, no progress - embedder/writer report progress)
   let scanner_cancel = pipeline_cancel.clone();
   let scanner_root = root.clone();
   tokio::spawn(async move {
-    scanner_stage(scanner_root, files, scanner_tx, progress_tx, scanner_cancel).await;
+    scanner_stage(scanner_root, files, scanner_tx, None, scanner_cancel).await;
   });
 
-  // Spawn reader workers
+  // Spawn reader workers with shared progress counter
+  let reader_progress_counter = Arc::new(AtomicUsize::new(0));
   for worker_id in 0..config.reader_workers {
     let rx = scanner_rx.clone();
     let tx = reader_tx.clone();
     let done_tx = reader_done_tx.clone();
     let cancel = pipeline_cancel.clone();
+    let ptx = progress_tx.clone();
+    let counter = reader_progress_counter.clone();
+    let total = file_count;
     tokio::spawn(async move {
-      reader_worker(worker_id, rx, tx, done_tx, cancel).await;
+      reader_worker(worker_id, rx, tx, done_tx, cancel, ptx, counter, total).await;
     });
   }
   drop(reader_done_tx);
@@ -118,7 +128,8 @@ pub async fn run_pipeline(
   });
   drop(reader_tx);
 
-  // Spawn parser workers - each gets a clone of the indexer
+  // Spawn parser workers with shared progress counter
+  let parser_progress_counter = Arc::new(AtomicUsize::new(0));
   for worker_id in 0..config.parser_workers {
     let rx = reader_rx.clone();
     let tx = parser_tx.clone();
@@ -127,8 +138,24 @@ pub async fn run_pipeline(
     let cancel = pipeline_cancel.clone();
     let root = root.clone();
     let worker_indexer = indexer.clone();
+    let ptx = progress_tx.clone();
+    let counter = parser_progress_counter.clone();
+    let total = file_count;
     tokio::spawn(async move {
-      parser_worker(worker_id, root, worker_indexer, rx, tx, done_tx, db, cancel).await;
+      parser_worker(
+        worker_id,
+        root,
+        worker_indexer,
+        rx,
+        tx,
+        done_tx,
+        db,
+        cancel,
+        ptx,
+        counter,
+        total,
+      )
+      .await;
     });
   }
   drop(parser_done_tx);
@@ -140,10 +167,11 @@ pub async fn run_pipeline(
   });
   drop(parser_tx);
 
-  // Spawn embedder stage
-  let embedder_config = EmbedderConfig::from_pipeline_config(&config, db.vector_dim);
+  // Spawn embedder stage with progress reporting
+  let embedder_config = EmbedderConfig::from_pipeline_config(&config, db.vector_dim).with_total_files(file_count);
   let embedder_cancel = pipeline_cancel.clone();
   let embedder_indexer = indexer.clone();
+  let embedder_progress = progress_tx.clone();
   tokio::spawn(async move {
     embedder_stage(
       embedder_indexer,
@@ -151,6 +179,7 @@ pub async fn run_pipeline(
       embedder_tx,
       embedding_provider,
       embedder_config,
+      embedder_progress,
       embedder_cancel,
     )
     .await;
@@ -158,11 +187,21 @@ pub async fn run_pipeline(
 
   // Run writer stage in the current task (blocks until complete)
   let writer_config = if let Some(ref pid) = project_id {
-    WriterConfig::from_pipeline_config(&config).with_project(root.clone(), pid.clone())
-  } else {
     WriterConfig::from_pipeline_config(&config)
+      .with_project(root.clone(), pid.clone())
+      .with_total_files(file_count)
+  } else {
+    WriterConfig::from_pipeline_config(&config).with_total_files(file_count)
   };
-  let writer_stats = writer_stage(indexer, embedder_rx, db, writer_config, pipeline_cancel).await;
+  let writer_stats = writer_stage(
+    indexer,
+    embedder_rx,
+    db,
+    writer_config,
+    progress_tx.clone(),
+    pipeline_cancel,
+  )
+  .await;
 
   debug!(
     file_count,
@@ -171,8 +210,9 @@ pub async fn run_pipeline(
   );
 
   // Send final progress with chunk count
-  if let Some(tx) = final_progress_tx {
-    let final_progress = IndexProgress::new(file_count, file_count).with_chunks_created(writer_stats.chunks_written);
+  if let Some(tx) = progress_tx {
+    let final_progress = IndexProgress::new(PipelineStage::Writing, file_count, file_count)
+      .with_chunks_created(writer_stats.chunks_written);
     let _ = tx.send(final_progress).await;
   }
 

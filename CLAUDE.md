@@ -89,5 +89,5 @@ When writing a test, think to yourself: "Is this complex enough that it could ha
 - always use message passing over shared state
 - use `tracing` for logging, using `trace!`, `debug!`, `info!`, `warn!`, and `error!` as appropriate (`trace!` and `debug!` can be especially useful). you should use `#[tracing::instrument]` at a trace level (for the span close mainly) on functions when interacting with external systems or performing significant operations (io, db access, etc)
 - NEVER use `std::io` or `std::fs` directly. use `tokio::fs` and `tokio::io` only. all io MUST be async.
-- do NOT fix warnings, especially dead code warnings. do not disable the warnings. just ignore them. **IGNORE THEM!**
+- do NOT mute warnings.
 - do NOT use excessive comments. well-written code is self-explanatory. avoid inline comments unless necessary for clarity (non-obvious behavior).

@@ -1,15 +1,18 @@
 //! Logging utilities for CLI commands and daemon
 
-use std::path::PathBuf;
-
 use ccengram::config::Config;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{EnvFilter, fmt::format::FmtSpan, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Initialize logging for CLI commands (console only)
 pub fn init_cli_logging() {
+  // Build env filter (allows RUST_LOG override)
+  let env_filter = EnvFilter::builder()
+    .with_default_directive(tracing::Level::INFO.into())
+    .from_env_lossy();
+
   tracing_subscriber::fmt()
-    .with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
+    .with_env_filter(env_filter)
     .with_span_events(FmtSpan::CLOSE)
     .init();
 }
@@ -34,17 +37,31 @@ fn parse_log_level(level: &str) -> tracing::Level {
 /// Returns the guard that must be kept alive for the duration of the program
 pub async fn init_daemon_logging_with_config(foreground: bool) -> Option<WorkerGuard> {
   // Load config from current directory (or defaults)
-  let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-  let config = Config::load_for_project(&cwd).await;
+  let config = Config::load_global().await;
   let daemon_config = &config.daemon;
 
   // Parse log level from config
   let level = parse_log_level(&daemon_config.log_level);
+  let default_directive = level.into();
 
-  // Build env filter (allows RUST_LOG override)
+  // directives for debug builds
+  #[cfg(debug_assertions)]
+  let filter_directives = if let Ok(filter) = std::env::var("RUST_LOG") {
+    filter
+  } else {
+    "ccengram=trace,llm=trace".to_string()
+  };
+
+  #[cfg(not(debug_assertions))]
+  let filter_directives = if let Ok(filter) = std::env::var("RUST_LOG") {
+    filter
+  } else {
+    format!("ccengram={},llm={}", &daemon_config.log_level, &daemon_config.log_level)
+  };
+
   let env_filter = EnvFilter::builder()
-    .with_default_directive(level.into())
-    .from_env_lossy();
+    .with_default_directive(default_directive)
+    .parse_lossy(filter_directives);
 
   // Setup file logging
   let log_dir = ccengram::dirs::default_data_dir();
@@ -65,7 +82,7 @@ pub async fn init_daemon_logging_with_config(foreground: bool) -> Option<WorkerG
 
   if foreground {
     // Foreground mode: both console (with colors) and file logging
-    tracing_subscriber::registry()
+    let subscriber = tracing_subscriber::registry()
       .with(env_filter)
       .with(
         tracing_subscriber::fmt::layer()
@@ -80,17 +97,26 @@ pub async fn init_daemon_logging_with_config(foreground: bool) -> Option<WorkerG
           .with_writer(file_writer)
           .with_span_events(FmtSpan::CLOSE)
           .with_target(true),
-      )
-      .init();
+      );
+
+    #[cfg(feature = "tracy")]
+    let subscriber = subscriber.with(tracing_tracy::TracyLayer::default());
+
+    subscriber.init();
   } else {
     // Background mode: file logging only (no ANSI)
-    tracing_subscriber::fmt::Subscriber::builder()
-      .with_env_filter(env_filter)
-      .with_span_events(FmtSpan::CLOSE)
-      .with_target(true)
-      .with_ansi(false)
-      .with_writer(file_writer)
-      .init();
+    let subscriber = tracing_subscriber::registry().with(env_filter).with(
+      tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_writer(file_writer)
+        .with_span_events(FmtSpan::CLOSE)
+        .with_target(true),
+    );
+
+    #[cfg(feature = "tracy")]
+    let subscriber = subscriber.with(tracing_tracy::TracyLayer::default());
+
+    subscriber.init();
   }
 
   Some(guard)

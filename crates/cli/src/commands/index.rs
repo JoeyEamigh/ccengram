@@ -1,6 +1,6 @@
 //! Index commands for code and documents
 
-use std::{io::IsTerminal, path::Path};
+use std::{collections::HashMap, io::IsTerminal, path::Path};
 
 use anyhow::{Context, Result};
 use ccengram::ipc::{
@@ -9,6 +9,7 @@ use ccengram::ipc::{
   docs::{DocsIngestFullResult, DocsIngestParams},
   system::ProjectStatsParams,
 };
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use tracing::error;
 
 use crate::IndexCommand;
@@ -77,7 +78,7 @@ async fn cmd_index_all(force: bool) -> Result<()> {
   Ok(())
 }
 
-/// Run a streaming request and show progress
+/// Run a streaming request and show progress with per-stage bars
 async fn run_with_progress<R>(
   client: &ccengram::ipc::Client,
   params: R,
@@ -88,25 +89,60 @@ where
   R::Response: Send + 'static,
 {
   let mut rx = client.call_streaming(params).await?;
-  let mut last_message = String::new();
+
+  // Set up multi-progress for per-stage bars
+  let mp = MultiProgress::new();
+  let mut stage_bars: HashMap<String, ProgressBar> = HashMap::new();
+
+  let stage_style = ProgressStyle::default_bar()
+    .template("{prefix:>12.cyan} [{bar:30.cyan/blue}] {pos:>5}/{len:>5} {msg}")
+    .unwrap()
+    .progress_chars("=>-");
 
   while let Some(update) = rx.recv().await {
     match update {
-      StreamUpdate::Progress { message, percent } => {
-        if show_progress && message != last_message {
-          if let Some(pct) = percent {
-            print!("\r\x1b[K  [{:3}%] {}", pct, message);
-          } else {
-            print!("\r\x1b[K  {}", message);
+      StreamUpdate::Progress {
+        message: _,
+        percent: _,
+        stage,
+      } => {
+        if show_progress
+          && let (Some(stage_name), Some(processed), Some(total)) = (&stage.stage, stage.processed, stage.total)
+        {
+          // Get or create progress bar for this stage
+          let pb = stage_bars.entry(stage_name.clone()).or_insert_with(|| {
+            let pb = mp.add(ProgressBar::new(total as u64));
+            pb.set_style(stage_style.clone());
+            pb.set_prefix(stage_name.clone());
+            pb
+          });
+
+          // Update the bar
+          pb.set_length(total as u64);
+          pb.set_position(processed as u64);
+
+          // Show current file (truncated if needed)
+          if let Some(ref file) = stage.current_file {
+            let file_display = if file.len() > 40 {
+              format!("...{}", &file[file.len() - 37..])
+            } else {
+              file.clone()
+            };
+            pb.set_message(file_display);
           }
-          use std::io::Write;
-          let _ = std::io::stdout().flush();
-          last_message = message;
+
+          // For writing stage, show chunks in message
+          if stage_name == "writing"
+            && let Some(chunks) = stage.chunks_created
+          {
+            pb.set_message(format!("{} chunks", chunks));
+          }
         }
       }
       StreamUpdate::Done(result) => {
-        if show_progress {
-          println!("\r\x1b[K"); // Clear progress line
+        // Finish all progress bars
+        for (_, pb) in stage_bars {
+          pb.finish_and_clear();
         }
         return result.map_err(|e| anyhow::anyhow!("{}", e));
       }
@@ -199,10 +235,11 @@ pub async fn cmd_index_file(path: &str, title: Option<&str>, _force: bool) -> Re
 
     let params = CodeIndexParams {
       force: true,
-      ..Default::default()
+      stream: true,
     };
 
-    match client.call(params).await {
+    let is_tty = std::io::stdout().is_terminal();
+    match run_with_progress(&client, params, is_tty).await {
       Ok(result) => {
         println!(
           "Indexed code file '{}' ({} chunks)",

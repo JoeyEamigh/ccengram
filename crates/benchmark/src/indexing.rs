@@ -15,11 +15,12 @@ use ccengram::ipc::{
   project::ProjectCleanParams,
   watch::{WatchStartParams, WatchStatusParams, WatchStopParams},
 };
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::{
-  Result,
+  BenchmarkError, Result,
   fixtures::FixtureGenerator,
   metrics::{
     IncrementalBenchResult, IncrementalReport, IncrementalSummary, IndexingMetrics, LargeFileBenchResult,
@@ -229,12 +230,36 @@ impl IndexingReport {
 pub struct IndexingBenchmark {
   client: Client,
   cache_dir: Option<PathBuf>,
+  /// Cached daemon PID for resource monitoring
+  daemon_pid: Option<u32>,
 }
 
 impl IndexingBenchmark {
   /// Create a new indexing benchmark runner.
   pub fn new(client: Client, cache_dir: Option<PathBuf>) -> Self {
-    Self { client, cache_dir }
+    Self {
+      client,
+      cache_dir,
+      daemon_pid: None,
+    }
+  }
+
+  /// Get the daemon PID, fetching it if not cached.
+  async fn get_daemon_pid(&mut self) -> Result<u32> {
+    if let Some(pid) = self.daemon_pid {
+      return Ok(pid);
+    }
+
+    use ccengram::ipc::system::StatusParams;
+
+    let status = self
+      .client
+      .call(StatusParams)
+      .await
+      .map_err(|e| BenchmarkError::Execution(format!("Failed to get daemon status: {}", e)))?;
+
+    self.daemon_pid = Some(status.pid);
+    Ok(status.pid)
   }
 
   /// Check if the daemon is running.
@@ -251,6 +276,8 @@ impl IndexingBenchmark {
   pub async fn run(&mut self, repos: &[TargetRepo], iterations: usize, cold_start: bool) -> Result<IndexingReport> {
     let mut results = Vec::new();
 
+    let mp = MultiProgress::new();
+
     for repo in repos {
       info!("Benchmarking indexing for: {}", repo);
 
@@ -266,10 +293,11 @@ impl IndexingBenchmark {
           self.clear_index(&repo_path).await?;
         }
 
-        // Run indexing and collect metrics
+        // Run indexing and collect metrics with per-stage progress
         let result = self
-          .run_single_index(&repo.to_string(), &repo_path, i, cold_start && i == 0)
+          .run_single_index(&repo.to_string(), &repo_path, i, cold_start && i == 0, &mp)
           .await?;
+
         results.push(result);
       }
     }
@@ -284,21 +312,88 @@ impl IndexingBenchmark {
     repo_path: &Path,
     iteration: usize,
     cold_start: bool,
+    mp: &MultiProgress,
   ) -> Result<IndexingBenchResult> {
-    let mut monitor = ResourceMonitor::new();
+    use std::collections::HashMap;
+
+    use ccengram::ipc::StreamUpdate;
+
+    let daemon_pid = self.get_daemon_pid().await?;
+    let mut monitor = ResourceMonitor::new(daemon_pid);
     monitor.snapshot();
 
     let start = Instant::now();
 
-    // Send index request to daemon
+    // Create per-stage progress bars
+    let stage_style = ProgressStyle::default_bar()
+      .template("{prefix:>12.cyan} [{bar:30.cyan/blue}] {pos:>5}/{len:>5} {msg}")
+      .unwrap()
+      .progress_chars("=>-");
+
+    let mut stage_bars: HashMap<String, ProgressBar> = HashMap::new();
+
+    let create_stage_bar = |mp: &MultiProgress, stage: &str| -> ProgressBar {
+      let pb = mp.add(ProgressBar::new(100));
+      pb.set_style(stage_style.clone());
+      pb.set_prefix(stage.to_string());
+      pb
+    };
+
+    // Send index request to daemon with streaming enabled
     self.client.change_cwd(repo_path.to_path_buf());
-    let result: CodeIndexResult = self
+    let mut rx = self
       .client
-      .call(CodeIndexParams {
+      .call_streaming(CodeIndexParams {
         force: cold_start,
-        stream: false,
+        stream: true,
       })
       .await?;
+
+    // Process streaming updates
+    let mut result: Option<CodeIndexResult> = None;
+    while let Some(update) = rx.recv().await {
+      match update {
+        StreamUpdate::Progress {
+          message: _,
+          percent: _,
+          stage,
+        } => {
+          // Update or create stage progress bar
+          if let Some(stage_name) = &stage.stage {
+            let pb = stage_bars
+              .entry(stage_name.clone())
+              .or_insert_with(|| create_stage_bar(mp, stage_name));
+
+            if let (Some(processed), Some(total)) = (stage.processed, stage.total) {
+              pb.set_length(total as u64);
+              pb.set_position(processed as u64);
+            }
+
+            if let Some(ref file) = stage.current_file {
+              pb.set_message(file.clone());
+            }
+
+            // Show chunks for writing stage
+            if stage_name == "writing"
+              && let Some(chunks) = stage.chunks_created
+            {
+              pb.set_message(format!("{} chunks", chunks));
+            }
+          }
+        }
+        StreamUpdate::Done(res) => {
+          result = Some(res?);
+          break;
+        }
+      }
+    }
+
+    // Finish all progress bars
+    for (_, pb) in stage_bars {
+      pb.finish_and_clear();
+    }
+
+    let result = result.ok_or_else(|| BenchmarkError::Execution("No result from indexing".into()))?;
     let elapsed = start.elapsed();
 
     monitor.snapshot();
@@ -330,8 +425,9 @@ impl IndexingBenchmark {
       embeddings_per_sec,
     };
 
-    debug!(
-      "  Indexed {} files, {} chunks in {:.2}s ({:.0} chunks/sec)",
+    println!(
+      "{}: {} files, {} chunks in {:.1}s ({:.0} chunks/sec)",
+      repo_name,
       files_indexed,
       chunks_created,
       wall_time_ms as f64 / 1000.0,
@@ -394,6 +490,8 @@ pub struct IncrementalBenchmark {
   client: Client,
   cache_dir: Option<PathBuf>,
   config: IncrementalBenchConfig,
+  /// Cached daemon PID for resource monitoring
+  daemon_pid: Option<u32>,
 }
 
 impl IncrementalBenchmark {
@@ -403,7 +501,26 @@ impl IncrementalBenchmark {
       client,
       cache_dir,
       config: IncrementalBenchConfig::default(),
+      daemon_pid: None,
     }
+  }
+
+  /// Get the daemon PID, fetching it if not cached.
+  async fn get_daemon_pid(&mut self) -> Result<u32> {
+    if let Some(pid) = self.daemon_pid {
+      return Ok(pid);
+    }
+
+    use ccengram::ipc::system::StatusParams;
+
+    let status = self
+      .client
+      .call(StatusParams)
+      .await
+      .map_err(|e| BenchmarkError::Execution(format!("Failed to get daemon status: {}", e)))?;
+
+    self.daemon_pid = Some(status.pid);
+    Ok(status.pid)
   }
 
   /// Set benchmark configuration.
@@ -412,32 +529,84 @@ impl IncrementalBenchmark {
     self
   }
 
+  /// Check if the daemon is running.
+  pub async fn check_daemon(&self) -> bool {
+    use ccengram::ipc::system::HealthCheckParams;
+
+    match self.client.call(HealthCheckParams).await {
+      Ok(result) => result.healthy,
+      Err(_) => false,
+    }
+  }
+
   /// Run incremental indexing benchmark for specified repositories.
+  ///
+  /// This benchmark tests **startup_scan** performance: how quickly the system
+  /// detects and indexes files that were added while the watcher was stopped.
+  ///
+  /// Flow per iteration:
+  /// 1. Ensure watcher is stopped
+  /// 2. Create fixture files (simulating changes while daemon was down)
+  /// 3. Start watcher (triggers startup_scan)
+  /// 4. Wait for startup_scan to detect and index the new files
+  /// 5. Stop watcher
+  /// 6. Measure time and verify results
   pub async fn run(&mut self, repos: &[TargetRepo]) -> Result<IncrementalReport> {
     let mut results = Vec::new();
     let mut large_file_results = Vec::new();
 
+    // Get daemon PID for resource monitoring
+    let daemon_pid = self.get_daemon_pid().await?;
+
+    // Total work: iterations per repo + large file tests (4 sizes) per repo
+    let total_work = repos.len() * (self.config.iterations + 4);
+    let pb = ProgressBar::new(total_work as u64);
+    pb.set_style(
+      ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} {msg}")
+        .unwrap()
+        .progress_chars("#>-"),
+    );
+
     for repo in repos {
+      pb.set_message(format!("{}: preparing", repo));
       info!("Running incremental benchmark for: {}", repo);
 
       let repo_path = prepare_repo(*repo, self.cache_dir.clone()).await?;
       self.client.change_cwd(repo_path.clone());
 
       // Ensure index exists first
-      self.ensure_indexed(&repo_path).await?;
+      pb.set_message(format!("{}: ensuring indexed", repo));
+      self.ensure_indexed().await?;
 
-      // Run incremental tests
+      // Ensure watcher is stopped before we begin
+      let _ = self.client.call(WatchStopParams).await;
+
+      // Run startup_scan tests (files created while watcher stopped)
       for iteration in 0..self.config.iterations {
+        pb.set_message(format!(
+          "{}: startup_scan {}/{}",
+          repo,
+          iteration + 1,
+          self.config.iterations
+        ));
         info!("  Iteration {}/{}", iteration + 1, self.config.iterations);
 
-        let result = self.run_incremental_iteration(&repo.to_string(), &repo_path).await?;
+        let result = self
+          .run_startup_scan_iteration(&repo.to_string(), &repo_path, daemon_pid)
+          .await?;
         results.push(result);
+        pb.inc(1);
       }
 
-      // Run large file tests
-      let large_results = self.run_large_file_tests(&repo_path).await?;
+      // Run large file tests using watcher
+      let large_results = self
+        .run_large_file_tests_with_progress(&repo_path, &pb, repo, daemon_pid)
+        .await?;
       large_file_results.extend(large_results);
     }
+
+    pb.finish_with_message("done");
 
     let summary = Self::compute_summary(&results, &large_file_results, self.config.threshold_ms_per_file);
 
@@ -451,65 +620,190 @@ impl IncrementalBenchmark {
   }
 
   /// Ensure the repository is indexed before incremental tests.
-  async fn ensure_indexed(&self, _repo_path: &Path) -> Result<()> {
-    let stats = self.client.call(CodeStatsParams).await?;
+  ///
+  /// If not indexed, returns an error - use `index-perf` to index first.
+  async fn ensure_indexed(&self) -> Result<()> {
+    info!("Checking if repository is indexed...");
+
+    let stats = tokio::time::timeout(Duration::from_secs(30), self.client.call(CodeStatsParams))
+      .await
+      .map_err(|_| BenchmarkError::Execution("Timeout waiting for CodeStats".into()))?
+      .map_err(BenchmarkError::Ipc)?;
 
     if stats.total_chunks == 0 {
-      info!("Repository not indexed, running initial index...");
-      let _ = self
-        .client
-        .call(CodeIndexParams {
-          force: false,
-          stream: false,
-        })
-        .await?;
+      return Err(BenchmarkError::Execution(
+        "Repository not indexed. Run `index-perf` first to create initial index.".into(),
+      ));
     }
 
+    info!("Repository has {} chunks indexed", stats.total_chunks);
     Ok(())
   }
 
-  /// Run a single incremental indexing iteration.
-  async fn run_incremental_iteration(&self, repo_name: &str, repo_path: &Path) -> Result<IncrementalBenchResult> {
+  /// Run a single startup_scan iteration.
+  ///
+  /// Tests how quickly startup_scan detects all types of file changes:
+  /// - Added files (new files created while watcher was stopped)
+  /// - Modified files (existing indexed files with changed content)
+  /// - Deleted files (indexed files removed from disk)
+  ///
+  /// Flow:
+  /// 1. Setup: Create files, index them via startup_scan
+  /// 2. Changes: Create new files, modify some existing, delete some existing
+  /// 3. Detection: Start watcher, verify startup_scan detects all changes
+  async fn run_startup_scan_iteration(
+    &self,
+    repo_name: &str,
+    repo_path: &Path,
+    daemon_pid: u32,
+  ) -> Result<IncrementalBenchResult> {
     let mut fixtures = FixtureGenerator::new(repo_path).await?;
-    let mut monitor = ResourceMonitor::new();
+    let mut monitor = ResourceMonitor::new(daemon_pid);
 
-    // Get initial chunk count
-    let initial_stats = self.client.call(CodeStatsParams).await?;
-    let initial_chunks = initial_stats.total_chunks;
+    // Clean up any stale fixtures from previous crashed runs
+    fixtures.cleanup().await?;
 
-    // Create test files with unique markers
-    let mut created_markers = Vec::new();
-    for i in 0..self.config.files_per_iteration {
-      let (_, marker) = fixtures.create_rust_file(&format!("incremental_{}", i)).await?;
-      created_markers.push(marker);
+    // Trigger startup scan to remove stale chunks from DB
+    // (the files were deleted from disk, startup scan will detect and remove chunks)
+    let _ = self.client.call(WatchStartParams).await;
+    self.wait_for_watcher_idle().await?;
+    let _ = self.client.call(WatchStopParams).await;
+
+    // Re-create the fixtures directory after cleanup
+    fixtures = FixtureGenerator::new(repo_path).await?;
+
+    // Get baseline chunk count (now clean of stale fixtures)
+    let baseline_stats = self.client.call(CodeStatsParams).await?;
+    let baseline_chunks = baseline_stats.total_chunks;
+
+    // =========================================================================
+    // SETUP PHASE: Create files and index them
+    // =========================================================================
+
+    // Split files_per_iteration into 3 groups: will_modify, will_delete, will_keep
+    let files_to_modify = self.config.files_per_iteration / 3;
+    let files_to_delete = self.config.files_per_iteration / 3;
+    let files_to_add = self.config.files_per_iteration - files_to_modify - files_to_delete;
+
+    // Create initial files (these will be modified or deleted later)
+    let mut setup_files: Vec<(PathBuf, String)> = Vec::new();
+    for i in 0..(files_to_modify + files_to_delete) {
+      let (path, marker) = fixtures.create_rust_file(&format!("setup_{}", i)).await?;
+      setup_files.push((path, marker));
     }
+
+    // Index the setup files via startup_scan
+    let watch_result = self.client.call(WatchStartParams).await?;
+    if let Some(scan) = &watch_result.startup_scan {
+      debug!(
+        "Startup scan: was_indexed={}, added={}, modified={}, deleted={}, moved={}, queued={}",
+        scan.was_indexed,
+        scan.files_added,
+        scan.files_modified,
+        scan.files_deleted,
+        scan.files_moved,
+        scan.files_queued
+      );
+    } else {
+      debug!("No startup scan performed");
+    }
+    self
+      .wait_for_indexing_complete(baseline_chunks, files_to_modify + files_to_delete)
+      .await?;
+    let _ = self.client.call(WatchStopParams).await;
+
+    // Verify setup files are indexed
+    let setup_stats = self.client.call(CodeStatsParams).await?;
+    let setup_chunks = setup_stats.total_chunks;
+    debug!(
+      "Setup complete: {} files indexed, {} total chunks",
+      setup_files.len(),
+      setup_chunks
+    );
+
+    // =========================================================================
+    // CHANGE PHASE: Make changes while watcher is stopped
+    // =========================================================================
+
+    // Split setup files into modify and delete groups
+    let (files_for_modify, files_for_delete) = setup_files.split_at(files_to_modify);
+
+    // Track markers for verification
+    let mut modified_new_markers: Vec<String> = Vec::new();
+    let mut modified_old_markers: Vec<String> = Vec::new();
+    let mut deleted_markers: Vec<String> = Vec::new();
+    let mut added_markers: Vec<String> = Vec::new();
+
+    // Modify files (append new content with new marker)
+    // Since we APPEND content, both old and new markers should be searchable after reindex
+    for (path, old_marker) in files_for_modify {
+      let new_marker = uuid::Uuid::new_v4().to_string();
+      let append_content = format!(
+        "\n// Modified content\n// New marker: {}\npub fn modified_function() {{}}\n",
+        new_marker
+      );
+      fixtures.modify_file(path, &append_content).await?;
+      modified_new_markers.push(new_marker);
+      modified_old_markers.push(old_marker.clone());
+    }
+
+    // Delete files
+    for (path, marker) in files_for_delete {
+      fixtures.delete_file(path).await?;
+      deleted_markers.push(marker.clone());
+    }
+
+    // Create new files
+    for i in 0..files_to_add {
+      let (_, marker) = fixtures.create_rust_file(&format!("added_{}", i)).await?;
+      added_markers.push(marker);
+    }
+
+    debug!(
+      "Changes made: {} modified, {} deleted, {} added",
+      files_to_modify, files_to_delete, files_to_add
+    );
+
+    // =========================================================================
+    // DETECTION PHASE: Start watcher and measure startup_scan
+    // =========================================================================
 
     monitor.snapshot();
     let start = Instant::now();
 
-    // Start watcher and trigger reindex
-    let _ = self.client.call(WatchStartParams).await;
+    // Start watcher - triggers startup_scan which should detect all changes
+    let watch_result = self.client.call(WatchStartParams).await?;
+    if let Some(scan) = &watch_result.startup_scan {
+      debug!(
+        "Detection scan: was_indexed={}, added={}, modified={}, deleted={}, moved={}, queued={}",
+        scan.was_indexed,
+        scan.files_added,
+        scan.files_modified,
+        scan.files_deleted,
+        scan.files_moved,
+        scan.files_queued
+      );
+    }
 
-    // Wait for watcher to process changes
-    self.wait_for_watcher_ready().await?;
-
-    // Trigger explicit reindex to ensure changes are processed
-    let _ = self
-      .client
-      .call(CodeIndexParams {
-        force: false,
-        stream: false,
-      })
-      .await?;
+    // Wait for startup_scan to complete
+    // Expected chunk changes: +added files, modified files should be re-chunked (net ~0), -deleted chunks
+    self.wait_for_watcher_idle().await?;
 
     let elapsed = start.elapsed();
     monitor.snapshot();
 
-    // Verify which files were indexed by searching for markers
+    // Stop watcher
+    let _ = self.client.call(WatchStopParams).await;
+
+    // =========================================================================
+    // VERIFICATION PHASE: Check all changes were detected
+    // =========================================================================
+
     let mut true_positives = 0;
     let mut false_negatives = 0;
 
-    for marker in &created_markers {
+    // Verify added files are searchable
+    for marker in &added_markers {
       let search_result = self
         .client
         .call(CodeSearchParams {
@@ -520,41 +814,88 @@ impl IncrementalBenchmark {
         .await?;
 
       if search_result.chunks.is_empty() {
+        debug!("Added file NOT found: {}", marker);
         false_negatives += 1;
       } else {
         true_positives += 1;
       }
     }
 
-    // Check for false positives by comparing chunk counts
-    let final_stats = self.client.call(CodeStatsParams).await?;
-    let chunks_added = final_stats.total_chunks.saturating_sub(initial_chunks);
+    // Verify modified files have new content indexed
+    for marker in &modified_new_markers {
+      let search_result = self
+        .client
+        .call(CodeSearchParams {
+          query: marker.clone(),
+          limit: Some(1),
+          ..Default::default()
+        })
+        .await?;
 
-    // Rough heuristic: if we added significantly more chunks than files, might have false positives
-    // This is imprecise but gives a signal
-    let expected_chunks = self.config.files_per_iteration * 2; // Rough estimate
-    let false_positives = if chunks_added > expected_chunks * 2 {
-      chunks_added - expected_chunks
-    } else {
-      0
-    };
+      if search_result.chunks.is_empty() {
+        debug!("Modified file new content NOT found: {}", marker);
+        false_negatives += 1;
+      } else {
+        true_positives += 1;
+      }
+    }
 
-    // Stop watcher
-    let _ = self.client.call(WatchStopParams).await;
+    // Verify modified files still have old content (we APPEND, not replace)
+    for marker in &modified_old_markers {
+      let search_result = self
+        .client
+        .call(CodeSearchParams {
+          query: marker.clone(),
+          limit: Some(1),
+          ..Default::default()
+        })
+        .await?;
+
+      if search_result.chunks.is_empty() {
+        debug!("Modified file old content NOT found: {}", marker);
+        false_negatives += 1;
+      } else {
+        true_positives += 1;
+      }
+    }
+
+    // Verify deleted files are NOT searchable
+    for marker in &deleted_markers {
+      let search_result = self
+        .client
+        .call(CodeSearchParams {
+          query: marker.clone(),
+          limit: Some(1),
+          ..Default::default()
+        })
+        .await?;
+
+      if !search_result.chunks.is_empty() {
+        debug!("Deleted file STILL found: {}", marker);
+        false_negatives += 1;
+      } else {
+        true_positives += 1;
+      }
+    }
 
     // Cleanup fixtures
     fixtures.cleanup().await?;
 
+    let total_files = files_to_add + files_to_modify + files_to_delete;
     let total_time_ms = elapsed.as_millis() as u64;
-    let time_per_file_ms = if self.config.files_per_iteration > 0 {
-      total_time_ms as f64 / self.config.files_per_iteration as f64
+    let time_per_file_ms = if total_files > 0 {
+      total_time_ms as f64 / total_files as f64
     } else {
       0.0
     };
 
+    // False positives: we don't have a good way to measure this in the new model
+    // (would need to verify no unexpected files were indexed)
+    let false_positives = 0;
+
     Ok(IncrementalBenchResult {
       repo: repo_name.to_string(),
-      files_modified: self.config.files_per_iteration,
+      files_modified: total_files,
       time_per_file_ms,
       true_positives,
       false_positives,
@@ -564,14 +905,92 @@ impl IncrementalBenchmark {
     })
   }
 
-  /// Wait for the watcher to finish processing.
-  async fn wait_for_watcher_ready(&self) -> Result<()> {
+  /// Wait for indexing to complete by polling chunk count.
+  async fn wait_for_indexing_complete(&self, initial_chunks: usize, expected_new_files: usize) -> Result<()> {
+    let timeout = Duration::from_secs(60);
+    let start = Instant::now();
+
+    // We expect at least 1 chunk per file
+    let min_expected_chunks = initial_chunks + expected_new_files;
+    let mut last_log = Instant::now();
+
+    loop {
+      if start.elapsed() > timeout {
+        warn!("Timeout waiting for indexing to complete");
+        break;
+      }
+
+      // Check watcher status first
+      let status = self.client.call(WatchStatusParams).await?;
+      let stats = self.client.call(CodeStatsParams).await?;
+
+      // Log status every 5 seconds for debugging
+      if last_log.elapsed() > Duration::from_secs(5) {
+        debug!(
+          "Wait status: scanning={}, pending={}, chunks={}/{} (need {})",
+          status.scanning,
+          status.pending_changes,
+          stats.total_chunks,
+          min_expected_chunks,
+          min_expected_chunks.saturating_sub(stats.total_chunks)
+        );
+        last_log = Instant::now();
+      }
+
+      // Done when: not scanning, no pending changes, and we have enough chunks
+      if !status.scanning && status.pending_changes == 0 && stats.total_chunks >= min_expected_chunks {
+        break;
+      }
+
+      tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    Ok(())
+  }
+
+  /// Run large file handling benchmarks with progress bar updates.
+  ///
+  /// Uses the watcher to detect and index large files.
+  async fn run_large_file_tests_with_progress(
+    &self,
+    repo_path: &Path,
+    pb: &ProgressBar,
+    repo: &TargetRepo,
+    daemon_pid: u32,
+  ) -> Result<Vec<LargeFileBenchResult>> {
+    let sizes_mb = [1, 5, 10, 50];
+    let mut results = Vec::new();
+
+    // Start watcher for large file tests
+    let _ = self.client.call(WatchStartParams).await;
+    self.wait_for_watcher_idle().await?;
+
+    for size_mb in sizes_mb {
+      let size_bytes = size_mb as u64 * 1024 * 1024;
+      pb.set_message(format!("{}: large file {} MB", repo, size_mb));
+      info!("  Testing large file: {} MB", size_mb);
+
+      let result = self
+        .run_single_large_file_test(repo_path, size_bytes, daemon_pid)
+        .await?;
+      results.push(result);
+      pb.inc(1);
+    }
+
+    // Stop watcher after large file tests
+    let _ = self.client.call(WatchStopParams).await;
+
+    Ok(results)
+  }
+
+  /// Wait for the watcher to be idle (no scanning, no pending changes).
+  async fn wait_for_watcher_idle(&self) -> Result<()> {
     let timeout = Duration::from_secs(30);
     let start = Instant::now();
 
     loop {
       if start.elapsed() > timeout {
-        warn!("Timeout waiting for watcher to be ready");
+        warn!("Timeout waiting for watcher to be idle");
         break;
       }
 
@@ -586,46 +1005,31 @@ impl IncrementalBenchmark {
     Ok(())
   }
 
-  /// Run large file handling benchmarks.
-  async fn run_large_file_tests(&self, repo_path: &Path) -> Result<Vec<LargeFileBenchResult>> {
-    let sizes_mb = [1, 5, 10, 50];
-    let mut results = Vec::new();
-
-    for size_mb in sizes_mb {
-      let size_bytes = size_mb as u64 * 1024 * 1024;
-      info!("  Testing large file: {} MB", size_mb);
-
-      let result = self.run_single_large_file_test(repo_path, size_bytes).await?;
-      results.push(result);
-    }
-
-    Ok(results)
-  }
-
-  /// Run a single large file benchmark.
-  async fn run_single_large_file_test(&self, repo_path: &Path, size_bytes: u64) -> Result<LargeFileBenchResult> {
+  /// Run a single large file benchmark using the watcher.
+  ///
+  /// Watcher should already be running when this is called.
+  async fn run_single_large_file_test(
+    &self,
+    repo_path: &Path,
+    size_bytes: u64,
+    daemon_pid: u32,
+  ) -> Result<LargeFileBenchResult> {
     let mut fixtures = FixtureGenerator::new(repo_path).await?;
-    let mut monitor = ResourceMonitor::new();
+    let mut monitor = ResourceMonitor::new(daemon_pid);
 
     // Get initial stats
     let initial_stats = self.client.call(CodeStatsParams).await?;
     let initial_chunks = initial_stats.total_chunks;
 
-    // Create large file
+    // Create large file (watcher will detect via inotify)
     let (path, marker) = fixtures.create_large_file(size_bytes).await?;
     let actual_size = tokio::fs::metadata(&path).await?.len();
 
     monitor.snapshot();
     let start = Instant::now();
 
-    // Trigger indexing
-    let _ = self
-      .client
-      .call(CodeIndexParams {
-        force: false,
-        stream: false,
-      })
-      .await?;
+    // Wait for watcher to detect and index the file
+    self.wait_for_indexing_complete(initial_chunks, 1).await?;
 
     let elapsed = start.elapsed();
     monitor.snapshot();

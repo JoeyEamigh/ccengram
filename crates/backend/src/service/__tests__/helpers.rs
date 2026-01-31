@@ -90,8 +90,8 @@ impl TestContext {
 
     self
       .db
-      .add_code_chunks(&chunks_with_embeddings)
+      .upsert_code_chunks(file_path, &chunks_with_embeddings)
       .await
-      .expect("add code chunks");
+      .expect("upsert code chunks");
   }
 }

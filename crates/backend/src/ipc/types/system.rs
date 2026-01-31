@@ -71,6 +71,7 @@ pub struct ResolveParams {
 pub struct StatusResult {
   pub status: String,
   pub version: String,
+  pub pid: u32,
   pub projects: usize,
   pub active_sessions: usize,
   pub idle_seconds: u64,

@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 /// Unique identifier for a document (newtype for type safety)
@@ -103,12 +104,22 @@ pub struct DocumentChunk {
   /// Character offset in original document
   pub char_offset: usize,
 
+  /// Hash of chunk content for deduplication and merge_insert key
+  /// Uses SHA-256 truncated to 16 hex chars
+  pub content_hash: String,
+
   /// Timestamps
   pub created_at: DateTime<Utc>,
   pub updated_at: DateTime<Utc>,
 }
 
 impl DocumentChunk {
+  /// Compute SHA-256 hash of content (truncated to 16 hex chars)
+  fn compute_content_hash(content: &str) -> String {
+    let result = Sha256::digest(content.as_bytes());
+    format!("{:016x}", u64::from_be_bytes(result[0..8].try_into().unwrap()))
+  }
+
   #[allow(clippy::too_many_arguments)]
   pub fn new(
     document_id: DocumentId,
@@ -122,6 +133,7 @@ impl DocumentChunk {
     char_offset: usize,
   ) -> Self {
     let now = Utc::now();
+    let content_hash = Self::compute_content_hash(&content);
     Self {
       id: DocumentId::new(),
       document_id,
@@ -133,6 +145,7 @@ impl DocumentChunk {
       chunk_index,
       total_chunks,
       char_offset,
+      content_hash,
       created_at: now,
       updated_at: now,
     }
@@ -312,8 +325,9 @@ pub fn chunk_text(content: &str, params: &ChunkParams) -> Vec<(String, usize)> {
       // Flush current chunk first
       if !current_chunk.is_empty() {
         chunks.push((current_chunk.trim().to_string(), chunk_start_offset));
-        // Calculate overlap start
+        // Calculate overlap start - ensure we slice at a valid char boundary
         let overlap_start = current_chunk.len().saturating_sub(params.overlap);
+        let overlap_start = floor_char_boundary(&current_chunk, overlap_start);
         current_chunk = current_chunk[overlap_start..].to_string();
         chunk_start_offset = current_offset.saturating_sub(params.overlap);
       }
@@ -323,8 +337,9 @@ pub fn chunk_text(content: &str, params: &ChunkParams) -> Vec<(String, usize)> {
       for sentence in sentences {
         if current_chunk.len() + sentence.len() + 1 > params.chunk_size && !current_chunk.is_empty() {
           chunks.push((current_chunk.trim().to_string(), chunk_start_offset));
-          // Keep overlap
+          // Keep overlap - ensure we slice at a valid char boundary
           let overlap_start = current_chunk.len().saturating_sub(params.overlap);
+          let overlap_start = floor_char_boundary(&current_chunk, overlap_start);
           current_chunk = current_chunk[overlap_start..].to_string();
           chunk_start_offset = current_offset.saturating_sub(params.overlap);
         }
@@ -339,8 +354,9 @@ pub fn chunk_text(content: &str, params: &ChunkParams) -> Vec<(String, usize)> {
       // Add whole paragraph
       if current_chunk.len() + paragraph.len() + 2 > params.chunk_size && !current_chunk.is_empty() {
         chunks.push((current_chunk.trim().to_string(), chunk_start_offset));
-        // Keep overlap
+        // Keep overlap - ensure we slice at a valid char boundary
         let overlap_start = current_chunk.len().saturating_sub(params.overlap);
+        let overlap_start = floor_char_boundary(&current_chunk, overlap_start);
         current_chunk = current_chunk[overlap_start..].to_string();
         chunk_start_offset = current_offset.saturating_sub(params.overlap);
       }
@@ -362,6 +378,19 @@ pub fn chunk_text(content: &str, params: &ChunkParams) -> Vec<(String, usize)> {
   chunks.retain(|(s, _)| !s.is_empty());
 
   chunks
+}
+
+/// Finds the largest byte index <= `index` that is a valid char boundary.
+/// This ensures we never slice in the middle of a multi-byte UTF-8 character.
+fn floor_char_boundary(s: &str, index: usize) -> usize {
+  if index >= s.len() {
+    return s.len();
+  }
+  let mut i = index;
+  while i > 0 && !s.is_char_boundary(i) {
+    i -= 1;
+  }
+  i
 }
 
 #[cfg(test)]

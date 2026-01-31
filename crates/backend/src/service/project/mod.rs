@@ -26,8 +26,11 @@ use crate::{
 /// * `Ok(ProjectInfoResult)` - Project information
 /// * `Err(ServiceError)` - If query fails
 pub async fn info(db: &ProjectDb, project_id: &ProjectId, root: &Path) -> Result<ProjectInfoResult, ServiceError> {
-  let memory_count = db.list_memories(None, Some(1)).await.map(|m| m.len()).unwrap_or(0);
-  let code_chunk_count = db.list_code_chunks(None, Some(1)).await.map(|c| c.len()).unwrap_or(0);
+  // Run both queries in parallel - they read from different tables
+  let (memory_result, code_result) = tokio::join!(db.list_memories(None, Some(1)), db.list_code_chunks(None, Some(1)));
+
+  let memory_count = memory_result.map(|m| m.len()).unwrap_or(0);
+  let code_chunk_count = code_result.map(|c| c.len()).unwrap_or(0);
 
   Ok(ProjectInfoResult {
     id: project_id.to_string(),
@@ -61,10 +64,38 @@ pub async fn stats(
   project_uuid: &Uuid,
   root: &Path,
 ) -> Result<ProjectStatsResult, ServiceError> {
-  let memories = db.list_memories(None, None).await.map(|m| m.len()).unwrap_or(0);
-  let code_chunks = db.list_code_chunks(None, None).await.map(|c| c.len()).unwrap_or(0);
-  let documents = db.list_document_chunks(None, None).await.map(|d| d.len()).unwrap_or(0);
-  let sessions = db.count_sessions(project_uuid).await.unwrap_or(0);
+  use std::collections::HashMap;
+
+  // Run all four queries in parallel - they read from different tables
+  let (memories_result, code_result, doc_result, sessions_result) = tokio::join!(
+    db.list_memories(None, None),
+    db.list_code_chunks(None, None),
+    db.list_document_chunks(None, None),
+    db.count_sessions(project_uuid)
+  );
+
+  let memories_list = memories_result.unwrap_or_default();
+  let memories = memories_list.len();
+
+  // Calculate memory stats
+  let (memories_by_sector, average_salience) = if !memories_list.is_empty() {
+    let mut by_sector: HashMap<String, usize> = HashMap::new();
+    let mut total_salience = 0.0f32;
+
+    for m in &memories_list {
+      *by_sector.entry(m.sector.as_str().to_string()).or_default() += 1;
+      total_salience += m.salience;
+    }
+
+    let avg = total_salience / memories_list.len() as f32;
+    (Some(by_sector), Some(avg))
+  } else {
+    (None, None)
+  };
+
+  let code_chunks = code_result.map(|c| c.len()).unwrap_or(0);
+  let documents = doc_result.map(|d| d.len()).unwrap_or(0);
+  let sessions = sessions_result.unwrap_or(0);
 
   Ok(ProjectStatsResult {
     project_id: project_id.to_string(),
@@ -73,6 +104,8 @@ pub async fn stats(
     code_chunks,
     documents,
     sessions,
+    memories_by_sector,
+    average_salience,
   })
 }
 
@@ -88,24 +121,46 @@ pub async fn stats(
 /// * `Ok(ProjectCleanResult)` - Cleanup results with counts
 /// * `Err(ServiceError)` - If cleanup fails
 pub async fn clean(db: &ProjectDb, root: &Path) -> Result<ProjectCleanResult, ServiceError> {
-  // Get counts and delete all data
-  let memories = db.list_memories(None, None).await.unwrap_or_default();
+  // List all data in parallel first
+  let (memories_result, code_result, doc_result) = tokio::join!(
+    db.list_memories(None, None),
+    db.list_code_chunks(None, None),
+    db.list_document_chunks(None, None)
+  );
+
+  let memories = memories_result.unwrap_or_default();
+  let code_chunks = code_result.unwrap_or_default();
+  let documents = doc_result.unwrap_or_default();
+
   let memories_deleted = memories.len();
-  for memory in &memories {
-    let _ = db.delete_memory(&memory.id).await;
-  }
-
-  let code_chunks = db.list_code_chunks(None, None).await.unwrap_or_default();
   let code_chunks_deleted = code_chunks.len();
-  for chunk in &code_chunks {
-    let _ = db.delete_code_chunk(&chunk.id).await;
-  }
-
-  let documents = db.list_document_chunks(None, None).await.unwrap_or_default();
   let documents_deleted = documents.len();
-  for doc in &documents {
-    let _ = db.delete_document_chunk(&doc.id).await;
-  }
+
+  // Delete all data in parallel across different tables
+  let memory_ids: Vec<_> = memories.iter().map(|m| m.id).collect();
+  let code_ids: Vec<_> = code_chunks.iter().map(|c| c.id).collect();
+  let doc_ids: Vec<_> = documents.iter().map(|d| d.id).collect();
+
+  let delete_memories = async {
+    for id in &memory_ids {
+      let _ = db.delete_memory(id).await;
+    }
+  };
+
+  let delete_code = async {
+    for id in &code_ids {
+      let _ = db.delete_code_chunk(id).await;
+    }
+  };
+
+  let delete_docs = async {
+    for id in &doc_ids {
+      let _ = db.delete_document_chunk(id).await;
+    }
+  };
+
+  // Run all three deletion loops in parallel
+  tokio::join!(delete_memories, delete_code, delete_docs);
 
   Ok(ProjectCleanResult {
     path: root.to_string_lossy().to_string(),

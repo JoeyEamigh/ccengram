@@ -440,7 +440,7 @@ pub fn get_user_by_id(id: u64) -> Option<User> {
       docstring: None,
       parent_definition: None,
       embedding_text: Some("public function central_utility that calls process_data".to_string()),
-      content_hash: None,
+      content_hash: Some("central_hash_001".to_string()),
       caller_count: 50, // Called by many other functions
       callee_count: 1,
     };
@@ -466,7 +466,7 @@ pub fn get_user_by_id(id: u64) -> Option<User> {
       docstring: None,
       parent_definition: None,
       embedding_text: Some("public function isolated_helper that calls process_data".to_string()),
-      content_hash: None,
+      content_hash: Some("isolated_hash_001".to_string()),
       caller_count: 0, // Never called
       callee_count: 1,
     };
@@ -498,9 +498,14 @@ pub fn get_user_by_id(id: u64) -> Option<User> {
 
     ctx
       .db
-      .add_code_chunks(&[(central_chunk, central_embedding), (isolated_chunk, isolated_embedding)])
+      .upsert_code_chunks("src/utils/central.rs", &[(central_chunk, central_embedding)])
       .await
-      .expect("add code chunks");
+      .expect("upsert central chunk");
+    ctx
+      .db
+      .upsert_code_chunks("src/utils/isolated.rs", &[(isolated_chunk, isolated_embedding)])
+      .await
+      .expect("upsert isolated chunk");
 
     // Search for "utility" - should find both but central should rank higher
     let code_ctx = CodeContext::new(&ctx.db, ctx.embedding.as_ref());
@@ -574,7 +579,7 @@ pub fn get_user_by_id(id: u64) -> Option<User> {
       docstring: None,
       parent_definition: None,
       embedding_text: Some("public function popular_function utility".to_string()),
-      content_hash: None,
+      content_hash: Some("popular_hash_001".to_string()),
       caller_count: 15,
       callee_count: 0,
     };
@@ -600,7 +605,7 @@ pub fn get_user_by_id(id: u64) -> Option<User> {
       docstring: None,
       parent_definition: None,
       embedding_text: Some("public function unpopular_function utility".to_string()),
-      content_hash: None,
+      content_hash: Some("unpopular_hash_001".to_string()),
       caller_count: 2,
       callee_count: 0,
     };
@@ -632,12 +637,14 @@ pub fn get_user_by_id(id: u64) -> Option<User> {
 
     ctx
       .db
-      .add_code_chunks(&[
-        (popular_chunk, popular_embedding),
-        (unpopular_chunk, unpopular_embedding),
-      ])
+      .upsert_code_chunks("src/utils/popular.rs", &[(popular_chunk, popular_embedding)])
       .await
-      .expect("add code chunks");
+      .expect("upsert popular chunk");
+    ctx
+      .db
+      .upsert_code_chunks("src/utils/unpopular.rs", &[(unpopular_chunk, unpopular_embedding)])
+      .await
+      .expect("upsert unpopular chunk");
 
     // Search with min_caller_count filter
     let code_ctx = CodeContext::new(&ctx.db, ctx.embedding.as_ref());

@@ -4,7 +4,7 @@
 //! either LLM-based extraction or basic summary fallback.
 
 use llm::{ExtractedMemory, LlmProvider, SignalClassification};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 use super::context::SegmentContext;
@@ -117,7 +117,7 @@ pub async fn extract_memory(
   // Track hash
   seen_hashes.insert(content_hash);
 
-  info!("Extracted memory: {} ({:?})", memory.id, sector);
+  debug!("Extracted memory: {} ({:?})", memory.id, sector);
   Ok(ExtractMemoryResult {
     memory_id: Some(memory.id.to_string()),
   })
@@ -181,7 +181,7 @@ pub async fn store_extracted_memory(
   // Track hash
   seen_hashes.insert(content_hash);
 
-  info!(
+  debug!(
     "Stored LLM-extracted memory: {} ({:?}, {:?}, confidence: {:.2})",
     memory.id, sector, memory.memory_type, extracted.confidence
   );
@@ -226,7 +226,7 @@ pub async fn extract_with_llm(
           memories_created.push(id);
         }
       }
-      info!(
+      debug!(
         "LLM extraction completed: {} memories created from {} candidates",
         memories_created.len(),
         result.memories.len()
@@ -287,7 +287,7 @@ pub async fn extract_high_priority(
     return Ok(Vec::new());
   }
 
-  info!("High-priority signal detected: {:?}", classification.category);
+  debug!("High-priority signal detected: {:?}", classification.category);
 
   let mut memories_created = Vec::new();
 
@@ -301,7 +301,7 @@ pub async fn extract_high_priority(
         }
       }
       if !memories_created.is_empty() {
-        info!("High-priority extraction: {} memories", memories_created.len());
+        debug!("High-priority extraction: {} memories", memories_created.len());
       }
     }
     Err(e) => {

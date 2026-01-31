@@ -25,7 +25,7 @@ impl ProjectDb {
   #[tracing::instrument(level = "trace", skip(self, doc), fields(id = %doc.id))]
   pub async fn upsert_document_metadata(&self, doc: &Document) -> Result<()> {
     // Delete existing if present
-    let table = self.document_metadata_table().await?;
+    let table = self.document_metadata_table();
     table.delete(&format!("id = '{}'", doc.id)).await.ok();
 
     // Insert new
@@ -35,10 +35,37 @@ impl ProjectDb {
     Ok(())
   }
 
+  /// Batch add or update document metadata
+  ///
+  /// More efficient than calling `upsert_document_metadata` per document.
+  /// Uses a single delete with IN clause and a single batch insert.
+  #[tracing::instrument(level = "trace", skip(self, docs), fields(count = docs.len()))]
+  pub async fn upsert_document_metadata_batch(&self, docs: &[Document]) -> Result<()> {
+    if docs.is_empty() {
+      return Ok(());
+    }
+
+    let table = self.document_metadata_table();
+
+    // Delete all existing docs with one query using IN clause
+    let ids_filter = docs
+      .iter()
+      .map(|d| format!("'{}'", d.id))
+      .collect::<Vec<_>>()
+      .join(", ");
+    table.delete(&format!("id IN ({})", ids_filter)).await.ok();
+
+    // Insert all docs in one batch
+    let batch = documents_to_batch(docs)?;
+    let batches = RecordBatchIterator::new(vec![Ok(batch)], document_metadata_schema());
+    table.add(Box::new(batches)).execute().await?;
+    Ok(())
+  }
+
   /// Get document metadata by source path/URL
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn get_document_by_source(&self, source: &str) -> Result<Option<Document>> {
-    let table = self.document_metadata_table().await?;
+    let table = self.document_metadata_table();
 
     // Escape single quotes in source path
     let escaped_source = source.replace('\'', "''");
@@ -62,10 +89,44 @@ impl ProjectDb {
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn delete_document_by_source(&self, source: &str) -> Result<()> {
     let escaped_source = source.replace('\'', "''");
-    let table = self.document_metadata_table().await?;
+    let table = self.document_metadata_table();
     table.delete(&format!("source = '{}'", escaped_source)).await?;
     Ok(())
   }
+}
+
+/// Convert multiple Documents to a single Arrow RecordBatch (true batch insert)
+fn documents_to_batch(docs: &[Document]) -> Result<RecordBatch> {
+  let ids: Vec<String> = docs.iter().map(|d| d.id.to_string()).collect();
+  let project_ids: Vec<String> = docs.iter().map(|d| d.project_id.to_string()).collect();
+  let titles: Vec<&str> = docs.iter().map(|d| d.title.as_str()).collect();
+  let sources: Vec<&str> = docs.iter().map(|d| d.source.as_str()).collect();
+  let source_types: Vec<String> = docs.iter().map(|d| d.source_type.as_str().to_string()).collect();
+  let content_hashes: Vec<&str> = docs.iter().map(|d| d.content_hash.as_str()).collect();
+  let char_counts: Vec<u32> = docs.iter().map(|d| d.char_count as u32).collect();
+  let chunk_counts: Vec<u32> = docs.iter().map(|d| d.chunk_count as u32).collect();
+  let full_contents: Vec<Option<&str>> = docs.iter().map(|d| d.full_content.as_deref()).collect();
+  let created_ats: Vec<i64> = docs.iter().map(|d| d.created_at.timestamp_millis()).collect();
+  let updated_ats: Vec<i64> = docs.iter().map(|d| d.updated_at.timestamp_millis()).collect();
+
+  let batch = RecordBatch::try_new(
+    document_metadata_schema(),
+    vec![
+      Arc::new(StringArray::from(ids)),
+      Arc::new(StringArray::from(project_ids)),
+      Arc::new(StringArray::from(titles)),
+      Arc::new(StringArray::from(sources)),
+      Arc::new(StringArray::from(source_types)),
+      Arc::new(StringArray::from(content_hashes)),
+      Arc::new(UInt32Array::from(char_counts)),
+      Arc::new(UInt32Array::from(chunk_counts)),
+      Arc::new(StringArray::from(full_contents)),
+      Arc::new(Int64Array::from(created_ats)),
+      Arc::new(Int64Array::from(updated_ats)),
+    ],
+  )?;
+
+  Ok(batch)
 }
 
 /// Convert a Document to an Arrow RecordBatch

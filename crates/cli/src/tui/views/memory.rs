@@ -8,6 +8,14 @@ use ratatui::{
 
 use crate::tui::{theme::Theme, widgets::SalienceBar};
 
+/// Which panel is focused
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Panel {
+  #[default]
+  Left,
+  Right,
+}
+
 /// Sort order for memories
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum MemorySortBy {
@@ -44,7 +52,9 @@ pub struct MemoryState {
   pub search_query: String,
   pub filter_sector: Option<String>,
   pub sort_by: MemorySortBy,
-  pub detail_scroll: u16,
+  pub detail_scroll: usize,
+  /// Which panel is focused
+  pub focus: Panel,
   pub loading: bool,
   pub error: Option<String>,
 }
@@ -68,22 +78,44 @@ impl MemoryState {
     self.memories.get(self.selected)
   }
 
+  /// Toggle focus between panels
+  pub fn toggle_focus(&mut self) {
+    self.focus = match self.focus {
+      Panel::Left => Panel::Right,
+      Panel::Right => Panel::Left,
+    };
+  }
+
   pub fn select_next(&mut self) {
-    if self.memories.is_empty() {
-      return;
+    match self.focus {
+      Panel::Left => {
+        if self.memories.is_empty() {
+          return;
+        }
+        self.selected = (self.selected + 1).min(self.memories.len() - 1);
+        self.list_state.select(Some(self.selected));
+        self.detail_scroll = 0;
+      }
+      Panel::Right => {
+        self.detail_scroll = self.detail_scroll.saturating_add(1);
+      }
     }
-    self.selected = (self.selected + 1).min(self.memories.len() - 1);
-    self.list_state.select(Some(self.selected));
-    self.detail_scroll = 0;
   }
 
   pub fn select_prev(&mut self) {
-    if self.memories.is_empty() {
-      return;
+    match self.focus {
+      Panel::Left => {
+        if self.memories.is_empty() {
+          return;
+        }
+        self.selected = self.selected.saturating_sub(1);
+        self.list_state.select(Some(self.selected));
+        self.detail_scroll = 0;
+      }
+      Panel::Right => {
+        self.detail_scroll = self.detail_scroll.saturating_sub(1);
+      }
     }
-    self.selected = self.selected.saturating_sub(1);
-    self.list_state.select(Some(self.selected));
-    self.detail_scroll = 0;
   }
 
   pub fn scroll_detail_down(&mut self) {
@@ -158,6 +190,9 @@ impl Widget for MemoryView<'_> {
 
 impl MemoryView<'_> {
   fn render_list(&self, area: Rect, buf: &mut Buffer) {
+    let is_focused = self.state.focus == Panel::Left;
+    let border_color = if is_focused { Theme::ACCENT } else { Theme::OVERLAY };
+
     let sort_label = self.state.sort_by.label();
     let title = if !self.state.search_query.is_empty() {
       format!(
@@ -174,14 +209,14 @@ impl MemoryView<'_> {
         sort_label
       )
     } else {
-      format!("MEMORIES ({}) [{}]", self.state.memories.len(), sort_label)
+      format!("MEMORIES ({}) [{}] [Tab]", self.state.memories.len(), sort_label)
     };
 
     let block = Block::default()
       .title(title)
       .title_style(Style::default().fg(Theme::ACCENT).bold())
       .borders(Borders::ALL)
-      .border_style(Style::default().fg(Theme::ACCENT));
+      .border_style(Style::default().fg(border_color));
 
     let inner = block.inner(area);
     block.render(area, buf);
@@ -260,11 +295,14 @@ impl MemoryView<'_> {
   }
 
   fn render_detail(&self, area: Rect, buf: &mut Buffer) {
+    let is_focused = self.state.focus == Panel::Right;
+    let border_color = if is_focused { Theme::ACCENT } else { Theme::OVERLAY };
+
     let block = Block::default()
       .title("DETAIL")
       .title_style(Style::default().fg(Theme::ACCENT).bold())
       .borders(Borders::ALL)
-      .border_style(Style::default().fg(Theme::OVERLAY));
+      .border_style(Style::default().fg(border_color));
 
     let inner = block.inner(area);
     block.render(area, buf);
@@ -349,7 +387,7 @@ impl MemoryView<'_> {
     // Content
     let content = &memory.content;
     let lines: Vec<&str> = content.lines().collect();
-    let scroll = self.state.detail_scroll as usize;
+    let scroll = self.state.detail_scroll;
 
     for line in lines.iter().skip(scroll) {
       if y >= inner.y + inner.height {

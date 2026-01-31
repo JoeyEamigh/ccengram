@@ -11,9 +11,79 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::time::sleep;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, trace, warn};
 
 use super::{EmbeddingError, EmbeddingMode, EmbeddingProvider};
+
+// TODO(debug): remove after debugging batch failures
+/// Analyze batch content characteristics for debugging
+fn debug_batch_stats(texts: &[&str]) -> BatchStats {
+  let mut stats = BatchStats {
+    count: texts.len(),
+    ..Default::default()
+  };
+
+  for (i, text) in texts.iter().enumerate() {
+    let len = text.len();
+    stats.total_chars += len;
+    stats.max_len = stats.max_len.max(len);
+    stats.min_len = stats.min_len.min(len);
+
+    // Check for unusual characteristics
+    let has_null = text.contains('\0');
+    let has_high_unicode = text.chars().any(|c| c as u32 > 0xFFFF);
+    let non_ascii_ratio = text.chars().filter(|c| !c.is_ascii()).count() as f64 / text.len().max(1) as f64;
+    let whitespace_ratio = text.chars().filter(|c| c.is_whitespace()).count() as f64 / text.len().max(1) as f64;
+
+    if has_null {
+      stats.texts_with_null.push(i);
+    }
+    if has_high_unicode {
+      stats.texts_with_high_unicode.push(i);
+    }
+    if non_ascii_ratio > 0.5 {
+      stats.texts_high_non_ascii.push((i, non_ascii_ratio));
+    }
+    if whitespace_ratio > 0.8 {
+      stats.texts_high_whitespace.push((i, whitespace_ratio));
+    }
+    if len > 8000 {
+      stats.texts_very_long.push((i, len));
+    }
+    if len == 0 {
+      stats.texts_empty.push(i);
+    }
+  }
+
+  stats
+}
+
+// TODO(debug): remove after debugging batch failures
+#[derive(Default)]
+struct BatchStats {
+  count: usize,
+  total_chars: usize,
+  max_len: usize,
+  min_len: usize,
+  texts_with_null: Vec<usize>,
+  texts_with_high_unicode: Vec<usize>,
+  texts_high_non_ascii: Vec<(usize, f64)>,
+  texts_high_whitespace: Vec<(usize, f64)>,
+  texts_very_long: Vec<(usize, usize)>,
+  texts_empty: Vec<usize>,
+}
+
+// TODO(debug): remove after debugging batch failures
+impl BatchStats {
+  fn has_anomalies(&self) -> bool {
+    !self.texts_with_null.is_empty()
+      || !self.texts_with_high_unicode.is_empty()
+      || !self.texts_high_non_ascii.is_empty()
+      || !self.texts_high_whitespace.is_empty()
+      || !self.texts_very_long.is_empty()
+      || !self.texts_empty.is_empty()
+  }
+}
 
 /// Configuration for resilient HTTP operations
 #[derive(Debug, Clone)]
@@ -40,7 +110,7 @@ impl Default for RetryConfig {
       max_backoff: Duration::from_secs(30),
       backoff_multiplier: 2.0,
       add_jitter: true,
-      request_timeout: Duration::from_secs(60),
+      request_timeout: Duration::from_secs(600),
     }
   }
 }
@@ -54,7 +124,7 @@ impl RetryConfig {
       max_backoff: Duration::from_secs(60),
       backoff_multiplier: 2.0,
       add_jitter: true,
-      request_timeout: Duration::from_secs(120),
+      request_timeout: Duration::from_secs(600),
     }
   }
 
@@ -90,15 +160,50 @@ pub fn is_retryable_error(error: &EmbeddingError) -> bool {
   match error {
     EmbeddingError::Network(_) => true,
     EmbeddingError::ProviderError(msg) => {
-      // Check for retryable status codes in the message
+      let msg_lower = msg.to_lowercase();
+      // Retryable status codes
       msg.contains("429") // Rate limited
         || msg.contains("502") // Bad gateway
         || msg.contains("503") // Service unavailable
         || msg.contains("504") // Gateway timeout
+        || msg.contains("404") // OpenRouter "no successful provider" often has code 404
+        // Transient OpenRouter errors
+        || msg_lower.contains("no successful provider")
+        || msg_lower.contains("temporarily unavailable")
+        || msg_lower.contains("try again")
+        || msg_lower.contains("overloaded")
     }
     EmbeddingError::Timeout => true,
+    // Upstream timeout (whitespace-only response) - provider timed out, retry immediately
+    EmbeddingError::UpstreamTimeout => true,
+    // Rate limit exhaustion is retryable (wait and try again)
+    EmbeddingError::RateLimitExhausted(_) => true,
+    // Parse errors might be transient (server returned garbage once)
+    EmbeddingError::ParseError(_) => true,
+    // Batch size mismatch with fewer embeddings is retryable (might be transient)
+    EmbeddingError::BatchSizeMismatch { .. } => true,
     _ => false,
   }
+}
+
+/// Check if an error is a provider-side bug that batch splitting won't help with.
+///
+/// These errors indicate the provider is misbehaving in a way that isn't caused
+/// by our input, so splitting the batch won't isolate any "problematic text".
+fn is_provider_bug(error: &EmbeddingError) -> bool {
+  matches!(
+    error,
+    EmbeddingError::BatchSizeMismatch { .. } | EmbeddingError::UpstreamTimeout
+  )
+}
+
+/// Check if an error is a rate limit exhaustion.
+///
+/// Rate limit exhaustion should NEVER trigger batch splitting because:
+/// - Splitting creates MORE requests, making the problem worse
+/// - The error is about throughput, not problematic text content
+fn is_rate_limit_error(error: &EmbeddingError) -> bool {
+  matches!(error, EmbeddingError::RateLimitExhausted(_))
 }
 
 /// A resilient embedding provider that wraps another provider with retry logic
@@ -128,26 +233,36 @@ impl<P: EmbeddingProvider> ResilientProvider<P> {
   }
 
   async fn embed_with_retry(&self, text: &str, mode: EmbeddingMode) -> Result<Vec<f32>, EmbeddingError> {
-    let mut last_error = None;
+    let mut last_error: Option<EmbeddingError> = None;
     let max_retries = self.config.max_retries;
 
     for attempt in 0..=max_retries {
       if attempt > 0 {
-        let backoff = self.config.backoff_for_attempt(attempt - 1);
-        trace!(backoff_ms = backoff.as_millis(), "Applying backoff before retry");
-        debug!(
-          attempt = attempt,
-          max_retries = max_retries,
-          backoff_ms = backoff.as_millis(),
-          "Retrying single embed after backoff"
-        );
-        sleep(backoff).await;
+        // Skip backoff if previous error doesn't need it (e.g., upstream timeout)
+        let needs_backoff = last_error.as_ref().is_none_or(|e| e.needs_backoff());
+        if needs_backoff {
+          let backoff = self.config.backoff_for_attempt(attempt - 1);
+          trace!(backoff_ms = backoff.as_millis(), "Applying backoff before retry");
+          debug!(
+            attempt = attempt,
+            max_retries = max_retries,
+            backoff_ms = backoff.as_millis(),
+            "Retrying single embed after backoff"
+          );
+          sleep(backoff).await;
+        } else {
+          debug!(
+            attempt = attempt,
+            max_retries = max_retries,
+            "Retrying single embed immediately (no backoff needed)"
+          );
+        }
       }
 
       match tokio::time::timeout(self.config.request_timeout, self.inner.embed(text, mode)).await {
         Ok(Ok(result)) => {
           if attempt > 0 {
-            info!(attempt = attempt, "Single embed succeeded after retry");
+            debug!(attempt = attempt, "Single embed succeeded after retry");
           }
           return Ok(result);
         }
@@ -208,26 +323,56 @@ impl<P: EmbeddingProvider> ResilientProvider<P> {
       let max_retries = self.config.max_retries;
       let mut attempt = initial_attempt;
 
+      // TODO(debug): remove after debugging batch failures
+      // Log initial batch fingerprint for correlation
+      if initial_attempt == 0 {
+        let batch_fingerprint: u64 = texts.iter().map(|t| t.len() as u64).sum::<u64>()
+          ^ (texts.len() as u64 * 31)
+          ^ texts
+            .first()
+            .map(|t| t.chars().take(10).map(|c| c as u64).sum::<u64>())
+            .unwrap_or(0);
+        let total_chars: usize = texts.iter().map(|t| t.len()).sum();
+        trace!(
+          batch_size = texts.len(),
+          total_chars,
+          fingerprint = format!("{:016x}", batch_fingerprint),
+          "[DEBUG] Starting batch embed"
+        );
+      }
+
+      let mut last_batch_error: Option<EmbeddingError> = None;
+
       loop {
-        // Apply backoff if this is a retry
+        // Apply backoff if this is a retry (unless previous error doesn't need it)
         if attempt > 0 {
-          let backoff = self.config.backoff_for_attempt(attempt - 1);
-          trace!(backoff_ms = backoff.as_millis(), "Applying backoff before batch retry");
-          debug!(
-            attempt = attempt,
-            max_retries = max_retries,
-            batch_size = texts.len(),
-            backoff_ms = backoff.as_millis(),
-            "Retrying batch embed after backoff"
-          );
-          sleep(backoff).await;
+          let needs_backoff = last_batch_error.as_ref().is_none_or(|e| e.needs_backoff());
+          if needs_backoff {
+            let backoff = self.config.backoff_for_attempt(attempt - 1);
+            trace!(backoff_ms = backoff.as_millis(), "Applying backoff before batch retry");
+            debug!(
+              attempt = attempt,
+              max_retries = max_retries,
+              batch_size = texts.len(),
+              backoff_ms = backoff.as_millis(),
+              "Retrying batch embed after backoff"
+            );
+            sleep(backoff).await;
+          } else {
+            debug!(
+              attempt = attempt,
+              max_retries = max_retries,
+              batch_size = texts.len(),
+              "Retrying batch embed immediately (upstream timeout, no backoff needed)"
+            );
+          }
         }
 
         // Try the batch operation with timeout
         match tokio::time::timeout(self.config.request_timeout, self.inner.embed_batch(texts, mode)).await {
           Ok(Ok(embeddings)) => {
             if attempt > 0 {
-              info!(
+              debug!(
                 attempt = attempt,
                 batch_size = texts.len(),
                 "Batch embed succeeded after retry"
@@ -235,36 +380,101 @@ impl<P: EmbeddingProvider> ResilientProvider<P> {
             }
             return Ok(embeddings);
           }
-          Ok(Err(e)) if is_retryable_error(&e) && attempt < max_retries => {
-            // Transient error - retry the entire batch
-            warn!(
-              attempt = attempt + 1,
-              max_retries = max_retries,
-              batch_size = texts.len(),
-              err = %e,
-              "Retryable batch error, will retry"
-            );
-            attempt += 1;
-            continue;
-          }
-          Ok(Err(e)) if texts.len() > 1 => {
-            // Persistent failure on batch - binary split to isolate problematic texts
+          Ok(Err(e)) if is_rate_limit_error(&e) => {
+            // Rate limit exhaustion - do NOT split or retry, just fail
+            // Splitting would create MORE requests, making things worse
             warn!(
               attempt = attempt + 1,
               batch_size = texts.len(),
               err = %e,
-              "Batch embedding failed, splitting to isolate problematic texts"
-            );
-            return self.split_and_retry(texts, mode).await;
-          }
-          Ok(Err(e)) => {
-            // Single text that failed - return the error
-            debug!(
-              attempt = attempt + 1,
-              err = %e,
-              "Single text embed failed"
+              "Rate limit exhausted, failing batch (splitting would make it worse)"
             );
             return Err(e);
+          }
+          Ok(Err(e)) if is_provider_bug(&e) => {
+            // Provider bug (e.g., batch size mismatch) - splitting won't help
+            // The provider is misbehaving regardless of our input
+            warn!(
+              attempt = attempt + 1,
+              batch_size = texts.len(),
+              err = %e,
+              "Provider bug detected, failing batch (splitting won't help)"
+            );
+            return Err(e);
+          }
+          Ok(Err(e)) => {
+            // Any other error - decide whether to retry, split, or fail
+            let min_retries_before_split = 2;
+            let should_retry = is_retryable_error(&e) && attempt < max_retries;
+            let can_split = texts.len() > 1 && attempt >= min_retries_before_split;
+
+            if should_retry || attempt < min_retries_before_split {
+              // Retry the batch (either it's retryable, or we haven't tried enough times)
+              warn!(
+                attempt = attempt + 1,
+                max_retries = max_retries,
+                batch_size = texts.len(),
+                err = %e,
+                retryable = is_retryable_error(&e),
+                "Batch error, will retry"
+              );
+              last_batch_error = Some(e);
+              attempt += 1;
+              continue;
+            } else if can_split {
+              // We've retried enough times, try splitting to isolate problematic texts
+              // TODO(debug): remove after debugging batch failures
+              let stats = debug_batch_stats(texts);
+              warn!(
+                attempt = attempt + 1,
+                batch_size = texts.len(),
+                err = %e,
+                total_chars = stats.total_chars,
+                avg_len = stats.total_chars / stats.count.max(1),
+                max_len = stats.max_len,
+                min_len = stats.min_len,
+                has_anomalies = stats.has_anomalies(),
+                texts_with_null = ?stats.texts_with_null,
+                texts_with_high_unicode = ?stats.texts_with_high_unicode,
+                texts_high_non_ascii = ?stats.texts_high_non_ascii,
+                texts_high_whitespace = ?stats.texts_high_whitespace,
+                texts_very_long = ?stats.texts_very_long,
+                texts_empty = ?stats.texts_empty,
+                "Batch embedding failed after retries, splitting to isolate problematic texts"
+              );
+              // TODO(debug): Log first few text previews to identify content patterns
+              for (i, text) in texts.iter().take(3).enumerate() {
+                let preview: String = text.chars().take(200).collect();
+                let preview_escaped = preview.replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t");
+                warn!(
+                  text_index = i,
+                  text_len = text.len(),
+                  preview = %preview_escaped,
+                  "[DEBUG] Sample text from failing batch"
+                );
+              }
+              return self.split_and_retry(texts, mode).await;
+            } else {
+              // Single text that failed after retries - return the error
+              // TODO(debug): remove after debugging batch failures
+              let text = texts.first().copied().unwrap_or("");
+              let preview: String = text.chars().take(500).collect();
+              let preview_escaped = preview.replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t");
+              let has_null = text.contains('\0');
+              let has_high_unicode = text.chars().any(|c| c as u32 > 0xFFFF);
+              let non_ascii_count = text.chars().filter(|c| !c.is_ascii()).count();
+              warn!(
+                attempt = attempt + 1,
+                err = %e,
+                text_len = text.len(),
+                has_null,
+                has_high_unicode,
+                non_ascii_count,
+                preview = %preview_escaped,
+                "[DEBUG] Single text that failed all retries"
+              );
+              return Err(e);
+            }
           }
           Err(_) => {
             // Timeout
@@ -300,10 +510,34 @@ impl<P: EmbeddingProvider> ResilientProvider<P> {
     let mid = texts.len() / 2;
     let (left, right) = texts.split_at(mid);
 
+    // TODO(debug): remove after debugging batch failures
+    // Create a simple fingerprint of batch content to track lineage
+    let batch_fingerprint: u64 = texts.iter().map(|t| t.len() as u64).sum::<u64>()
+      ^ (texts.len() as u64 * 31)
+      ^ texts
+        .first()
+        .map(|t| t.chars().take(10).map(|c| c as u64).sum::<u64>())
+        .unwrap_or(0);
+    let left_fingerprint: u64 = left.iter().map(|t| t.len() as u64).sum::<u64>()
+      ^ (left.len() as u64 * 31)
+      ^ left
+        .first()
+        .map(|t| t.chars().take(10).map(|c| c as u64).sum::<u64>())
+        .unwrap_or(0);
+    let right_fingerprint: u64 = right.iter().map(|t| t.len() as u64).sum::<u64>()
+      ^ (right.len() as u64 * 31)
+      ^ right
+        .first()
+        .map(|t| t.chars().take(10).map(|c| c as u64).sum::<u64>())
+        .unwrap_or(0);
+
     debug!(
       total_size = texts.len(),
       left_size = left.len(),
       right_size = right.len(),
+      batch_fingerprint = format!("{:016x}", batch_fingerprint),
+      left_fingerprint = format!("{:016x}", left_fingerprint),
+      right_fingerprint = format!("{:016x}", right_fingerprint),
       "Splitting batch for retry"
     );
 
@@ -312,6 +546,21 @@ impl<P: EmbeddingProvider> ResilientProvider<P> {
       self.embed_batch_with_retry(left, mode, 0),
       self.embed_batch_with_retry(right, mode, 0)
     );
+
+    // TODO(debug): remove after debugging batch failures
+    let left_ok = left_result.is_ok();
+    let right_ok = right_result.is_ok();
+    if !left_ok || !right_ok {
+      warn!(
+        left_ok,
+        right_ok,
+        left_size = left.len(),
+        right_size = right.len(),
+        left_fingerprint = format!("{:016x}", left_fingerprint),
+        right_fingerprint = format!("{:016x}", right_fingerprint),
+        "[DEBUG] Split results - at least one half failed"
+      );
+    }
 
     let mut results = left_result?;
     results.extend(right_result?);
@@ -397,6 +646,51 @@ mod tests {
     assert!(!is_retryable_error(&EmbeddingError::ProviderError(
       "Status 400".to_string()
     )));
+    // Rate limit exhaustion is retryable (but should NOT trigger splitting)
+    assert!(is_retryable_error(&EmbeddingError::RateLimitExhausted(
+      Duration::from_secs(60)
+    )));
+    // Parse errors are retryable (might be transient server issue)
+    assert!(is_retryable_error(&EmbeddingError::ParseError(
+      "JSON parse error".to_string()
+    )));
+    // Batch size mismatch is retryable
+    assert!(is_retryable_error(&EmbeddingError::BatchSizeMismatch {
+      expected: 10,
+      got: 5
+    }));
+    // OpenRouter "no successful provider" errors are retryable
+    assert!(is_retryable_error(&EmbeddingError::ProviderError(
+      "Provider 'unknown' failed: No successful provider responses.".to_string()
+    )));
+    // 404 errors from OpenRouter are retryable
+    assert!(is_retryable_error(&EmbeddingError::ProviderError(
+      "OpenRouter returned 404: no providers".to_string()
+    )));
+  }
+
+  #[test]
+  fn test_is_rate_limit_error() {
+    assert!(is_rate_limit_error(&EmbeddingError::RateLimitExhausted(
+      Duration::from_secs(60)
+    )));
+    assert!(!is_rate_limit_error(&EmbeddingError::Timeout));
+    assert!(!is_rate_limit_error(&EmbeddingError::Network("test".to_string())));
+    assert!(!is_rate_limit_error(&EmbeddingError::ProviderError("429".to_string())));
+  }
+
+  #[test]
+  fn test_is_provider_bug() {
+    // Batch size mismatch is a provider bug - splitting won't help
+    assert!(is_provider_bug(&EmbeddingError::BatchSizeMismatch {
+      expected: 10,
+      got: 5
+    }));
+    // Other errors are not provider bugs
+    assert!(!is_provider_bug(&EmbeddingError::Timeout));
+    assert!(!is_provider_bug(&EmbeddingError::Network("test".to_string())));
+    assert!(!is_provider_bug(&EmbeddingError::ParseError("parse error".to_string())));
+    assert!(!is_provider_bug(&EmbeddingError::ProviderError("error".to_string())));
   }
 
   #[test]

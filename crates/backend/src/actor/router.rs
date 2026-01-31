@@ -223,6 +223,15 @@ impl ProjectRouter {
     self.projects.iter().map(|entry| entry.key().clone()).collect()
   }
 
+  /// Get embedding provider info for metrics.
+  pub fn embedding_info(&self) -> (String, String, usize) {
+    (
+      self.embedding.name().to_string(),
+      self.embedding.model_id().to_string(),
+      self.embedding.dimensions(),
+    )
+  }
+
   /// Shutdown a specific project
   ///
   /// Sends a shutdown message to the project actor and removes it from

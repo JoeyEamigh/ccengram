@@ -12,7 +12,9 @@ use uuid::Uuid;
 use crate::Result;
 
 /// Directory name for benchmark fixtures within target repos.
-const FIXTURES_DIR: &str = "__bench_fixtures__";
+/// Uses "ccengram_bench" instead of "__bench_fixtures__" to avoid
+/// potential gitignore patterns that match double-underscore prefixes.
+const FIXTURES_DIR: &str = "ccengram_bench";
 
 /// Generator for test fixtures within a repository.
 ///
@@ -57,21 +59,25 @@ impl FixtureGenerator {
   /// Create a Rust source file with a unique function.
   ///
   /// Returns the path and the unique identifier used in the content.
+  /// Uses UUID in filename to avoid conflicts with stale fixtures from previous runs.
   pub async fn create_rust_file(&mut self, name: &str) -> Result<(PathBuf, String)> {
     let uuid = Uuid::new_v4().to_string();
+    let short_id = &uuid[..8];
     let content = format!(
       r#"//! Benchmark fixture file
 /// Function with unique identifier for search verification.
-pub fn benchmark_fixture_{}() {{
+pub fn benchmark_fixture_{}_{}() {{
     // Unique marker: {}
     println!("Fixture function");
 }}
 "#,
       name.replace('-', "_"),
+      short_id,
       uuid
     );
 
-    let path = self.create_file(&format!("{}.rs", name), &content).await?;
+    // Include short UUID in filename to avoid conflicts with stale fixtures
+    let path = self.create_file(&format!("{}_{}.rs", name, short_id), &content).await?;
     Ok((path, uuid))
   }
 
@@ -133,12 +139,17 @@ pub fn large_file_marker() {{}}
       uuid
     );
 
-    let line = "// This is padding content to reach the target file size. Lorem ipsum dolor sit amet.\n";
-    let lines_needed = (size_bytes.saturating_sub(header.len() as u64)) / line.len() as u64;
+    // Use varied content to avoid triggering the repetitive file heuristic
+    // Each line includes its number to ensure uniqueness
+    let avg_line_len = 60u64; // approximate length of each numbered line
+    let lines_needed = (size_bytes.saturating_sub(header.len() as u64)) / avg_line_len;
 
     let mut content = header;
-    for _ in 0..lines_needed {
-      content.push_str(line);
+    for i in 0..lines_needed {
+      content.push_str(&format!(
+        "// Padding line {:06} for benchmark fixture target size.\n",
+        i
+      ));
     }
 
     let path = self.create_file(&format!("{}.rs", name), &content).await?;
@@ -156,16 +167,17 @@ pub fn large_file_marker() {{}}
 
     for i in 0..count {
       let uuid = Uuid::new_v4().to_string();
+      let short_id = &uuid[..8];
       let content = format!(
         r#"// Ignored fixture file {}
-export function ignoredFunction{}() {{
+export function ignoredFunction{}_{}() {{
     // Marker: {}
 }}
 "#,
-        i, i, uuid
+        i, i, short_id, uuid
       );
 
-      let path = ignored_path.join(format!("ignored_{}.ts", i));
+      let path = ignored_path.join(format!("ignored_{}_{}.ts", i, short_id));
       fs::write(&path, content).await?;
       self.generated.push(path.clone());
       paths.push(path);
@@ -183,17 +195,18 @@ export function ignoredFunction{}() {{
 
     for i in 0..count {
       let uuid = Uuid::new_v4().to_string();
+      let short_id = &uuid[..8];
       let content = format!(
         r#"//! Tracked fixture file {}
 /// Unique marker: {}
-pub fn tracked_function_{}() {{
+pub fn tracked_function_{}_{}() {{
     println!("Tracked");
 }}
 "#,
-        i, uuid, i
+        i, uuid, i, short_id
       );
 
-      let path = src_path.join(format!("tracked_{}.rs", i));
+      let path = src_path.join(format!("tracked_{}_{}.rs", i, short_id));
       fs::write(&path, &content).await?;
       self.generated.push(path.clone());
       results.push((path, uuid));

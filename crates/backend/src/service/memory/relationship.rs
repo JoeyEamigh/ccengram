@@ -23,9 +23,13 @@ use crate::{
 /// * `Ok(RelationshipResult)` - Created relationship
 /// * `Err(ServiceError)` - If creation fails
 pub async fn add(db: &ProjectDb, params: RelationshipAddParams) -> Result<RelationshipResult, ServiceError> {
-  // Resolve both memories
-  let from_memory = Resolver::memory(db, &params.from_memory_id).await?;
-  let to_memory = Resolver::memory(db, &params.to_memory_id).await?;
+  // Resolve both memories in parallel
+  let (from_result, to_result) = tokio::join!(
+    Resolver::memory(db, &params.from_memory_id),
+    Resolver::memory(db, &params.to_memory_id)
+  );
+  let from_memory = from_result?;
+  let to_memory = to_result?;
 
   // Parse relationship type
   let rel_type = params

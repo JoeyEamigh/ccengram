@@ -15,9 +15,9 @@ use std::path::PathBuf;
 
 use ccengram::ipc::Client;
 use clap::{Parser, Subcommand};
-use indicatif::{ProgressBar, ProgressStyle};
-use tracing::{Level, info, warn};
-use tracing_subscriber::FmtSubscriber;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use tracing::{info, warn};
+use tracing_subscriber::{EnvFilter, fmt};
 
 use self::{
   fixtures::FixtureGenerator,
@@ -295,10 +295,13 @@ enum Commands {
 async fn main() -> anyhow::Result<()> {
   let cli = Cli::parse();
 
-  // Setup logging
-  let level = if cli.verbose { Level::DEBUG } else { Level::INFO };
-  let subscriber = FmtSubscriber::builder()
-    .with_max_level(level)
+  // Setup logging - respect RUST_LOG if set, otherwise use -v flag
+  let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+    let level = if cli.verbose { "debug" } else { "info" };
+    EnvFilter::new(level)
+  });
+  let subscriber = fmt::Subscriber::builder()
+    .with_env_filter(filter)
     .with_target(false)
     .finish();
   tracing::subscriber::set_global_default(subscriber)?;
@@ -733,24 +736,59 @@ async fn index_repos_streaming(
 
 /// Index code for a single repository.
 async fn index_code_for_repo(_socket_path: &str, repo_path: &std::path::Path, force: bool) -> anyhow::Result<()> {
-  use ccengram::ipc::code::CodeIndexParams;
+  use std::collections::HashMap;
 
-  let pb = ProgressBar::new_spinner();
-  pb.set_style(
-    ProgressStyle::default_spinner()
-      .template("{spinner:.green} {msg}")
-      .unwrap(),
-  );
-  pb.set_message("Indexing code...");
+  use ccengram::ipc::{StreamUpdate, code::CodeIndexParams};
 
   let client = Client::connect(repo_path.to_path_buf()).await?;
-  let result = client.call(CodeIndexParams { force, stream: false }).await?;
+  let mut rx = client.call_streaming(CodeIndexParams { force, stream: true }).await?;
 
-  pb.finish_with_message("Done");
-  println!(
-    "  Code: {} files indexed, {} chunks created",
-    result.files_indexed, result.chunks_created
-  );
+  let mp = MultiProgress::new();
+  let mut stage_bars: HashMap<String, ProgressBar> = HashMap::new();
+  let stage_style = ProgressStyle::default_bar()
+    .template("{prefix:>12.cyan} [{bar:30.cyan/blue}] {pos:>5}/{len:>5} {msg}")
+    .unwrap()
+    .progress_chars("=>-");
+
+  while let Some(update) = rx.recv().await {
+    match update {
+      StreamUpdate::Progress {
+        message: _,
+        percent: _,
+        stage,
+      } => {
+        if let (Some(stage_name), Some(processed), Some(total)) = (&stage.stage, stage.processed, stage.total) {
+          let pb = stage_bars.entry(stage_name.clone()).or_insert_with(|| {
+            let pb = mp.add(ProgressBar::new(total as u64));
+            pb.set_style(stage_style.clone());
+            pb.set_prefix(stage_name.clone());
+            pb
+          });
+          pb.set_length(total as u64);
+          pb.set_position(processed as u64);
+          if let Some(ref file) = stage.current_file {
+            let msg = if file.len() > 40 {
+              format!("...{}", &file[file.len() - 37..])
+            } else {
+              file.clone()
+            };
+            pb.set_message(msg);
+          }
+        }
+      }
+      StreamUpdate::Done(result) => {
+        for (_, pb) in stage_bars {
+          pb.finish_and_clear();
+        }
+        let result = result?;
+        println!(
+          "  Code: {} files indexed, {} chunks created",
+          result.files_indexed, result.chunks_created
+        );
+        break;
+      }
+    }
+  }
 
   Ok(())
 }
@@ -761,6 +799,8 @@ async fn index_docs_for_repo(
   repo_path: &std::path::Path,
   docs_path: &std::path::Path,
 ) -> anyhow::Result<()> {
+  use std::collections::HashMap;
+
   use ccengram::ipc::{StreamUpdate, docs::DocsIngestParams};
 
   let client = Client::connect(repo_path.to_path_buf()).await?;
@@ -772,17 +812,46 @@ async fn index_docs_for_repo(
     })
     .await?;
 
+  let mp = MultiProgress::new();
+  let mut stage_bars: HashMap<String, ProgressBar> = HashMap::new();
+  let stage_style = ProgressStyle::default_bar()
+    .template("{prefix:>12.cyan} [{bar:30.cyan/blue}] {pos:>5}/{len:>5} {msg}")
+    .unwrap()
+    .progress_chars("=>-");
+
   while let Some(update) = rx.recv().await {
     match update {
-      StreamUpdate::Progress { message, percent } => {
-        if let Some(pct) = percent {
-          print!("\r  Docs: [{:3}%] {}", pct, message);
+      StreamUpdate::Progress {
+        message: _,
+        percent: _,
+        stage,
+      } => {
+        if let (Some(stage_name), Some(processed), Some(total)) = (&stage.stage, stage.processed, stage.total) {
+          let pb = stage_bars.entry(stage_name.clone()).or_insert_with(|| {
+            let pb = mp.add(ProgressBar::new(total as u64));
+            pb.set_style(stage_style.clone());
+            pb.set_prefix(stage_name.clone());
+            pb
+          });
+          pb.set_length(total as u64);
+          pb.set_position(processed as u64);
+          if let Some(ref file) = stage.current_file {
+            let msg = if file.len() > 40 {
+              format!("...{}", &file[file.len() - 37..])
+            } else {
+              file.clone()
+            };
+            pb.set_message(msg);
+          }
         }
       }
       StreamUpdate::Done(result) => {
+        for (_, pb) in stage_bars {
+          pb.finish_and_clear();
+        }
         let result = result?;
         println!(
-          "\r  Docs: {} files ingested, {} chunks created",
+          "  Docs: {} files ingested, {} chunks created",
           result.files_ingested, result.chunks_created
         );
         break;
@@ -959,7 +1028,7 @@ async fn run_indexing_benchmark(
   );
 
   // Create benchmark runner
-  let client = Client::connect(cache_dir.clone().expect("failed to get projects dir")).await?;
+  let client = Client::connect(cache_dir.clone().unwrap_or_else(default_cache_dir)).await?;
   let mut benchmark = IndexingBenchmark::new(client, cache_dir);
 
   // Check daemon
@@ -1089,8 +1158,6 @@ async fn run_incremental_benchmark(
   output: PathBuf,
   cache_dir: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-  let _socket_path = ScenarioRunner::default_socket_path();
-
   let targets: Vec<TargetRepo> = if repos == "all" {
     TargetRepo::all().to_vec()
   } else {
@@ -1111,16 +1178,47 @@ async fn run_incremental_benchmark(
     iterations
   );
 
+  // Check if daemon is running before connecting
+  let socket_path = ScenarioRunner::default_socket_path();
+  if !std::path::Path::new(&socket_path).exists() {
+    anyhow::bail!(
+      "CCEngram daemon is not running (socket not found). Start it with: ccengram daemon\n\
+             Expected socket: {}",
+      socket_path
+    );
+  }
+
   // Create benchmark runner
-  let client = Client::connect(cache_dir.clone().unwrap_or_else(default_cache_dir)).await?;
+  let client = match Client::connect(cache_dir.clone().unwrap_or_else(default_cache_dir)).await {
+    Ok(c) => c,
+    Err(e) => {
+      anyhow::bail!(
+        "Failed to connect to CCEngram daemon: {}\n\
+               Start it with: ccengram daemon\n\
+               Socket: {}",
+        e,
+        socket_path
+      );
+    }
+  };
   let config = IncrementalBenchConfig {
     files_per_iteration: files_per_iter,
     iterations,
     threshold_ms_per_file: 200,
   };
-  let mut benchmark = IncrementalBenchmark::new(client, cache_dir).with_config(config);
+  let benchmark = IncrementalBenchmark::new(client, cache_dir).with_config(config);
+
+  // Verify daemon is healthy
+  if !benchmark.check_daemon().await {
+    anyhow::bail!(
+      "CCEngram daemon is not responding. Restart it with: ccengram daemon\n\
+             Socket: {}",
+      socket_path
+    );
+  }
 
   // Run benchmark
+  let mut benchmark = benchmark; // rebind as mutable for run()
   let report = benchmark.run(&targets).await?;
 
   // Save reports
@@ -1201,8 +1299,13 @@ async fn run_large_file_benchmark(
   let repo_path = prepare_repo(target, cache_dir.clone()).await?;
   let client = Client::connect(repo_path.clone()).await?;
 
+  // Get daemon PID for resource monitoring
+  use ccengram::ipc::system::StatusParams;
+  let daemon_status = client.call(StatusParams).await?;
+  let daemon_pid = daemon_status.pid;
+
   let mut results = Vec::new();
-  let mut monitor = metrics::ResourceMonitor::new();
+  let mut monitor = metrics::ResourceMonitor::new(daemon_pid);
 
   for size_mb in sizes {
     let size_bytes = size_mb * 1024 * 1024;

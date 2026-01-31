@@ -22,7 +22,7 @@ impl ProjectDb {
   /// Add a new memory to the database
   #[tracing::instrument(level = "trace", skip(self, memory, vector), fields(id = %memory.id))]
   pub async fn add_memory(&self, memory: &Memory, vector: &[f32]) -> Result<()> {
-    let table = self.memories_table().await?;
+    let table = self.memories_table();
 
     debug!(
       table = "memories",
@@ -42,7 +42,7 @@ impl ProjectDb {
   /// Get a memory by ID
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn get_memory(&self, id: &MemoryId) -> Result<Option<Memory>> {
-    let table = self.memories_table().await?;
+    let table = self.memories_table();
     let id_str = id.to_string();
 
     let results: Vec<RecordBatch> = table
@@ -72,7 +72,7 @@ impl ProjectDb {
   /// want to lose the embedding.
   #[tracing::instrument(level = "trace", skip(self, memory, vector), fields(id = %memory.id))]
   pub async fn update_memory(&self, memory: &Memory, vector: Option<&[f32]>) -> Result<()> {
-    let table = self.memories_table().await?;
+    let table = self.memories_table();
 
     debug!(
       table = "memories",
@@ -111,7 +111,7 @@ impl ProjectDb {
   /// This is useful for cross-domain search (e.g., finding code related to a memory).
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn get_memory_embedding(&self, id: &MemoryId) -> Result<Option<Vec<f32>>> {
-    let table = self.memories_table().await?;
+    let table = self.memories_table();
     let id_str = id.to_string();
 
     let results: Vec<RecordBatch> = table
@@ -151,7 +151,7 @@ impl ProjectDb {
 
   /// Get the vector for a memory by ID (internal use, returns error if not found)
   async fn get_memory_vector(&self, id: &MemoryId) -> Result<Vec<f32>> {
-    let table = self.memories_table().await?;
+    let table = self.memories_table();
     let id_str = id.to_string();
 
     let results: Vec<RecordBatch> = table
@@ -198,7 +198,7 @@ impl ProjectDb {
       return Ok(std::collections::HashMap::new());
     }
 
-    let table = self.memories_table().await?;
+    let table = self.memories_table();
     let id_list: Vec<String> = ids.iter().map(|id| format!("'{}'", id)).collect();
     let filter = format!("id IN ({})", id_list.join(", "));
 
@@ -250,7 +250,7 @@ impl ProjectDb {
       "Batch updating memories"
     );
 
-    let table = self.memories_table().await?;
+    let table = self.memories_table();
 
     // Fetch existing vectors for all memories being updated
     let ids: Vec<_> = memories.iter().map(|m| m.id).collect();
@@ -286,7 +286,7 @@ impl ProjectDb {
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn delete_memory(&self, id: &MemoryId) -> Result<()> {
     debug!(table = "memories", operation = "delete", id = %id, "Deleting memory");
-    let table = self.memories_table().await?;
+    let table = self.memories_table();
     table.delete(&format!("id = '{}'", id)).await?;
     Ok(())
   }
@@ -311,7 +311,7 @@ impl ProjectDb {
     let new_salience = (memory.salience + amount * (1.0 - memory.salience)).min(1.0);
 
     // Write back
-    let table = self.memories_table().await?;
+    let table = self.memories_table();
     let now_millis = Utc::now().timestamp_millis();
 
     table
@@ -347,7 +347,7 @@ impl ProjectDb {
     let new_salience = (memory.salience - amount).max(0.05);
 
     // Write back
-    let table = self.memories_table().await?;
+    let table = self.memories_table();
     let now_millis = Utc::now().timestamp_millis();
 
     table
@@ -366,7 +366,7 @@ impl ProjectDb {
   /// Marks the memory as superseded by another, setting valid_until and superseded_by.
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn supersede_memory(&self, id: &MemoryId, superseded_by: &MemoryId) -> Result<()> {
-    let table = self.memories_table().await?;
+    let table = self.memories_table();
     let now_millis = Utc::now().timestamp_millis();
 
     table
@@ -384,7 +384,7 @@ impl ProjectDb {
   /// Atomically set a memory's salience to a specific value
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn set_memory_salience(&self, id: &MemoryId, salience: f32) -> Result<()> {
-    let table = self.memories_table().await?;
+    let table = self.memories_table();
     let now_millis = Utc::now().timestamp_millis();
     let salience = salience.clamp(0.05, 1.0);
 
@@ -402,7 +402,7 @@ impl ProjectDb {
   /// Atomically promote a memory from Session to Project tier
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn promote_memory_to_project(&self, id: &MemoryId) -> Result<()> {
-    let table = self.memories_table().await?;
+    let table = self.memories_table();
     let now_millis = Utc::now().timestamp_millis();
 
     table
@@ -433,7 +433,7 @@ impl ProjectDb {
       "Searching memories"
     );
 
-    let table = self.memories_table().await?;
+    let table = self.memories_table();
 
     let query = if let Some(f) = filter {
       table.vector_search(query_vector.to_vec())?.limit(limit).only_if(f)
@@ -470,7 +470,7 @@ impl ProjectDb {
   /// List memories with optional filters
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn list_memories(&self, filter: Option<&str>, limit: Option<usize>) -> Result<Vec<Memory>> {
-    let table = self.memories_table().await?;
+    let table = self.memories_table();
 
     let query = match (filter, limit) {
       (Some(f), Some(l)) => table.query().only_if(f).limit(l),
@@ -501,7 +501,7 @@ impl ProjectDb {
       return Err(DbError::InvalidInput("ID prefix must be at least 6 characters".into()));
     }
 
-    let table = self.memories_table().await?;
+    let table = self.memories_table();
 
     // Use LIKE query for prefix matching
     let filter = format!("id LIKE '{}%'", prefix);

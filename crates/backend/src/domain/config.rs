@@ -87,6 +87,9 @@ pub const PRESET_STANDARD: &[&str] = &[
 
 /// Characters per token estimate (for LLM token counting)
 pub const CHARS_PER_TOKEN: usize = 4;
+/// Safety margin for per-text truncation. Embedding models typically handle ~8K tokens per text,
+/// but context_length defaults to 32K (for batch sizing). 0.125 gives us ~16K chars max per text.
+pub const TOKEN_SAFETY_MARGIN: f32 = 0.5;
 
 /// Tool preset options
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -394,6 +397,16 @@ pub struct IndexConfig {
   #[serde(default = "default_max_cached_file_size")]
   pub max_cached_file_size: usize,
 
+  /// Number of files to batch from watcher before processing (default: 32)
+  /// Larger batches improve embedding efficiency but increase latency.
+  #[serde(default = "default_watcher_batch_size")]
+  pub watcher_batch_size: usize,
+
+  /// Timeout in ms to flush watcher batch even if not full (default: 100)
+  /// Balances latency vs batching efficiency for incremental updates.
+  #[serde(default = "default_watcher_batch_timeout_ms")]
+  pub watcher_batch_timeout_ms: u64,
+
   // ---- Pipeline Tuning (advanced) ----
   /// Scanner buffer size for bulk indexing (default: 256)
   #[serde(default = "default_pipeline_scanner_buffer")]
@@ -423,6 +436,12 @@ pub struct IndexConfig {
   #[serde(default = "default_pipeline_db_flush_timeout_ms")]
   pub pipeline_db_flush_timeout_ms: u64,
 
+  /// Maximum pending embedding batches (default: 64)
+  /// Limits memory usage when embedding API is slow/rate-limited.
+  /// With batch_size=512 and ~2KB/chunk, 64 batches = ~65MB worst case.
+  #[serde(default = "default_pipeline_max_pending_batches")]
+  pub pipeline_max_pending_batches: usize,
+
   /// Reader workers (default: 16)
   #[serde(default = "default_pipeline_reader_workers")]
   pub pipeline_reader_workers: usize,
@@ -441,6 +460,12 @@ fn default_content_cache_size() -> usize {
 fn default_max_cached_file_size() -> usize {
   512 * 1024 // 512KB
 }
+fn default_watcher_batch_size() -> usize {
+  32
+}
+fn default_watcher_batch_timeout_ms() -> u64 {
+  100
+}
 fn default_pipeline_scanner_buffer() -> usize {
   256
 }
@@ -451,16 +476,19 @@ fn default_pipeline_parser_buffer() -> usize {
   256
 }
 fn default_pipeline_embedder_buffer() -> usize {
-  64
+  1024
 }
 fn default_pipeline_embedding_timeout_ms() -> u64 {
-  50
+  250
 }
 fn default_pipeline_db_flush_count() -> usize {
   500
 }
 fn default_pipeline_db_flush_timeout_ms() -> u64 {
   1000
+}
+fn default_pipeline_max_pending_batches() -> usize {
+  64
 }
 fn default_pipeline_reader_workers() -> usize {
   16
@@ -485,6 +513,8 @@ impl Default for IndexConfig {
       watcher_poll_secs: default_watcher_poll_secs(),
       content_cache_size: default_content_cache_size(),
       max_cached_file_size: default_max_cached_file_size(),
+      watcher_batch_size: default_watcher_batch_size(),
+      watcher_batch_timeout_ms: default_watcher_batch_timeout_ms(),
       pipeline_scanner_buffer: default_pipeline_scanner_buffer(),
       pipeline_reader_buffer: default_pipeline_reader_buffer(),
       pipeline_parser_buffer: default_pipeline_parser_buffer(),
@@ -492,6 +522,7 @@ impl Default for IndexConfig {
       pipeline_embedding_timeout_ms: default_pipeline_embedding_timeout_ms(),
       pipeline_db_flush_count: default_pipeline_db_flush_count(),
       pipeline_db_flush_timeout_ms: default_pipeline_db_flush_timeout_ms(),
+      pipeline_max_pending_batches: default_pipeline_max_pending_batches(),
       pipeline_reader_workers: default_pipeline_reader_workers(),
       pipeline_parser_workers: default_pipeline_parser_workers(),
     }
@@ -565,6 +596,39 @@ impl Default for DaemonConfig {
       log_rotation: default_log_rotation(),
       log_retention_days: default_log_retention_days(),
       idle_check_interval_secs: default_idle_check_interval_secs(),
+    }
+  }
+}
+
+// ============================================================================
+// Database Configuration
+// ============================================================================
+
+/// LanceDB cache and connection configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DatabaseConfig {
+  /// Index cache size in MB (default: 256)
+  /// Controls memory used for vector/scalar index data.
+  /// LanceDB default is 6 GB per table - we share across all tables.
+  pub index_cache_mb: usize,
+
+  /// Metadata cache size in MB (default: 64)
+  /// Controls memory used for dataset manifests, schemas, statistics.
+  /// LanceDB default is 1 GB per table - we share across all tables.
+  pub metadata_cache_mb: usize,
+
+  /// Log cache stats periodically during indexing (default: false)
+  /// Useful for debugging memory usage.
+  pub log_cache_stats: bool,
+}
+
+impl Default for DatabaseConfig {
+  fn default() -> Self {
+    Self {
+      index_cache_mb: 256,
+      metadata_cache_mb: 64,
+      log_cache_stats: false,
     }
   }
 }
@@ -723,6 +787,10 @@ pub struct Config {
   /// Hook behavior settings
   #[serde(default)]
   pub hooks: HooksConfig,
+
+  /// Database cache settings
+  #[serde(default)]
+  pub database: DatabaseConfig,
 }
 
 /// Tool filtering configuration
@@ -820,7 +888,7 @@ impl Config {
 
   /// Generate a project-level config file (excludes daemon-only sections)
   ///
-  /// Project configs should NOT include `[embedding]`, `[daemon]`, or `[hooks]`
+  /// Project configs should NOT include `[embedding]`, `[daemon]`, `[hooks]`, or `[database]`
   /// because these are only read at daemon startup and shared across all projects.
   pub fn generate_project_template(preset: ToolPreset) -> String {
     let preset_name = match preset {
@@ -838,6 +906,7 @@ impl Config {
 #   [embedding] - Embedding provider (shared across all projects)
 #   [daemon]    - Daemon lifecycle settings
 #   [hooks]     - Hook behavior settings
+#   [database]  - Database cache settings
 
 # ============================================================================
 # Tool Filtering
@@ -877,6 +946,9 @@ max_idle_days = 90
 # Session cleanup interval (hours)
 session_cleanup_hours = 6
 
+# Maximum session age before cleanup (hours)
+max_session_age_hours = 6
+
 # ============================================================================
 # Search Defaults
 # ============================================================================
@@ -911,6 +983,14 @@ context_max_batch = 5
 # Max suggestions to generate from explore results
 explore_max_suggestions = 5
 
+# ---- Query embedding cache settings ----
+
+# Embedding cache size for query embeddings
+embedding_cache_size = 1000
+
+# Embedding cache TTL in seconds
+embedding_cache_ttl_secs = 300
+
 # ============================================================================
 # Code Indexing
 # ============================================================================
@@ -928,10 +1008,14 @@ max_file_size = 1048576  # 1MB
 # Maximum chunk size (characters)
 max_chunk_chars = 2000
 
-# Number of files to process in parallel (default: 4)
-# Higher values use more memory but may be faster on SSDs
+# Number of files to process in parallel (default: 32)
+# Higher values improve throughput by parallelizing file preparation
 # Reduce if experiencing memory pressure
-parallel_files = 4
+parallel_files = 32
+
+# Number of files per indexing batch (default: 512)
+# Larger batches allow more concurrent embedding API requests
+index_batch_size = 512
 
 # ---- Startup Scan Settings ----
 
@@ -955,6 +1039,57 @@ startup_scan_blocking = false
 # Timeout for startup scan in seconds (default: 300)
 # Set to 0 for no timeout.
 startup_scan_timeout_secs = 300
+
+# ---- Watcher Settings ----
+
+# Watcher poll interval in seconds
+watcher_poll_secs = 2
+
+# Maximum files to cache content for watcher
+content_cache_size = 1000
+
+# Maximum file size to cache in bytes
+max_cached_file_size = 524288  # 512KB
+
+# Number of files to batch before processing (default: 32)
+# Larger batches improve embedding API efficiency but increase latency.
+watcher_batch_size = 32
+
+# Timeout to flush watcher batch even if not full, in milliseconds (default: 100)
+# Balances latency vs batching efficiency for incremental updates.
+watcher_batch_timeout_ms = 100
+
+# ---- Pipeline Tuning (advanced) ----
+
+# Scanner buffer size for bulk indexing
+pipeline_scanner_buffer = 256
+
+# Reader buffer size
+pipeline_reader_buffer = 128
+
+# Parser buffer size
+pipeline_parser_buffer = 256
+
+# Embedder buffer size
+pipeline_embedder_buffer = 1024
+
+# Embedding batch timeout in ms
+pipeline_embedding_timeout_ms = 250
+
+# Chunks before DB flush
+pipeline_db_flush_count = 500
+
+# DB flush timeout in ms
+pipeline_db_flush_timeout_ms = 1000
+
+# Maximum pending embedding batches
+pipeline_max_pending_batches = 64
+
+# Reader workers
+pipeline_reader_workers = 16
+
+# Parser workers (0 = num_cpus)
+pipeline_parser_workers = 0
 
 # ============================================================================
 # Document Indexing
@@ -1061,10 +1196,8 @@ dimensions = 4096
 #   6 GB VRAM  -> 4096
 context_length = 32768
 
-# Maximum batch size (auto-calculated if not set)
-# Formula: min(context_length / 512, 64)
-# Set explicitly to override auto-calculation
-# max_batch_size = 64
+# Maximum batch size (default: auto-calculated from context_length, or 512 for openrouter)
+# max_batch_size = 512
 
 # Query instruction for retrieval-optimized embeddings.
 # Some models (like qwen3-embedding) produce better results when queries are
@@ -1090,6 +1223,9 @@ max_idle_days = 90
 
 # Session cleanup interval (hours)
 session_cleanup_hours = 6
+
+# Maximum session age before cleanup (hours)
+max_session_age_hours = 6
 
 # ============================================================================
 # Search Defaults
@@ -1125,6 +1261,14 @@ context_max_batch = 5
 # Max suggestions to generate from explore results
 explore_max_suggestions = 5
 
+# ---- Query embedding cache settings ----
+
+# Embedding cache size for query embeddings
+embedding_cache_size = 1000
+
+# Embedding cache TTL in seconds
+embedding_cache_ttl_secs = 300
+
 # ============================================================================
 # Code Indexing
 # ============================================================================
@@ -1142,10 +1286,14 @@ max_file_size = 1048576  # 1MB
 # Maximum chunk size (characters)
 max_chunk_chars = 2000
 
-# Number of files to process in parallel (default: 4)
-# Higher values use more memory but may be faster on SSDs
+# Number of files to process in parallel (default: 32)
+# Higher values improve throughput by parallelizing file preparation
 # Reduce if experiencing memory pressure
-parallel_files = 4
+parallel_files = 32
+
+# Number of files per indexing batch (default: 512)
+# Larger batches allow more concurrent embedding API requests
+index_batch_size = 512
 
 # ---- Startup Scan Settings ----
 
@@ -1169,6 +1317,57 @@ startup_scan_blocking = false
 # Timeout for startup scan in seconds (default: 300)
 # Set to 0 for no timeout.
 startup_scan_timeout_secs = 300
+
+# ---- Watcher Settings ----
+
+# Watcher poll interval in seconds
+watcher_poll_secs = 2
+
+# Maximum files to cache content for watcher
+content_cache_size = 1000
+
+# Maximum file size to cache in bytes
+max_cached_file_size = 524288  # 512KB
+
+# Number of files to batch before processing (default: 32)
+# Larger batches improve embedding API efficiency but increase latency.
+watcher_batch_size = 32
+
+# Timeout to flush watcher batch even if not full, in milliseconds (default: 100)
+# Balances latency vs batching efficiency for incremental updates.
+watcher_batch_timeout_ms = 100
+
+# ---- Pipeline Tuning (advanced) ----
+
+# Scanner buffer size for bulk indexing
+pipeline_scanner_buffer = 256
+
+# Reader buffer size
+pipeline_reader_buffer = 128
+
+# Parser buffer size
+pipeline_parser_buffer = 256
+
+# Embedder buffer size
+pipeline_embedder_buffer = 1024
+
+# Embedding batch timeout in ms
+pipeline_embedding_timeout_ms = 250
+
+# Chunks before DB flush
+pipeline_db_flush_count = 500
+
+# DB flush timeout in ms
+pipeline_db_flush_timeout_ms = 1000
+
+# Maximum pending embedding batches
+pipeline_max_pending_batches = 64
+
+# Reader workers
+pipeline_reader_workers = 16
+
+# Parser workers (0 = num_cpus)
+pipeline_parser_workers = 0
 
 # ============================================================================
 # Document Indexing
@@ -1209,6 +1408,10 @@ log_rotation = "daily"
 # Log retention in days (0 = keep forever)
 # Default: 7
 log_retention_days = 7
+
+# Idle check interval in seconds (default: 30)
+# How often the scheduler checks if the daemon should shutdown due to inactivity.
+idle_check_interval_secs = 30
 
 # ============================================================================
 # Workspace Aliasing
@@ -1251,6 +1454,26 @@ tool_observations = true
 # Enable high-priority signal detection (default: true)
 # Scans user prompts for corrections/preferences for immediate extraction.
 high_priority_signals = true
+
+# ============================================================================
+# Database Cache Settings
+# ============================================================================
+
+[database]
+# Index cache size in MB (default: 256)
+# Controls memory used for vector/scalar index data.
+# LanceDB default is 6 GB per table - we share a single cache across all tables.
+# Increase for better query performance, decrease for lower memory usage.
+index_cache_mb = 256
+
+# Metadata cache size in MB (default: 64)
+# Controls memory used for dataset manifests, schemas, statistics.
+# LanceDB default is 1 GB per table - we share a single cache across all tables.
+metadata_cache_mb = 64
+
+# Log cache stats periodically during indexing (default: false)
+# Useful for debugging memory usage and cache hit rates.
+log_cache_stats = false
 "#,
       tool_count = ALL_TOOLS.len(),
       preset_name = preset_name
@@ -1393,6 +1616,7 @@ dimensions = 4096
     assert!(template.contains("[embedding]"));
     assert!(template.contains("[daemon]"));
     assert!(template.contains("[hooks]"));
+    assert!(template.contains("[database]"));
     assert!(template.contains("[decay]"));
     assert!(template.contains("[search]"));
     assert!(template.contains("[index]"));
@@ -1413,6 +1637,7 @@ dimensions = 4096
     assert!(!template.contains("\n[embedding]"));
     assert!(!template.contains("\n[daemon]"));
     assert!(!template.contains("\n[hooks]"));
+    assert!(!template.contains("\n[database]"));
   }
 
   #[test]

@@ -1,6 +1,13 @@
 //! Parser stage - chunks file content and determines embedding needs.
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+  collections::HashMap,
+  path::PathBuf,
+  sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+  },
+};
 
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
@@ -9,7 +16,7 @@ use tracing::{debug, trace};
 
 use super::DoneTracker;
 use crate::{
-  actor::message::PipelineContent,
+  actor::message::{IndexProgress, PipelineContent, PipelineStage},
   context::files::{Chunk, FileMetadata, Indexer},
   db::ProjectDb,
 };
@@ -48,10 +55,13 @@ pub async fn parser_worker(
   done_tx: mpsc::Sender<()>,
   db: Arc<ProjectDb>,
   cancel: CancellationToken,
+  progress_tx: Option<mpsc::Sender<IndexProgress>>,
+  processed_counter: Arc<AtomicUsize>,
+  total_files: usize,
 ) {
   trace!(worker_id, "Parser worker starting");
 
-  let mut processed = 0;
+  let mut local_processed = 0;
 
   loop {
     let msg = {
@@ -59,7 +69,7 @@ pub async fn parser_worker(
       tokio::select! {
           biased;
           _ = cancel.cancelled() => {
-              trace!(worker_id, processed, "Parser worker cancelled");
+              trace!(worker_id, local_processed, "Parser worker cancelled");
               break;
           }
           msg = rx_guard.recv() => msg
@@ -125,6 +135,14 @@ pub async fn parser_worker(
           FileMetadata::Code { .. } => (None, None),
         };
 
+        // Increment shared counter and send progress
+        let global_processed = processed_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Some(ref ptx) = progress_tx {
+          let progress =
+            IndexProgress::new(PipelineStage::Parsing, global_processed, total_files).with_current_file(&relative);
+          let _ = ptx.send(progress).await;
+        }
+
         trace!(
             worker_id,
             file = %relative,
@@ -135,7 +153,7 @@ pub async fn parser_worker(
         );
 
         let msg = ParsedChunks::File {
-          relative,
+          relative: relative.clone(),
           chunks,
           existing_embeddings: reusable,
           needs_embedding,
@@ -147,17 +165,17 @@ pub async fn parser_worker(
           trace!(worker_id, "Parser: downstream closed");
           break;
         }
-        processed += 1;
+        local_processed += 1;
       }
       Some(PipelineContent::Done) | None => {
-        trace!(worker_id, processed, "Parser worker: input exhausted");
+        trace!(worker_id, local_processed, "Parser worker: input exhausted");
         break;
       }
     }
   }
 
   let _ = done_tx.send(()).await;
-  trace!(worker_id, processed, "Parser worker finished");
+  trace!(worker_id, local_processed, "Parser worker finished");
 }
 
 /// Aggregates Done signals from parser workers

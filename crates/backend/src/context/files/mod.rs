@@ -27,6 +27,17 @@ use crate::{
   },
 };
 
+#[cfg(feature = "statm")]
+/// Get current process RSS in MB from /proc/self/statm
+async fn get_rss_mb() -> f64 {
+  tokio::fs::read_to_string("/proc/self/statm")
+    .await
+    .ok()
+    .and_then(|c| c.split_whitespace().nth(1)?.parse::<u64>().ok())
+    .map(|pages| (pages * 4096) as f64 / (1024.0 * 1024.0))
+    .unwrap_or(0.0)
+}
+
 // ============================================================================
 // Error Type
 // ============================================================================
@@ -54,7 +65,7 @@ const DOCUMENT_EXTENSIONS: &[&str] = &[
 ];
 
 /// Check if a file extension indicates a document file
-fn is_document_extension(ext: &str) -> bool {
+pub fn is_document_extension(ext: &str) -> bool {
   DOCUMENT_EXTENSIONS.contains(&ext.to_lowercase().as_str())
 }
 
@@ -74,7 +85,7 @@ impl Chunk {
   pub fn file_hash(&self) -> &str {
     match self {
       Chunk::Code(c) => &c.file_hash,
-      Chunk::Document(_) => "", // Documents don't track file hashes yet
+      Chunk::Document(_) => "", // Documents use content_hash at chunk level
     }
   }
 }
@@ -233,16 +244,21 @@ impl Indexer {
   pub fn cache_key(&self, chunk: &Chunk) -> Option<String> {
     match chunk {
       Chunk::Code(c) => c.content_hash.clone(),
-      Chunk::Document(_) => None, // Documents don't support embedding reuse yet
+      Chunk::Document(c) => Some(c.content_hash.clone()),
     }
   }
 
-  /// Store chunks with embeddings to the database
+  /// Store chunks with embeddings to the database using atomic upsert
+  ///
+  /// Uses merge_insert to atomically:
+  /// - Update existing chunks with matching content_hash
+  /// - Insert new chunks
+  /// - Delete stale chunks for this file
   pub async fn store_chunks(
     &self,
     db: &ProjectDb,
-    _file_path: &str,
-    chunks: &[(Chunk, Vec<f32>)],
+    file_path: &str,
+    chunks: Vec<(Chunk, Vec<f32>)>,
   ) -> Result<(), FileIndexError> {
     // Separate code and document chunks
     let mut code_chunks: Vec<(CodeChunk, Vec<f32>)> = Vec::new();
@@ -251,24 +267,24 @@ impl Indexer {
 
     for (chunk, vector) in chunks {
       match chunk {
-        Chunk::Code(c) => code_chunks.push((c.clone(), vector.clone())),
+        Chunk::Code(c) => code_chunks.push((c, vector)),
         Chunk::Document(c) => {
-          doc_chunks.push(c.clone());
-          doc_vectors.push(vector.clone());
+          doc_chunks.push(c);
+          doc_vectors.push(vector);
         }
       }
     }
 
-    // Store code chunks
+    // Upsert code chunks (handles insert, update, and delete atomically)
     if !code_chunks.is_empty() {
-      db.add_code_chunks(&code_chunks)
+      db.upsert_code_chunks(file_path, &code_chunks)
         .await
         .map_err(|e| FileIndexError::IoError(e.to_string()))?;
     }
 
-    // Store document chunks
+    // Upsert document chunks (handles insert, update, and delete atomically)
     if !doc_chunks.is_empty() {
-      db.add_document_chunks(&doc_chunks, &doc_vectors)
+      db.upsert_document_chunks(file_path, &doc_chunks, &doc_vectors)
         .await
         .map_err(|e| FileIndexError::IoError(e.to_string()))?;
     }
@@ -276,12 +292,96 @@ impl Indexer {
     Ok(())
   }
 
-  /// Delete all chunks for a file
-  pub async fn delete_file_chunks(&self, db: &ProjectDb, file_path: &str) -> Result<(), FileIndexError> {
-    // Try both - one will be a no-op if the file type doesn't match
-    // This is safe because file paths are unique across code and documents
-    let _ = db.delete_chunks_for_file(file_path).await;
-    let _ = db.delete_document_chunks_by_source(file_path).await;
+  /// Store chunks for multiple files in a single batch DB operation
+  ///
+  /// Consumes the input files to avoid cloning chunks and vectors.
+  /// More efficient than calling `store_chunks` per file when flushing
+  /// multiple files at once. Uses batch upsert with IN clause for deletes.
+  pub async fn store_chunks_batch(
+    &self,
+    db: &ProjectDb,
+    files: Vec<crate::actor::pipeline::ProcessedFile>,
+  ) -> Result<(), FileIndexError> {
+    #[cfg(feature = "statm")]
+    let mem_entry = get_rss_mb().await;
+
+    // Collect all code and document chunks across all files
+    let mut all_code_chunks: Vec<(CodeChunk, Vec<f32>)> = Vec::new();
+    let mut all_doc_chunks: Vec<DocumentChunk> = Vec::new();
+    let mut all_doc_vectors: Vec<Vec<f32>> = Vec::new();
+    let mut code_file_paths: Vec<String> = Vec::new();
+    let mut doc_sources: Vec<String> = Vec::new();
+
+    for file in files {
+      let file_path = file.relative;
+      let mut has_code = false;
+      let mut has_doc = false;
+
+      // Move chunks out instead of cloning
+      for (chunk, vector) in file.chunks_with_vectors {
+        match chunk {
+          Chunk::Code(c) => {
+            all_code_chunks.push((c, vector));
+            has_code = true;
+          }
+          Chunk::Document(c) => {
+            all_doc_chunks.push(c);
+            all_doc_vectors.push(vector);
+            has_doc = true;
+          }
+        }
+      }
+
+      if has_code {
+        code_file_paths.push(file_path.clone());
+      }
+      if has_doc {
+        doc_sources.push(file_path);
+      }
+    }
+
+    #[cfg(feature = "statm")]
+    let mem_after_prep = get_rss_mb().await;
+
+    // Batch upsert code and document chunks in parallel (different tables)
+    let code_future = async {
+      if !all_code_chunks.is_empty() {
+        let paths_refs: Vec<&str> = code_file_paths.iter().map(|s| s.as_str()).collect();
+        db.upsert_code_chunks_batch(&paths_refs, &all_code_chunks)
+          .await
+          .map_err(|e| FileIndexError::IoError(e.to_string()))
+      } else {
+        Ok(())
+      }
+    };
+
+    let doc_future = async {
+      if !all_doc_chunks.is_empty() {
+        let sources_refs: Vec<&str> = doc_sources.iter().map(|s| s.as_str()).collect();
+        db.upsert_document_chunks_batch(&sources_refs, &all_doc_chunks, &all_doc_vectors)
+          .await
+          .map_err(|e| FileIndexError::IoError(e.to_string()))
+      } else {
+        Ok(())
+      }
+    };
+
+    // Run both upserts in parallel
+    let (code_result, doc_result) = tokio::join!(code_future, doc_future);
+    code_result?;
+    doc_result?;
+
+    #[cfg(feature = "statm")]
+    {
+      let mem_final = get_rss_mb().await;
+
+      tracing::trace!(
+        prep_delta = format!("{:+.1}", mem_after_prep - mem_entry),
+        upsert_delta = format!("{:+.1}", mem_final - mem_after_prep),
+        "[MEM] store_chunks_batch breakdown"
+      );
+    }
+
     Ok(())
   }
 
@@ -308,12 +408,16 @@ impl Indexer {
 
   /// Rename a file in the index (preserves embeddings)
   pub async fn rename_file(&self, db: &ProjectDb, from: &str, to: &str) -> Result<(), FileIndexError> {
-    // Try both - one will be a no-op
-    let _ = db.rename_file(from, to).await;
-    let _ = db.rename_document(from, to).await;
+    // Run both renames in parallel - they operate on different tables
+    // One will be a no-op depending on file type
+    let (_, _, doc_meta) = tokio::join!(
+      db.rename_file(from, to),
+      db.rename_document(from, to),
+      db.get_document_by_source(from)
+    );
 
     // Also update document metadata source if this was a document file
-    if let Ok(Some(mut doc)) = db.get_document_by_source(from).await {
+    if let Ok(Some(mut doc)) = doc_meta {
       doc.source = to.to_string();
       doc.updated_at = chrono::Utc::now();
       let _ = db.upsert_document_metadata(&doc).await;
@@ -513,7 +617,7 @@ fn goodbye() {
 
     assert_eq!(indexer.cache_key(&code_chunk), Some("hash123".to_string()));
 
-    // Document chunk - no cache key
+    // Document chunk - has cache key (content_hash)
     let doc_chunk = Chunk::Document(DocumentChunk::new(
       DocumentId::new(),
       test_project_id(),
@@ -526,6 +630,7 @@ fn goodbye() {
       0,
     ));
 
-    assert_eq!(indexer.cache_key(&doc_chunk), None);
+    // Document chunks now have content_hash computed from content
+    assert!(indexer.cache_key(&doc_chunk).is_some());
   }
 }

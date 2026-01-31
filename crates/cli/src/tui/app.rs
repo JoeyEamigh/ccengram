@@ -3,9 +3,11 @@ use std::{io, path::PathBuf, time::Duration};
 use anyhow::Result;
 use ccengram::ipc::{
   Client,
-  code::{CodeListParams, CodeSearchParams, CodeStatsParams},
-  docs::DocsSearchParams,
-  memory::{MemoryDeemphasizeParams, MemoryListParams, MemoryReinforceParams, MemorySearchParams},
+  code::{CodeContextParams, CodeListParams, CodeStatsParams},
+  docs::{DocContextParams, DocsSearchParams},
+  memory::{MemoryDeemphasizeParams, MemoryListParams, MemoryReinforceParams},
+  project::SessionListParams,
+  search::ExploreParams,
   system::{HealthCheckParams, MetricsParams, ProjectStatsParams, ShutdownParams},
   watch::WatchStatusParams,
 };
@@ -223,9 +225,27 @@ impl App {
       }
       View::Session => {
         self.session.loading = true;
-        // TODO: Session view needs a proper session listing API
-        // For now, just show that there's no session data available
-        self.session.error = Some("Session listing not yet implemented".to_string());
+        match self
+          .client
+          .call(SessionListParams {
+            limit: Some(100),
+            active_only: None,
+          })
+          .await
+        {
+          Ok(sessions) => {
+            // Convert SessionItem to Value for the session view
+            let values: Vec<serde_json::Value> = sessions
+              .into_iter()
+              .filter_map(|s| serde_json::to_value(s).ok())
+              .collect();
+            self.session.sessions = values;
+            self.session.error = None;
+          }
+          Err(e) => {
+            self.session.error = Some(format!("{}", e));
+          }
+        }
         self.session.loading = false;
       }
       View::Search => {
@@ -267,7 +287,9 @@ impl App {
       Action::PageDown => self.page_down(),
       Action::GoToTop => self.go_to_top(),
       Action::GoToBottom => self.go_to_bottom(),
-      Action::NextPanel => self.next_panel(),
+      Action::NextPanel => {
+        self.next_panel();
+      }
       Action::Refresh => self.refresh_current_view().await,
       Action::CycleSort => self.cycle_sort(),
       Action::ToggleSearchMemories => self.toggle_search_memories().await,
@@ -317,13 +339,154 @@ impl App {
   async fn select(&mut self) {
     match self.current_view {
       View::Session => self.session.toggle_expand(),
+      View::Code => {
+        // handle_enter returns true if we should fetch context
+        if self.code.handle_enter() {
+          self.fetch_code_context().await;
+        }
+      }
+      View::Document => {
+        // handle_enter returns true if we should fetch context
+        if self.document.handle_enter() {
+          self.fetch_document_context().await;
+        }
+      }
       View::Search => {
         if self.search.input_active {
           self.execute_search().await;
+        } else {
+          // Toggle context expansion for selected result
+          self.toggle_search_context().await;
         }
       }
       _ => {}
     }
+  }
+
+  /// Fetch context for the selected code chunk
+  async fn fetch_code_context(&mut self) {
+    let Some(chunk) = self.code.selected_chunk().cloned() else {
+      return;
+    };
+
+    self.code.loading = true;
+
+    match self
+      .client
+      .call(CodeContextParams {
+        chunk_id: chunk.id.clone(),
+        before: Some(20),
+        after: Some(20),
+      })
+      .await
+    {
+      Ok(context) => {
+        self.code.set_expanded_context(context);
+      }
+      Err(e) => {
+        self.code.error = Some(format!("Failed to get context: {}", e));
+      }
+    }
+
+    self.code.loading = false;
+  }
+
+  /// Fetch context for the selected document chunk
+  async fn fetch_document_context(&mut self) {
+    let Some(doc) = self.document.selected_document().cloned() else {
+      return;
+    };
+
+    self.document.loading = true;
+
+    match self
+      .client
+      .call(DocContextParams {
+        doc_id: doc.id.clone(),
+        before: Some(2),
+        after: Some(2),
+      })
+      .await
+    {
+      Ok(context) => {
+        self.document.set_expanded_context(context);
+      }
+      Err(e) => {
+        self.document.error = Some(format!("Failed to get context: {}", e));
+      }
+    }
+
+    self.document.loading = false;
+  }
+
+  /// Toggle expanded context for the selected search result
+  async fn toggle_search_context(&mut self) {
+    // If already expanded, collapse
+    if self.search.has_expanded_context() {
+      self.search.clear_expanded_context();
+      return;
+    }
+
+    // Get the selected result
+    let Some(result) = self.search.selected_result().cloned() else {
+      return;
+    };
+
+    self.search.loading = true;
+
+    match result.result_type {
+      crate::tui::views::search::SearchResultType::Code => {
+        // Get chunk_id from the result data
+        if let Some(chunk_id) = result.data.get("id").and_then(|v| v.as_str()) {
+          match self
+            .client
+            .call(CodeContextParams {
+              chunk_id: chunk_id.to_string(),
+              before: Some(20),
+              after: Some(20),
+            })
+            .await
+          {
+            Ok(context) => {
+              self
+                .search
+                .set_expanded_context(crate::tui::views::search::ExpandedContext::Code(context));
+            }
+            Err(e) => {
+              self.search.error = Some(format!("Failed to get context: {}", e));
+            }
+          }
+        }
+      }
+      crate::tui::views::search::SearchResultType::Document => {
+        // Get chunk_id from the result data (for docs it's the chunk id)
+        if let Some(chunk_id) = result.data.get("id").and_then(|v| v.as_str()) {
+          match self
+            .client
+            .call(DocContextParams {
+              doc_id: chunk_id.to_string(),
+              before: Some(2),
+              after: Some(2),
+            })
+            .await
+          {
+            Ok(context) => {
+              self
+                .search
+                .set_expanded_context(crate::tui::views::search::ExpandedContext::Document(context));
+            }
+            Err(e) => {
+              self.search.error = Some(format!("Failed to get context: {}", e));
+            }
+          }
+        }
+      }
+      crate::tui::views::search::SearchResultType::Memory => {
+        // For memories, we could show timeline or related - for now just ignore
+      }
+    }
+
+    self.search.loading = false;
   }
 
   fn back(&mut self) {
@@ -488,8 +651,14 @@ impl App {
   fn go_to_top(&mut self) {
     match self.current_view {
       View::Memory => self.memory.selected = 0,
-      View::Code => self.code.selected = 0,
-      View::Document => self.document.selected = 0,
+      View::Code => {
+        self.code.tree_selected = 0;
+        self.code.detail_scroll = 0;
+      }
+      View::Document => {
+        self.document.tree_selected = 0;
+        self.document.detail_scroll = 0;
+      }
       View::Session => self.session.selected = 0,
       View::Search => self.search.selected = 0,
       _ => {}
@@ -504,13 +673,15 @@ impl App {
         }
       }
       View::Code => {
-        if !self.code.chunks.is_empty() {
-          self.code.selected = self.code.chunks.len() - 1;
+        if !self.code.tree_items.is_empty() {
+          self.code.tree_selected = self.code.tree_items.len() - 1;
+          self.code.detail_scroll = 0;
         }
       }
       View::Document => {
-        if !self.document.documents.is_empty() {
-          self.document.selected = self.document.documents.len() - 1;
+        if !self.document.tree_items.is_empty() {
+          self.document.tree_selected = self.document.tree_items.len() - 1;
+          self.document.detail_scroll = 0;
         }
       }
       View::Session => {
@@ -529,9 +700,19 @@ impl App {
   }
 
   fn next_panel(&mut self) {
-    // Cycle through views
-    let next = (self.current_view.index() + 1) % 7;
-    self.current_view = View::from_index(next);
+    // In views with left/right panels, Tab toggles between them
+    // In other views, Tab cycles through views
+    match self.current_view {
+      View::Code => self.code.toggle_focus(),
+      View::Document => self.document.toggle_focus(),
+      View::Memory => self.memory.toggle_focus(),
+      View::Search => self.search.toggle_focus(),
+      View::Session => self.session.toggle_focus(),
+      _ => {
+        let next = (self.current_view.index() + 1) % 6;
+        self.current_view = View::from_index(next);
+      }
+    }
   }
 
   fn cycle_sort(&mut self) {
@@ -577,88 +758,96 @@ impl App {
     }
 
     self.search.loading = true;
-    let mut results = Vec::new();
 
-    // Search memories
-    if self.search.search_memories
-      && let Ok(result) = self
-        .client
-        .call(MemorySearchParams {
-          query: self.search.query.clone(),
-          limit: Some(20),
-          ..Default::default()
-        })
-        .await
+    // Determine scope based on toggles
+    let scope = match (
+      self.search.search_memories,
+      self.search.search_code,
+      self.search.search_documents,
+    ) {
+      (true, true, true) => Some("all".to_string()),
+      (true, false, false) => Some("memory".to_string()),
+      (false, true, false) => Some("code".to_string()),
+      (false, false, true) => Some("docs".to_string()),
+      (true, true, false) => Some("memory,code".to_string()),
+      (true, false, true) => Some("memory,docs".to_string()),
+      (false, true, true) => Some("code,docs".to_string()),
+      (false, false, false) => {
+        self.search.loading = false;
+        return;
+      }
+    };
+
+    match self
+      .client
+      .call(ExploreParams {
+        query: self.search.query.clone(),
+        scope,
+        expand_top: Some(3),
+        limit: Some(50),
+      })
+      .await
     {
-      for memory in result.items {
-        let similarity = memory.similarity.unwrap_or(0.0);
-        // Convert typed struct back to Value for rendering
-        if let Ok(data) = serde_json::to_value(&memory) {
-          results.push(SearchResult {
-            result_type: SearchResultType::Memory,
-            data,
-            similarity,
-          });
-        }
+      Ok(explore_result) => {
+        let results: Vec<SearchResult> = explore_result
+          .results
+          .into_iter()
+          .filter_map(|item| {
+            let result_type = match item.result_type.as_str() {
+              "code" => SearchResultType::Code,
+              "memory" => SearchResultType::Memory,
+              "doc" => SearchResultType::Document,
+              _ => return None,
+            };
+
+            // Convert ExploreResultItem to Value, enriching with available data
+            let mut data = serde_json::json!({
+              "id": item.id,
+              "preview": item.preview,
+              "similarity": item.similarity,
+            });
+
+            // Add type-specific fields
+            if let Some(file_path) = &item.file_path {
+              data["file_path"] = serde_json::json!(file_path);
+            }
+            if let Some(line) = item.line {
+              data["start_line"] = serde_json::json!(line);
+            }
+            if !item.symbols.is_empty() {
+              data["symbols"] = serde_json::json!(item.symbols);
+            }
+            if let Some(hints) = &item.hints {
+              data["caller_count"] = serde_json::json!(hints.caller_count);
+              data["callee_count"] = serde_json::json!(hints.callee_count);
+              data["related_memory_count"] = serde_json::json!(hints.related_memory_count);
+            }
+
+            // For memory results, use preview as content
+            if result_type == SearchResultType::Memory {
+              data["content"] = serde_json::json!(item.preview);
+            }
+            // For doc results, use preview as title/content
+            if result_type == SearchResultType::Document {
+              data["title"] = serde_json::json!(item.preview);
+              data["content"] = serde_json::json!(item.preview);
+            }
+
+            Some(SearchResult {
+              result_type,
+              data,
+              similarity: item.similarity,
+            })
+          })
+          .collect();
+
+        self.search.set_results(results);
+      }
+      Err(e) => {
+        self.search.error = Some(format!("Search failed: {}", e));
       }
     }
 
-    // Search code
-    if self.search.search_code
-      && let Ok(code_result) = self
-        .client
-        .call(CodeSearchParams {
-          query: self.search.query.clone(),
-          limit: Some(20),
-          ..Default::default()
-        })
-        .await
-    {
-      // CodeSearchResult has a .chunks field containing the actual results
-      for chunk in code_result.chunks {
-        let similarity = chunk.similarity.unwrap_or(0.0);
-        // Convert typed struct back to Value for rendering
-        if let Ok(data) = serde_json::to_value(&chunk) {
-          results.push(SearchResult {
-            result_type: SearchResultType::Code,
-            data,
-            similarity,
-          });
-        }
-      }
-    }
-
-    // Search documents
-    if self.search.search_documents
-      && let Ok(docs) = self
-        .client
-        .call(DocsSearchParams {
-          query: self.search.query.clone(),
-          limit: Some(20),
-        })
-        .await
-    {
-      for doc in docs {
-        let similarity = doc.similarity.unwrap_or(0.0);
-        // Convert typed struct back to Value for rendering
-        if let Ok(data) = serde_json::to_value(&doc) {
-          results.push(SearchResult {
-            result_type: SearchResultType::Document,
-            data,
-            similarity,
-          });
-        }
-      }
-    }
-
-    // Sort by similarity
-    results.sort_by(|a, b| {
-      b.similarity
-        .partial_cmp(&a.similarity)
-        .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    self.search.set_results(results);
     self.search.loading = false;
   }
 

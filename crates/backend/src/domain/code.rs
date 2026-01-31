@@ -132,11 +132,11 @@ pub enum Language {
 impl Language {
   pub fn from_extension(ext: &str) -> Option<Self> {
     match ext.to_lowercase().as_str() {
-      "ts" | "mts" => Some(Language::TypeScript),
+      "ts" | "mts" | "cts" => Some(Language::TypeScript),
       "js" | "mjs" | "cjs" => Some(Language::JavaScript),
       "tsx" => Some(Language::Tsx),
       "jsx" => Some(Language::Jsx),
-      "html" | "htm" => Some(Language::Html),
+      "html" | "htm" | "htmx" => Some(Language::Html),
       "css" => Some(Language::Css),
       "scss" => Some(Language::Scss),
       "sass" => Some(Language::Sass),
@@ -163,7 +163,9 @@ impl Language {
       "json" | "jsonc" => Some(Language::Json),
       "yaml" | "yml" => Some(Language::Yaml),
       "toml" => Some(Language::Toml),
-      "xml" | "xsd" | "xsl" | "svg" => Some(Language::Xml),
+      // TODO: consider excluding "svg" - they're often large icon assets that tokenize poorly
+      // "xml" | "xsd" | "xsl" | "svg" => Some(Language::Xml),
+      "xml" | "xsd" | "xsl" => Some(Language::Xml),
       "md" | "markdown" => Some(Language::Markdown),
       "sh" | "bash" | "zsh" | "fish" => Some(Language::Shell),
       "sql" => Some(Language::Sql),

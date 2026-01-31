@@ -137,13 +137,11 @@ impl SessionTracker {
     !self.active_sessions.read().await.is_empty()
   }
 
-  #[cfg(test)]
   /// Get the count of active sessions.
   pub async fn active_count(&self) -> usize {
     self.active_sessions.read().await.len()
   }
 
-  #[cfg(test)]
   /// Get a list of all active session IDs.
   pub async fn list_sessions(&self) -> Vec<SessionId> {
     let sessions: Vec<SessionId> = self.active_sessions.read().await.iter().cloned().collect();

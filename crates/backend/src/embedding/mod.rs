@@ -69,4 +69,20 @@ pub enum EmbeddingError {
   Network(String),
   #[error("Request timed out")]
   Timeout,
+  #[error("Upstream provider timeout (received only keep-alive data)")]
+  UpstreamTimeout,
+  #[error("Rate limit exhausted after waiting {0:?}")]
+  RateLimitExhausted(std::time::Duration),
+  #[error("Response parsing failed: {0}")]
+  ParseError(String),
+  #[error("Batch size mismatch: expected {expected}, got {got}")]
+  BatchSizeMismatch { expected: usize, got: usize },
+}
+
+impl EmbeddingError {
+  /// Returns true if this error warrants backoff before retry.
+  /// Upstream timeouts don't need backoff - the provider already waited.
+  pub fn needs_backoff(&self) -> bool {
+    !matches!(self, EmbeddingError::UpstreamTimeout)
+  }
 }

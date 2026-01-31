@@ -59,7 +59,7 @@ impl ProjectDb {
       "Creating session"
     );
 
-    let table = self.sessions_table().await?;
+    let table = self.sessions_table();
 
     let batch = session_to_batch(session)?;
     let batches = RecordBatchIterator::new(vec![Ok(batch)], sessions_schema());
@@ -71,7 +71,7 @@ impl ProjectDb {
   /// Get a session by ID (Claude session ID string)
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn get_session(&self, id: &str) -> Result<Option<Session>> {
-    let table = self.sessions_table().await?;
+    let table = self.sessions_table();
 
     let results: Vec<RecordBatch> = table
       .query()
@@ -122,7 +122,7 @@ impl ProjectDb {
       "Updating session"
     );
 
-    let table = self.sessions_table().await?;
+    let table = self.sessions_table();
 
     let batch = session_to_batch(session)?;
     let batches = RecordBatchIterator::new(vec![Ok(batch)], sessions_schema());
@@ -156,7 +156,7 @@ impl ProjectDb {
   /// List sessions for a project
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn list_sessions(&self, filter: Option<&str>, limit: Option<usize>) -> Result<Vec<Session>> {
-    let table = self.sessions_table().await?;
+    let table = self.sessions_table();
 
     let query = match (filter, limit) {
       (Some(f), Some(l)) => table.query().only_if(f).limit(l),

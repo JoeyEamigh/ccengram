@@ -13,6 +13,8 @@ mod mcp;
 mod tools;
 mod tui;
 
+#[cfg(all(unix, feature = "jemalloc-pprof"))]
+use commands::cmd_pprof;
 use commands::{
   cmd_agent, cmd_archive, cmd_config_init, cmd_config_reset, cmd_config_show, cmd_context, cmd_daemon, cmd_delete,
   cmd_deleted, cmd_health, cmd_hook, cmd_index, cmd_logs, cmd_logs_list, cmd_migrate, cmd_projects_clean,
@@ -509,6 +511,22 @@ INSTALLATION:
     #[arg(value_enum)]
     shell: Shell,
   },
+
+  /// Download heap profile from daemon (requires jemalloc-pprof feature)
+  #[cfg(all(unix, feature = "jemalloc-pprof"))]
+  #[command(after_help = "\
+EXAMPLES:
+  ccengram pprof                      # Download to heap_<timestamp>.pb.gz
+  ccengram pprof -o profile.pb.gz    # Download to specific file
+
+USAGE:
+  The daemon must be running with the jemalloc-pprof feature enabled.
+  View the profile with: go tool pprof <file>")]
+  Pprof {
+    /// Output file path (default: heap_<timestamp>.pb.gz in current directory)
+    #[arg(short, long)]
+    output: Option<String>,
+  },
 }
 
 #[tokio::main]
@@ -665,6 +683,10 @@ async fn main() -> Result<()> {
       print_completions(shell);
       Ok(())
     }
+
+    // Pprof command (unix + jemalloc-pprof feature only)
+    #[cfg(all(unix, feature = "jemalloc-pprof"))]
+    Commands::Pprof { output } => cmd_pprof(output.as_deref()).await,
   }
 }
 

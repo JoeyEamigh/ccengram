@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use crate::actor::message::{IndexProgress, PipelineFile};
+use crate::actor::message::{IndexProgress, PipelineFile, PipelineStage};
 
 /// Scanner stage - enumerates files and sends them to the Reader stage.
 ///
@@ -43,6 +43,12 @@ pub async fn scanner_stage(
       }
     };
 
+    // Send progress update for every file (before moving relative)
+    if let Some(ref ptx) = progress_tx {
+      let progress = IndexProgress::new(PipelineStage::Scanning, i + 1, total).with_current_file(&relative);
+      let _ = ptx.send(progress).await;
+    }
+
     // Send to reader
     let msg = PipelineFile::file(path.clone(), relative);
 
@@ -58,14 +64,6 @@ pub async fn scanner_stage(
           break;
         }
       }
-    }
-
-    // Send progress update periodically
-    if let Some(ref ptx) = progress_tx
-      && (i % 100 == 0 || i == total - 1)
-    {
-      let progress = IndexProgress::new(i + 1, total).with_current_file(path.to_string_lossy());
-      let _ = ptx.send(progress).await;
     }
   }
 

@@ -111,6 +111,7 @@ pub fn documents_schema(vector_dim: usize) -> Arc<Schema> {
     Field::new("chunk_index", DataType::UInt32, false),
     Field::new("total_chunks", DataType::UInt32, false),
     Field::new("char_offset", DataType::UInt32, false),
+    Field::new("content_hash", DataType::Utf8, false), // Hash for merge_insert key
     Field::new("created_at", DataType::Int64, false),
     Field::new("updated_at", DataType::Int64, false),
     Field::new(

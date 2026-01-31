@@ -18,21 +18,33 @@ use crate::{
 };
 
 impl ProjectDb {
-  /// Add multiple document chunks in a batch
+  /// Upsert document chunks for a source using merge_insert
+  ///
+  /// This atomically:
+  /// - Updates existing chunks with matching content_hash
+  /// - Inserts new chunks that don't exist
+  /// - Deletes old chunks for this source that aren't in the new set
   #[tracing::instrument(level = "trace", skip(self, chunks, vectors), fields(batch_size = chunks.len()))]
-  pub async fn add_document_chunks(&self, chunks: &[DocumentChunk], vectors: &[Vec<f32>]) -> Result<()> {
+  pub async fn upsert_document_chunks(
+    &self,
+    source: &str,
+    chunks: &[DocumentChunk],
+    vectors: &[Vec<f32>],
+  ) -> Result<()> {
     if chunks.is_empty() {
-      return Ok(());
+      // If no chunks, just delete any existing chunks for this source
+      return self.delete_document_chunks_by_source(source).await;
     }
 
     debug!(
       table = "documents",
-      operation = "batch_insert",
+      operation = "merge_insert",
+      source = %source,
       batch_size = chunks.len(),
-      "Adding document chunks batch"
+      "Upserting document chunks"
     );
 
-    let table = self.documents_table().await?;
+    let table = self.documents_table();
 
     let batches: Vec<RecordBatch> = chunks
       .iter()
@@ -43,14 +55,68 @@ impl ProjectDb {
     let schema = documents_schema(self.vector_dim);
     let iter = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
 
+    // Use merge_insert with source + chunk_index as the key
+    // This uniquely identifies each chunk's position and avoids collisions when
+    // multiple chunks have identical content (same content_hash).
+    let escaped_source = source.replace('\'', "''");
+    let mut builder = table.merge_insert(&["source", "chunk_index"]);
+    builder
+      .when_matched_update_all(None)
+      .when_not_matched_insert_all()
+      .when_not_matched_by_source_delete(Some(format!("source = '{}'", escaped_source)));
+    builder.execute(Box::new(iter)).await?;
+
+    Ok(())
+  }
+
+  /// Batch upsert document chunks for multiple sources
+  ///
+  /// More efficient than calling `upsert_document_chunks` per source when flushing
+  /// multiple files at once. Uses bulk delete + add for consistency with code chunks.
+  #[tracing::instrument(level = "trace", skip(self, chunks, vectors), fields(source_count = sources.len(), chunk_count = chunks.len()))]
+  pub async fn upsert_document_chunks_batch(
+    &self,
+    sources: &[&str],
+    chunks: &[DocumentChunk],
+    vectors: &[Vec<f32>],
+  ) -> Result<()> {
+    let table = self.documents_table();
+
+    // Single bulk delete for all sources
+    if !sources.is_empty() {
+      let sources_filter = sources
+        .iter()
+        .map(|s| format!("'{}'", s.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(", ");
+      table.delete(&format!("source IN ({})", sources_filter)).await?;
+    }
+
+    if chunks.is_empty() {
+      return Ok(());
+    }
+
+    debug!(
+      table = "documents",
+      operation = "batch_add",
+      source_count = sources.len(),
+      chunk_count = chunks.len(),
+      "Batch adding document chunks"
+    );
+
+    // Create batched RecordBatch with all chunks and add them
+    let batch = chunks_to_batch(chunks, vectors, self.vector_dim)?;
+    let schema = documents_schema(self.vector_dim);
+    let iter = RecordBatchIterator::new(vec![Ok(batch)], schema);
     table.add(Box::new(iter)).execute().await?;
+
     Ok(())
   }
 
   /// Get a document chunk by ID
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn get_document_chunk(&self, id: &DocumentId) -> Result<Option<DocumentChunk>> {
-    let table = self.documents_table().await?;
+    let table = self.documents_table();
     let id_str = id.to_string();
 
     let results: Vec<RecordBatch> = table
@@ -90,7 +156,7 @@ impl ProjectDb {
       "Searching documents"
     );
 
-    let table = self.documents_table().await?;
+    let table = self.documents_table();
 
     let query = if let Some(f) = filter {
       table.vector_search(query_vector.to_vec())?.limit(limit).only_if(f)
@@ -126,7 +192,7 @@ impl ProjectDb {
   /// List document chunks with optional filter
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn list_document_chunks(&self, filter: Option<&str>, limit: Option<usize>) -> Result<Vec<DocumentChunk>> {
-    let table = self.documents_table().await?;
+    let table = self.documents_table();
 
     let query = match (filter, limit) {
       (Some(f), Some(l)) => table.query().only_if(f).limit(l),
@@ -151,7 +217,7 @@ impl ProjectDb {
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn delete_document_chunk(&self, id: &DocumentId) -> Result<()> {
     debug!(table = "documents", operation = "delete_chunk", id = %id, "Deleting document chunk");
-    let table = self.documents_table().await?;
+    let table = self.documents_table();
     table.delete(&format!("id = '{}'", id)).await?;
     Ok(())
   }
@@ -241,7 +307,7 @@ impl ProjectDb {
       source = %source,
       "Deleting document chunks by source"
     );
-    let table = self.documents_table().await?;
+    let table = self.documents_table();
     let escaped = source.replace('\'', "''");
     table.delete(&format!("source = '{}'", escaped)).await?;
     Ok(())
@@ -261,7 +327,7 @@ impl ProjectDb {
       "Renaming document source"
     );
 
-    let table = self.documents_table().await?;
+    let table = self.documents_table();
 
     // Count chunks before rename
     let filter = format!("source = '{}'", from.replace('\'', "''"));
@@ -286,6 +352,59 @@ impl ProjectDb {
   }
 }
 
+/// Convert multiple DocumentChunks to a single Arrow RecordBatch (true batch insert)
+fn chunks_to_batch(chunks: &[DocumentChunk], vectors: &[Vec<f32>], vector_dim: usize) -> Result<RecordBatch> {
+  let n = chunks.len();
+
+  let ids: Vec<String> = chunks.iter().map(|c| c.id.to_string()).collect();
+  let document_ids: Vec<String> = chunks.iter().map(|c| c.document_id.to_string()).collect();
+  let project_ids: Vec<String> = chunks.iter().map(|c| c.project_id.to_string()).collect();
+  let contents: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
+  let titles: Vec<&str> = chunks.iter().map(|c| c.title.as_str()).collect();
+  let sources: Vec<&str> = chunks.iter().map(|c| c.source.as_str()).collect();
+  let source_types: Vec<String> = chunks.iter().map(|c| c.source_type.as_str().to_string()).collect();
+  let chunk_indices: Vec<u32> = chunks.iter().map(|c| c.chunk_index as u32).collect();
+  let total_chunks: Vec<u32> = chunks.iter().map(|c| c.total_chunks as u32).collect();
+  let char_offsets: Vec<u32> = chunks.iter().map(|c| c.char_offset as u32).collect();
+  let content_hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
+  let created_ats: Vec<i64> = chunks.iter().map(|c| c.created_at.timestamp_millis()).collect();
+  let updated_ats: Vec<i64> = chunks.iter().map(|c| c.updated_at.timestamp_millis()).collect();
+
+  // Vectors - flatten all into one array
+  let mut all_vectors: Vec<f32> = Vec::with_capacity(n * vector_dim);
+  for vec in vectors {
+    let mut v = vec.clone();
+    v.resize(vector_dim, 0.0);
+    all_vectors.extend(v);
+  }
+
+  let vector_values = Float32Array::from(all_vectors);
+  let field = Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Float32, true));
+  let vector_list = FixedSizeListArray::try_new(field, vector_dim as i32, Arc::new(vector_values), None)?;
+
+  let batch = RecordBatch::try_new(
+    documents_schema(vector_dim),
+    vec![
+      Arc::new(StringArray::from(ids)),
+      Arc::new(StringArray::from(document_ids)),
+      Arc::new(StringArray::from(project_ids)),
+      Arc::new(StringArray::from(contents)),
+      Arc::new(StringArray::from(titles)),
+      Arc::new(StringArray::from(sources)),
+      Arc::new(StringArray::from(source_types)),
+      Arc::new(UInt32Array::from(chunk_indices)),
+      Arc::new(UInt32Array::from(total_chunks)),
+      Arc::new(UInt32Array::from(char_offsets)),
+      Arc::new(StringArray::from(content_hashes)),
+      Arc::new(Int64Array::from(created_ats)),
+      Arc::new(Int64Array::from(updated_ats)),
+      Arc::new(vector_list),
+    ],
+  )?;
+
+  Ok(batch)
+}
+
 /// Convert a DocumentChunk to an Arrow RecordBatch
 fn chunk_to_batch(chunk: &DocumentChunk, vector: &[f32], vector_dim: usize) -> Result<RecordBatch> {
   let id = StringArray::from(vec![chunk.id.to_string()]);
@@ -298,6 +417,7 @@ fn chunk_to_batch(chunk: &DocumentChunk, vector: &[f32], vector_dim: usize) -> R
   let chunk_index = UInt32Array::from(vec![chunk.chunk_index as u32]);
   let total_chunks = UInt32Array::from(vec![chunk.total_chunks as u32]);
   let char_offset = UInt32Array::from(vec![chunk.char_offset as u32]);
+  let content_hash = StringArray::from(vec![chunk.content_hash.clone()]);
   let created_at = Int64Array::from(vec![chunk.created_at.timestamp_millis()]);
   let updated_at = Int64Array::from(vec![chunk.updated_at.timestamp_millis()]);
 
@@ -323,6 +443,7 @@ fn chunk_to_batch(chunk: &DocumentChunk, vector: &[f32], vector_dim: usize) -> R
       Arc::new(chunk_index),
       Arc::new(total_chunks),
       Arc::new(char_offset),
+      Arc::new(content_hash),
       Arc::new(created_at),
       Arc::new(updated_at),
       Arc::new(vector_list),
@@ -374,6 +495,13 @@ fn batch_to_chunk(batch: &RecordBatch, row: usize) -> Result<DocumentChunk> {
     .single()
     .ok_or_else(|| DbError::NotFound("invalid updated_at timestamp".into()))?;
 
+  // content_hash may not exist in old databases, provide default
+  let content_hash = batch
+    .column_by_name("content_hash")
+    .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+    .map(|a| a.value(row).to_string())
+    .unwrap_or_default();
+
   Ok(DocumentChunk {
     id: id_str.parse().map_err(|_| DbError::NotFound("invalid id".into()))?,
     document_id: document_id_str
@@ -387,6 +515,7 @@ fn batch_to_chunk(batch: &RecordBatch, row: usize) -> Result<DocumentChunk> {
     chunk_index: get_u32("chunk_index")? as usize,
     total_chunks: get_u32("total_chunks")? as usize,
     char_offset: get_u32("char_offset")? as usize,
+    content_hash,
     created_at,
     updated_at,
   })
@@ -433,12 +562,12 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn test_add_and_get_document_chunk() {
+  async fn test_upsert_and_get_document_chunk() {
     let (_temp, db) = create_test_db().await;
     let chunk = create_test_chunk();
     let vec = dummy_vector(db.vector_dim);
 
-    db.add_document_chunks(std::slice::from_ref(&chunk), &[vec])
+    db.upsert_document_chunks(&chunk.source, std::slice::from_ref(&chunk), &[vec])
       .await
       .unwrap();
 
@@ -452,12 +581,37 @@ mod tests {
   #[tokio::test]
   async fn test_list_document_chunks() {
     let (_temp, db) = create_test_db().await;
+    let doc_id = DocumentId::new();
+    let project_id = Uuid::new_v4();
 
-    let c1 = create_test_chunk();
-    let c2 = create_test_chunk();
+    // Create chunks with different content (therefore different content_hash)
+    let c1 = DocumentChunk::new(
+      doc_id,
+      project_id,
+      "Content for chunk 1".to_string(),
+      "Test".to_string(),
+      "/path/to/doc.md".to_string(),
+      DocumentSource::File,
+      0,
+      2,
+      0,
+    );
+    let c2 = DocumentChunk::new(
+      doc_id,
+      project_id,
+      "Content for chunk 2".to_string(),
+      "Test".to_string(),
+      "/path/to/doc.md".to_string(),
+      DocumentSource::File,
+      1,
+      2,
+      50,
+    );
     let vec = dummy_vector(db.vector_dim);
 
-    db.add_document_chunks(&[c1, c2], &[vec.clone(), vec]).await.unwrap();
+    db.upsert_document_chunks("/path/to/doc.md", &[c1, c2], &[vec.clone(), vec])
+      .await
+      .unwrap();
 
     let chunks = db.list_document_chunks(None, None).await.unwrap();
     assert_eq!(chunks.len(), 2, "should list both chunks");
@@ -494,7 +648,9 @@ mod tests {
     );
 
     let vec = dummy_vector(db.vector_dim);
-    db.add_document_chunks(&[c1, c2], &[vec.clone(), vec]).await.unwrap();
+    db.upsert_document_chunks("doc.md", &[c1, c2], &[vec.clone(), vec])
+      .await
+      .unwrap();
 
     let before = db.list_document_chunks(None, None).await.unwrap();
     assert_eq!(before.len(), 2, "should have 2 chunks before delete");

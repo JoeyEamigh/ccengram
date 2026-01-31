@@ -5,7 +5,7 @@
 
 use tracing::warn;
 
-use crate::config::CHARS_PER_TOKEN;
+use crate::config::{CHARS_PER_TOKEN, TOKEN_SAFETY_MARGIN};
 
 /// Configuration for text validation.
 #[derive(Debug, Clone)]
@@ -14,6 +14,8 @@ pub struct TextValidationConfig {
   pub max_tokens: usize,
   /// Estimated characters per token for size calculation.
   pub chars_per_token: usize,
+  /// Safety margin factor (e.g., 0.5 for 50% margin).
+  pub safety_margin: f32,
 }
 
 impl TextValidationConfig {
@@ -22,12 +24,14 @@ impl TextValidationConfig {
     Self {
       max_tokens: context_length,
       chars_per_token: CHARS_PER_TOKEN,
+      safety_margin: TOKEN_SAFETY_MARGIN,
     }
   }
 
   /// Maximum characters allowed based on token estimate.
+  /// Applies safety margin since tokenization varies wildly (code/JSON tokenize poorly).
   pub fn max_chars(&self) -> usize {
-    self.max_tokens * self.chars_per_token
+    (((self.max_tokens * self.chars_per_token) as f32) * (self.safety_margin)) as usize
   }
 
   /// Estimate token count for a text string.
@@ -67,14 +71,16 @@ pub enum ValidationResult {
 /// let (text, result) = validate_and_truncate("Hello, world!", &config);
 /// ```
 pub fn validate_and_truncate(text: &str, config: &TextValidationConfig) -> (String, ValidationResult) {
-  let estimated_tokens = config.estimate_tokens(text);
+  let max_chars = config.max_chars();
 
-  if estimated_tokens <= config.max_tokens {
+  // Use max_chars (which applies safety margin) for the validation check
+  // This ensures we're conservative about tokenization variance
+  if text.len() <= max_chars {
     return (text.to_string(), ValidationResult::Valid);
   }
 
   // Need to truncate
-  let max_chars = config.max_chars();
+  let estimated_tokens = config.estimate_tokens(text);
   let truncated: String = text.chars().take(max_chars).collect();
   let truncated_len = truncated.len();
 
@@ -99,12 +105,17 @@ pub fn validate_and_truncate(text: &str, config: &TextValidationConfig) -> (Stri
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::config::{CHARS_PER_TOKEN, TOKEN_SAFETY_MARGIN};
 
   #[test]
   fn test_for_context_length() {
     let config = TextValidationConfig::for_context_length(4096);
     assert_eq!(config.max_tokens, 4096);
-    assert_eq!(config.max_chars(), 4096 * 4);
+    // max_chars = (max_tokens * chars_per_token) * TOKEN_SAFETY_MARGIN
+    assert_eq!(
+      config.max_chars(),
+      ((4096 * CHARS_PER_TOKEN) as f32 * TOKEN_SAFETY_MARGIN) as usize
+    );
   }
 
   #[test]
@@ -127,12 +138,12 @@ mod tests {
 
   #[test]
   fn test_truncated_text() {
-    // Very small limit for testing
+    // Small limit for testing: max_chars = (4 * 4) / 2 = 8
     let config = TextValidationConfig {
-      max_tokens: 2,
+      max_tokens: 4,
       chars_per_token: 4,
+      safety_margin: 0.5,
     };
-    // max_chars = 8
 
     let text = "Hello, wonderful world!"; // 23 chars
     let (result, validation) = validate_and_truncate(text, &config);
@@ -154,11 +165,12 @@ mod tests {
   #[test]
   fn test_unicode_truncation() {
     // Ensure we don't split multi-byte characters
+    // max_chars = (2 * 4) / 2 = 4
     let config = TextValidationConfig {
-      max_tokens: 1,
+      max_tokens: 2,
       chars_per_token: 4,
+      safety_margin: 0.5,
     };
-    // max_chars = 4
 
     // Unicode text with multi-byte chars
     let text = "Hello 世界!"; // Mix of ASCII and CJK
@@ -168,5 +180,34 @@ mod tests {
     assert_eq!(result.chars().count(), 4);
     // Verify it's valid UTF-8 (would panic if not)
     let _ = result.as_str();
+  }
+
+  #[test]
+  fn test_safety_margin_applied_to_validation() {
+    // This tests the fix for a bug where safety_margin was only applied during
+    // truncation but not during the validation check.
+    //
+    // Config: max_tokens=100, chars_per_token=4, safety_margin=0.25
+    // max_chars = 100 * 4 * 0.25 = 100 chars
+    // estimated_tokens for 200 chars = 200/4 = 50 tokens
+    //
+    // OLD BUG: 50 <= 100 (max_tokens) → would pass without truncation
+    // FIXED: 200 > 100 (max_chars) → correctly truncates
+    let config = TextValidationConfig {
+      max_tokens: 100,
+      chars_per_token: 4,
+      safety_margin: 0.25,
+    };
+
+    // 200 chars - under max_tokens*chars_per_token (400) but over max_chars (100)
+    let text = "a".repeat(200);
+    let (result, validation) = validate_and_truncate(&text, &config);
+
+    // Should be truncated to max_chars (100), not passed through
+    assert_eq!(result.len(), 100, "text should be truncated to max_chars");
+    assert!(
+      matches!(validation, ValidationResult::Truncated { .. }),
+      "validation should report truncation"
+    );
   }
 }

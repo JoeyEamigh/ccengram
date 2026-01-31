@@ -125,9 +125,13 @@ pub async fn supersede(
   old_memory_id: &str,
   new_memory_id: &str,
 ) -> Result<MemorySupersedeResult, ServiceError> {
-  // Resolve both memories to verify existence and handle prefixes
-  let old_memory = Resolver::memory(ctx.db, old_memory_id).await?;
-  let new_memory = Resolver::memory(ctx.db, new_memory_id).await?;
+  // Resolve both memories in parallel to verify existence and handle prefixes
+  let (old_result, new_result) = tokio::join!(
+    Resolver::memory(ctx.db, old_memory_id),
+    Resolver::memory(ctx.db, new_memory_id)
+  );
+  let old_memory = old_result?;
+  let new_memory = new_result?;
 
   // Atomic update - marks old memory as superseded
   ctx.db.supersede_memory(&old_memory.id, &new_memory.id).await?;

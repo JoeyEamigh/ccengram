@@ -32,6 +32,8 @@ pub struct DashboardState {
   // Index quality (from code_stats)
   pub index_health_score: u32,
   pub index_total_lines: u64,
+  pub index_total_files: usize,
+  pub language_breakdown: Vec<(String, usize)>,
 
   // Daemon metrics
   pub daemon_uptime_seconds: u64,
@@ -60,32 +62,42 @@ impl DashboardState {
     self.stats.as_ref().map(|s| s.memories as u64).unwrap_or(0)
   }
 
-  /// Get memories by sector
+  /// Get memories by sector (top 3, sorted by count)
   pub fn memories_by_sector(&self) -> Vec<(String, u64)> {
-    // ProjectStatsResult doesn't have by_sector breakdown, return empty
-    Vec::new()
+    self
+      .stats
+      .as_ref()
+      .and_then(|s| s.memories_by_sector.as_ref())
+      .map(|sectors| {
+        let mut sorted: Vec<(String, u64)> = sectors.iter().map(|(k, v)| (k.clone(), *v as u64)).collect();
+        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.into_iter().take(3).collect()
+      })
+      .unwrap_or_default()
   }
 
   /// Get average salience
   pub fn average_salience(&self) -> f32 {
-    // ProjectStatsResult doesn't have average_salience, return default
-    0.5
+    self.stats.as_ref().and_then(|s| s.average_salience).unwrap_or(0.5)
   }
 
   /// Get code stats
   pub fn code_files(&self) -> u64 {
-    // Use index_total_lines / average or code_chunks as approximation
-    0
+    self.index_total_files as u64
   }
 
   pub fn code_chunks(&self) -> u64 {
     self.stats.as_ref().map(|s| s.code_chunks as u64).unwrap_or(0)
   }
 
-  /// Get top languages
+  /// Get top languages (top 3)
   pub fn top_languages(&self) -> Vec<(String, u64)> {
-    // ProjectStatsResult doesn't have language breakdown, return empty
-    Vec::new()
+    self
+      .language_breakdown
+      .iter()
+      .take(3)
+      .map(|(lang, count)| (lang.clone(), *count as u64))
+      .collect()
   }
 
   /// Check if daemon is healthy
@@ -128,10 +140,16 @@ impl DashboardState {
     }
   }
 
-  /// Update code stats (extracts health score and total lines)
+  /// Update code stats (extracts health score, total lines, files, and language breakdown)
   pub fn set_code_stats(&mut self, stats: CodeStatsResult) {
     self.index_health_score = stats.index_health_score;
     self.index_total_lines = stats.total_lines;
+    self.index_total_files = stats.total_files;
+
+    // Convert language breakdown from HashMap to sorted Vec
+    let mut langs: Vec<(String, usize)> = stats.language_breakdown.into_iter().collect();
+    langs.sort_by(|a, b| b.1.cmp(&a.1)); // Sort by count descending
+    self.language_breakdown = langs;
   }
 
   /// Update daemon metrics from daemon response

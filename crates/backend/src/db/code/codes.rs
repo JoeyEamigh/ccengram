@@ -20,33 +20,105 @@ use crate::{
 };
 
 impl ProjectDb {
-  /// Add multiple code chunks (batch insert)
+  /// Upsert code chunks for a file using merge_insert
+  ///
+  /// This atomically:
+  /// - Updates existing chunks with matching content_hash
+  /// - Inserts new chunks that don't exist
+  /// - Deletes old chunks for this file that aren't in the new set
   #[tracing::instrument(level = "trace", skip(self, chunks), fields(batch_size = chunks.len()))]
-  pub async fn add_code_chunks(&self, chunks: &[(CodeChunk, Vec<f32>)]) -> Result<()> {
+  pub async fn upsert_code_chunks(&self, file_path: &str, chunks: &[(CodeChunk, Vec<f32>)]) -> Result<()> {
     if chunks.is_empty() {
+      // If no chunks, just delete any existing chunks for this file
+      return self.delete_chunks_for_file(file_path).await;
+    }
+
+    trace!(
+      table = "code_chunks",
+      operation = "merge_insert",
+      file_path = %file_path,
+      batch_size = chunks.len(),
+      "Upserting code chunks"
+    );
+
+    let table = self.code_chunks_table();
+
+    // Create a batched RecordBatch with all chunks
+    let batch = code_chunks_to_batch(chunks, self.vector_dim)?;
+    let iter = RecordBatchIterator::new(vec![Ok(batch)], code_chunks_schema(self.vector_dim));
+
+    // Use merge_insert with file_path + start_line + end_line as the key
+    // This uniquely identifies each chunk's span and handles nested structures
+    // (e.g., a class and its method can share start_line but have different end_line).
+    // - when_matched_update_all: update existing chunks at same span
+    // - when_not_matched_insert_all: insert new chunks
+    // - when_not_matched_by_source_delete: delete old chunks for this file not in new data
+    let escaped_path = file_path.replace('\'', "''");
+    let mut builder = table.merge_insert(&["file_path", "start_line", "end_line"]);
+    builder
+      .when_matched_update_all(None)
+      .when_not_matched_insert_all()
+      .when_not_matched_by_source_delete(Some(format!("file_path = '{}'", escaped_path)));
+    builder.execute(Box::new(iter)).await?;
+
+    Ok(())
+  }
+
+  /// Batch upsert code chunks for multiple files using a single merge_insert
+  ///
+  /// More efficient than calling `upsert_code_chunks` per file when flushing
+  /// multiple files at once. Uses `file_path IN (...)` for the delete filter.
+  #[tracing::instrument(level = "trace", skip(self, chunks), fields(file_count = file_paths.len(), chunk_count = chunks.len()))]
+  pub async fn upsert_code_chunks_batch(&self, file_paths: &[&str], chunks: &[(CodeChunk, Vec<f32>)]) -> Result<()> {
+    if chunks.is_empty() {
+      // Delete all chunks for these files with a single bulk delete
+      if !file_paths.is_empty() {
+        let table = self.code_chunks_table();
+        let paths_filter = file_paths
+          .iter()
+          .map(|p| format!("'{}'", p.replace('\'', "''")))
+          .collect::<Vec<_>>()
+          .join(", ");
+        table.delete(&format!("file_path IN ({})", paths_filter)).await?;
+      }
       return Ok(());
     }
 
     trace!(
       table = "code_chunks",
-      operation = "batch_insert",
-      batch_size = chunks.len(),
-      "Adding code chunks batch"
+      operation = "merge_insert_batch",
+      file_count = file_paths.len(),
+      chunk_count = chunks.len(),
+      "Batch upserting code chunks"
     );
 
-    let table = self.code_chunks_table().await?;
+    let table = self.code_chunks_table();
 
-    // Create a SINGLE batched RecordBatch with all chunks
+    // Create a single RecordBatch with all chunks from all files
     let batch = code_chunks_to_batch(chunks, self.vector_dim)?;
     let iter = RecordBatchIterator::new(vec![Ok(batch)], code_chunks_schema(self.vector_dim));
 
-    table.add(Box::new(iter)).execute().await?;
+    // Build IN clause for delete filter: file_path IN ('path1', 'path2', ...)
+    let paths_filter = file_paths
+      .iter()
+      .map(|p| format!("'{}'", p.replace('\'', "''")))
+      .collect::<Vec<_>>()
+      .join(", ");
+
+    // Use file_path + start_line + end_line as key to handle nested structures
+    let mut builder = table.merge_insert(&["file_path", "start_line", "end_line"]);
+    builder
+      .when_matched_update_all(None)
+      .when_not_matched_insert_all()
+      .when_not_matched_by_source_delete(Some(format!("file_path IN ({})", paths_filter)));
+    builder.execute(Box::new(iter)).await?;
+
     Ok(())
   }
 
   /// Get a code chunk by ID
   pub async fn get_code_chunk(&self, id: &Uuid) -> Result<Option<CodeChunk>> {
-    let table = self.code_chunks_table().await?;
+    let table = self.code_chunks_table();
     let id_str = id.to_string();
 
     let results: Vec<RecordBatch> = table
@@ -72,15 +144,16 @@ impl ProjectDb {
   /// Delete all chunks for a file
   pub async fn delete_chunks_for_file(&self, file_path: &str) -> Result<()> {
     debug!(table = "code_chunks", operation = "delete_for_file", file = %file_path, "Deleting chunks for file");
-    let table = self.code_chunks_table().await?;
-    table.delete(&format!("file_path = '{}'", file_path)).await?;
+    let table = self.code_chunks_table();
+    let escaped_path = file_path.replace('\'', "''");
+    table.delete(&format!("file_path = '{}'", escaped_path)).await?;
     Ok(())
   }
 
   /// Delete a code chunk by ID
   pub async fn delete_code_chunk(&self, id: &Uuid) -> Result<()> {
     debug!(table = "code_chunks", operation = "delete", id = %id, "Deleting code chunk");
-    let table = self.code_chunks_table().await?;
+    let table = self.code_chunks_table();
     table.delete(&format!("id = '{}'", id)).await?;
     Ok(())
   }
@@ -98,7 +171,7 @@ impl ProjectDb {
       "Renaming file in index"
     );
 
-    let table = self.code_chunks_table().await?;
+    let table = self.code_chunks_table();
 
     // Get chunks for the old path to count and update
     let chunks = self.get_chunks_for_file(old_path).await?;
@@ -147,7 +220,7 @@ impl ProjectDb {
       "Searching code chunks"
     );
 
-    let table = self.code_chunks_table().await?;
+    let table = self.code_chunks_table();
 
     let query = if let Some(f) = filter {
       table.vector_search(query_vector.to_vec())?.limit(limit).only_if(f)
@@ -184,7 +257,7 @@ impl ProjectDb {
   /// List code chunks with optional filters
   #[tracing::instrument(level = "trace", skip(self), fields(has_filter = filter.is_some(), limit = ?limit))]
   pub async fn list_code_chunks(&self, filter: Option<&str>, limit: Option<usize>) -> Result<Vec<CodeChunk>> {
-    let table = self.code_chunks_table().await?;
+    let table = self.code_chunks_table();
 
     let query = match (filter, limit) {
       (Some(f), Some(l)) => table.query().only_if(f).limit(l),
@@ -218,7 +291,7 @@ impl ProjectDb {
   /// embeddings for chunks whose content hasn't changed.
   #[tracing::instrument(level = "trace", skip(self), fields(file = %file_path))]
   pub async fn get_chunks_with_embeddings_for_file(&self, file_path: &str) -> Result<Vec<(CodeChunk, Vec<f32>)>> {
-    let table = self.code_chunks_table().await?;
+    let table = self.code_chunks_table();
 
     let results: Vec<RecordBatch> = table
       .query()
@@ -258,7 +331,7 @@ impl ProjectDb {
   /// Returns None if the chunk doesn't exist or has no embedding.
   /// This is useful for reusing embeddings in cross-domain searches.
   pub async fn get_code_chunk_embedding(&self, id: &Uuid) -> Result<Option<Vec<f32>>> {
-    let table = self.code_chunks_table().await?;
+    let table = self.code_chunks_table();
     let id_str = id.to_string();
 
     let results: Vec<RecordBatch> = table
@@ -579,6 +652,10 @@ mod tests {
   }
 
   fn create_test_chunk() -> CodeChunk {
+    create_test_chunk_with_hash("test_hash_default")
+  }
+
+  fn create_test_chunk_with_hash(hash: &str) -> CodeChunk {
     let content = "fn test() {}".to_string();
     CodeChunk {
       id: Uuid::new_v4(),
@@ -601,19 +678,21 @@ mod tests {
       docstring: None,
       parent_definition: None,
       embedding_text: None,
-      content_hash: None,
+      content_hash: Some(hash.to_string()),
       caller_count: 0,
       callee_count: 0,
     }
   }
 
   #[tokio::test]
-  async fn test_add_and_get_code_chunk() {
+  async fn test_upsert_and_get_code_chunk() {
     let (_temp, db) = create_test_db().await;
     let chunk = create_test_chunk();
     let vec = dummy_vector(db.vector_dim);
 
-    db.add_code_chunks(&[(chunk.clone(), vec)]).await.unwrap();
+    db.upsert_code_chunks(&chunk.file_path.clone(), &[(chunk.clone(), vec)])
+      .await
+      .unwrap();
 
     let retrieved = db.get_code_chunk(&chunk.id).await.unwrap();
     assert!(retrieved.is_some(), "should retrieve the chunk");
@@ -626,13 +705,14 @@ mod tests {
   async fn test_list_code_chunks() {
     let (_temp, db) = create_test_db().await;
 
-    let mut c1 = create_test_chunk();
+    let mut c1 = create_test_chunk_with_hash("hash_a");
     c1.file_path = "/test/a.rs".to_string();
-    let mut c2 = create_test_chunk();
+    let mut c2 = create_test_chunk_with_hash("hash_b");
     c2.file_path = "/test/b.rs".to_string();
     let vec = dummy_vector(db.vector_dim);
 
-    db.add_code_chunks(&[(c1, vec.clone()), (c2, vec)]).await.unwrap();
+    db.upsert_code_chunks("/test/a.rs", &[(c1, vec.clone())]).await.unwrap();
+    db.upsert_code_chunks("/test/b.rs", &[(c2, vec)]).await.unwrap();
 
     let chunks = db.list_code_chunks(None, None).await.unwrap();
     assert_eq!(chunks.len(), 2, "should list both chunks");
@@ -642,17 +722,18 @@ mod tests {
   async fn test_delete_chunks_for_file() {
     let (_temp, db) = create_test_db().await;
 
-    let mut c1 = create_test_chunk();
+    let mut c1 = create_test_chunk_with_hash("hash_target_1");
     c1.file_path = "/test/target.rs".to_string();
-    let mut c2 = create_test_chunk();
+    let mut c2 = create_test_chunk_with_hash("hash_target_2");
     c2.file_path = "/test/target.rs".to_string();
-    let mut c3 = create_test_chunk();
+    let mut c3 = create_test_chunk_with_hash("hash_other");
     c3.file_path = "/test/other.rs".to_string();
     let vec = dummy_vector(db.vector_dim);
 
-    db.add_code_chunks(&[(c1, vec.clone()), (c2, vec.clone()), (c3, vec)])
+    db.upsert_code_chunks("/test/target.rs", &[(c1, vec.clone()), (c2, vec.clone())])
       .await
       .unwrap();
+    db.upsert_code_chunks("/test/other.rs", &[(c3, vec)]).await.unwrap();
 
     db.delete_chunks_for_file("/test/target.rs").await.unwrap();
 
@@ -665,17 +746,18 @@ mod tests {
   async fn test_rename_file() {
     let (_temp, db) = create_test_db().await;
 
-    let mut c1 = create_test_chunk();
+    let mut c1 = create_test_chunk_with_hash("hash_old_1");
     c1.file_path = "/old/path/file.rs".to_string();
-    let mut c2 = create_test_chunk();
+    let mut c2 = create_test_chunk_with_hash("hash_old_2");
     c2.file_path = "/old/path/file.rs".to_string();
-    let mut c3 = create_test_chunk();
+    let mut c3 = create_test_chunk_with_hash("hash_other");
     c3.file_path = "/other/file.rs".to_string();
     let vec = dummy_vector(db.vector_dim);
 
-    db.add_code_chunks(&[(c1, vec.clone()), (c2, vec.clone()), (c3, vec)])
+    db.upsert_code_chunks("/old/path/file.rs", &[(c1, vec.clone()), (c2, vec.clone())])
       .await
       .unwrap();
+    db.upsert_code_chunks("/other/file.rs", &[(c3, vec)]).await.unwrap();
 
     // Rename the file
     let renamed = db.rename_file("/old/path/file.rs", "/new/path/file.rs").await.unwrap();

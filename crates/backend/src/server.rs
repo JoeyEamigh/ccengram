@@ -48,12 +48,45 @@ use crate::{
     },
     message::{ProjectActorPayload, ProjectActorResponse},
   },
-  ipc::{IpcError, Request, RequestData, Response},
+  ipc::{
+    IpcError, Request, RequestData, Response, ResponseData,
+    system::{
+      DaemonMetrics, EmbeddingProviderInfo, MemoryUsageMetrics, MetricsResult, ProjectsMetrics, RequestsMetrics,
+      SessionsMetrics, StatusResult, SystemRequest, SystemResponse,
+    },
+  },
 };
 
 // ============================================================================
 // Server Configuration
 // ============================================================================
+
+/// Daemon-level state for handling Status and Metrics requests.
+///
+/// This is shared across all connections and provides info about the daemon itself,
+/// not individual projects.
+pub struct DaemonState {
+  /// Daemon process ID
+  pub pid: u32,
+  /// Daemon start time (for uptime calculation)
+  pub start_time: std::time::Instant,
+  /// Whether running in foreground mode
+  pub foreground: bool,
+  /// Whether auto-shutdown is enabled
+  pub auto_shutdown: bool,
+}
+
+impl DaemonState {
+  /// Create new daemon state with current process info.
+  pub fn new(foreground: bool, auto_shutdown: bool) -> Self {
+    Self {
+      pid: std::process::id(),
+      start_time: std::time::Instant::now(),
+      foreground,
+      auto_shutdown,
+    }
+  }
+}
 
 /// Configuration for the IPC server.
 ///
@@ -72,6 +105,9 @@ pub struct ServerConfig {
 
   /// Session tracker for lifecycle management
   pub sessions: Arc<SessionTracker>,
+
+  /// Daemon-level state for Status/Metrics requests
+  pub daemon_state: Arc<DaemonState>,
 }
 
 // ============================================================================
@@ -135,6 +171,46 @@ impl Server {
     let listener = UnixListener::bind(&self.config.socket_path)?;
     info!("Server listening on {:?}", self.config.socket_path);
 
+    #[cfg(all(not(target_env = "msvc"), feature = "jemalloc-pprof"))]
+    {
+      let pprof_sock = if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        std::path::PathBuf::from(runtime_dir).join("ccengram-pprof.sock")
+      } else {
+        let uid = unsafe { libc::getuid() };
+        std::path::PathBuf::from(format!("/tmp/{}-pprof.sock", uid))
+      };
+
+      let pprof_listener = UnixListener::bind(&pprof_sock)?;
+
+      tokio::spawn(async move {
+        loop {
+          match pprof_listener.accept().await {
+            Ok((stream, _)) => {
+              let framed = Framed::new(stream, tokio_util::codec::BytesCodec::new());
+              let (mut sink, _) = framed.split();
+
+              let mut prof_ctl = jemalloc_pprof::PROF_CTL.as_ref().unwrap().lock().await;
+              let Ok(pprof) = prof_ctl.dump_pprof() else {
+                warn!("failed to get pprof data");
+                continue;
+              };
+
+              sink
+                .send(Into::<tokio_util::bytes::Bytes>::into(pprof))
+                .await
+                .unwrap_or_else(|e| {
+                  error!("failed to send pprof data: {}", e);
+                });
+            }
+            Err(e) => {
+              error!("Accept error on pprof socket: {}", e);
+              break;
+            }
+          }
+        }
+      });
+    }
+
     loop {
       tokio::select! {
         biased;
@@ -153,12 +229,13 @@ impl Server {
               let router = Arc::clone(&self.config.router);
               let activity = Arc::clone(&self.config.activity);
               let sessions = Arc::clone(&self.config.sessions);
+              let daemon_state = Arc::clone(&self.config.daemon_state);
               let request_count = &self.request_count;
 
               // Increment connection count (we track requests inside handle_connection)
               let _ = request_count;
 
-              tokio::spawn(handle_connection(stream, router, activity, sessions));
+              tokio::spawn(handle_connection(stream, router, activity, sessions, daemon_state));
             }
             Err(e) => {
               error!("Accept error: {}", e);
@@ -205,6 +282,7 @@ async fn handle_connection(
   router: Arc<ProjectRouter>,
   activity: Arc<KeepAlive>,
   sessions: Arc<SessionTracker>,
+  daemon_state: Arc<DaemonState>,
 ) -> Result<(), IpcError> {
   debug!("Client connected");
   let framed = Framed::new(stream, LinesCodec::new());
@@ -261,6 +339,19 @@ async fn handle_connection(
           sessions.touch(&sid).await;
         }
       }
+    }
+
+    // Handle daemon-level system requests directly (Status, Metrics, Shutdown)
+    // These don't need a project context
+    if let RequestData::System(ref sys_req) = request.data
+      && let Some(response) =
+        handle_daemon_request(&request.id, sys_req, &daemon_state, &router, &activity, &sessions).await
+    {
+      let json = serde_json::to_string(&response)?;
+      sink.send(json).await?;
+      let elapsed = start.elapsed();
+      debug!(id = %request.id, elapsed_ms = elapsed.as_millis() as u64, "Daemon request completed");
+      continue;
     }
 
     // Get or create project actor for this request's cwd
@@ -321,10 +412,142 @@ async fn handle_connection(
 /// - `Error` → error response
 fn convert_actor_response(request_id: &str, response: ProjectActorResponse) -> Response {
   match response {
-    ProjectActorResponse::Progress { message, percent } => Response::stream_progress(request_id, message, percent),
+    ProjectActorResponse::Progress {
+      message,
+      percent,
+      stage,
+      processed,
+      total,
+      current_file,
+      chunks_created,
+    } => Response::stream_progress_full(
+      request_id,
+      crate::ipc::StreamProgress {
+        message,
+        percent,
+        stage,
+        processed,
+        total,
+        current_file,
+        chunks_created,
+      },
+    ),
     ProjectActorResponse::Stream { data } => Response::stream_chunk(request_id, data),
     ProjectActorResponse::Done(data) => Response::success(request_id, data),
     ProjectActorResponse::Error { code, message } => Response::rpc_error(request_id, code, message),
+  }
+}
+
+/// Handle daemon-level system requests that don't need a project context.
+///
+/// Returns `Some(Response)` if the request was handled, `None` if it should
+/// be routed to a ProjectActor.
+async fn handle_daemon_request(
+  request_id: &str,
+  sys_req: &SystemRequest,
+  daemon_state: &DaemonState,
+  router: &ProjectRouter,
+  activity: &KeepAlive,
+  sessions: &SessionTracker,
+) -> Option<Response> {
+  match sys_req {
+    SystemRequest::Status(_) => {
+      let uptime = daemon_state.start_time.elapsed().as_secs();
+      let idle_secs = activity.idle_duration().as_secs();
+      let active_sessions = sessions.active_count().await;
+      let projects = router.list().len();
+
+      let result = StatusResult {
+        status: "running".to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        pid: daemon_state.pid,
+        projects,
+        active_sessions,
+        idle_seconds: idle_secs,
+        uptime_seconds: uptime,
+        foreground: daemon_state.foreground,
+        auto_shutdown: daemon_state.auto_shutdown,
+      };
+
+      Some(Response::success(
+        request_id,
+        ResponseData::System(SystemResponse::Status(result)),
+      ))
+    }
+    SystemRequest::Metrics(_) => {
+      let uptime = daemon_state.start_time.elapsed().as_secs();
+      let idle_secs = activity.idle_duration().as_secs();
+
+      let session_list = sessions.list_sessions().await;
+      let session_ids: Vec<String> = session_list.iter().map(|s| s.0.clone()).collect();
+
+      let project_ids = router.list();
+      let project_names: Vec<String> = project_ids.iter().map(|id| id.as_str().to_string()).collect();
+
+      let (emb_name, emb_model, emb_dims) = router.embedding_info();
+
+      // Get RSS from /proc/self/statm on Linux
+      let rss_kb = get_rss_kb().await;
+
+      let result = MetricsResult {
+        daemon: DaemonMetrics {
+          version: env!("CARGO_PKG_VERSION").to_string(),
+          uptime_seconds: uptime,
+          idle_seconds: idle_secs,
+          foreground: daemon_state.foreground,
+          auto_shutdown: daemon_state.auto_shutdown,
+        },
+        requests: RequestsMetrics {
+          total: 0, // TODO: add request counter if needed
+          per_second: 0.0,
+        },
+        sessions: SessionsMetrics {
+          active: session_ids.len(),
+          ids: session_ids,
+        },
+        projects: ProjectsMetrics {
+          count: project_names.len(),
+          names: project_names,
+        },
+        embedding: Some(EmbeddingProviderInfo {
+          name: emb_name,
+          model: emb_model,
+          dimensions: emb_dims,
+        }),
+        memory: MemoryUsageMetrics { rss_kb },
+      };
+
+      Some(Response::success(
+        request_id,
+        ResponseData::System(SystemResponse::Metrics(result)),
+      ))
+    }
+    // Other daemon-level requests (Shutdown, MigrateEmbedding) could be
+    // handled here in the future. For now, let them fall through to ProjectActor
+    // which will return method_not_found.
+    _ => None,
+  }
+}
+
+/// Get RSS memory usage in KB from /proc/self/statm on Linux.
+/// Returns None on non-Linux or if reading fails.
+async fn get_rss_kb() -> Option<u64> {
+  #[cfg(target_os = "linux")]
+  {
+    use tokio::io::AsyncReadExt;
+    let mut file = tokio::fs::File::open("/proc/self/statm").await.ok()?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).await.ok()?;
+    let fields: Vec<&str> = contents.split_whitespace().collect();
+    // statm format: size resident shared text lib data dt (all in pages)
+    // We want resident (index 1), multiply by page size (usually 4KB)
+    let resident_pages: u64 = fields.get(1)?.parse().ok()?;
+    let page_size_kb = 4; // Assume 4KB pages
+    Some(resident_pages * page_size_kb)
+  }
+  #[cfg(not(target_os = "linux"))]
+  {
+    None
   }
 }
 
@@ -335,7 +558,7 @@ fn convert_actor_response(request_id: &str, response: ProjectActorResponse) -> R
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::ipc::{ResponseData, system::SystemResponse};
+  use crate::ipc::system::SystemResponse;
 
   #[test]
   fn test_convert_actor_response_done() {
@@ -390,6 +613,11 @@ mod tests {
     let response = ProjectActorResponse::Progress {
       message: "Indexing files".to_string(),
       percent: Some(50),
+      stage: Some("embedding".to_string()),
+      processed: Some(25),
+      total: Some(50),
+      current_file: Some("src/main.rs".to_string()),
+      chunks_created: Some(100),
     };
     let ipc = convert_actor_response("test-4", response);
 
@@ -401,6 +629,9 @@ mod tests {
         let p = progress.expect("Expected progress");
         assert_eq!(p.message, "Indexing files");
         assert_eq!(p.percent, Some(50));
+        assert_eq!(p.stage, Some("embedding".to_string()));
+        assert_eq!(p.processed, Some(25));
+        assert_eq!(p.total, Some(50));
       }
       _ => panic!("Expected Stream scenario"),
     }

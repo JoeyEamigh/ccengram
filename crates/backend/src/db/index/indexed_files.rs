@@ -40,7 +40,7 @@ impl ProjectDb {
   /// Save or update file metadata after indexing
   #[tracing::instrument(level = "trace", skip(self, file), fields(file_path = %file.file_path))]
   pub async fn save_indexed_file(&self, file: &IndexedFile) -> Result<()> {
-    let table = self.indexed_files_table().await?;
+    let table = self.indexed_files_table();
 
     // Delete existing entry for this file path first
     let _ = table
@@ -58,14 +58,19 @@ impl ProjectDb {
     Ok(())
   }
 
-  /// Save multiple file metadata entries in batch
+  /// Save multiple file metadata entries in batch using merge_insert
+  ///
+  /// This atomically:
+  /// - Updates existing entries with matching file_path + project_id
+  /// - Inserts new entries that don't exist
+  /// - Deletes old entries for these file paths that aren't in the new set
   #[tracing::instrument(level = "trace", skip(self, files), fields(count = files.len()))]
   pub async fn save_indexed_files_batch(&self, files: &[IndexedFile]) -> Result<()> {
     if files.is_empty() {
       return Ok(());
     }
 
-    let table = self.indexed_files_table().await?;
+    let table = self.indexed_files_table();
     let project_id = &files[0].project_id;
 
     // Build batch for all files
@@ -88,26 +93,33 @@ impl ProjectDb {
       ],
     )?;
 
-    // Delete existing entries for these files
-    for file_path in &file_paths {
-      let _ = table
-        .delete(&format!(
-          "file_path = '{}' AND project_id = '{}'",
-          escape_sql(file_path),
-          project_id
-        ))
-        .await;
-    }
-
     let batches = RecordBatchIterator::new(vec![Ok(batch)], indexed_files_schema());
-    table.add(Box::new(batches)).execute().await?;
+
+    // Build IN clause for delete filter: file_path IN ('path1', 'path2', ...)
+    let paths_filter = file_paths
+      .iter()
+      .map(|p| format!("'{}'", escape_sql(p)))
+      .collect::<Vec<_>>()
+      .join(", ");
+
+    // Use merge_insert with file_path + project_id as the key
+    let mut builder = table.merge_insert(&["file_path", "project_id"]);
+    builder
+      .when_matched_update_all(None)
+      .when_not_matched_insert_all()
+      .when_not_matched_by_source_delete(Some(format!(
+        "project_id = '{}' AND file_path IN ({})",
+        project_id, paths_filter
+      )));
+    builder.execute(Box::new(batches)).await?;
+
     Ok(())
   }
 
   /// Get metadata for a specific file
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn get_indexed_file(&self, project_id: &str, file_path: &str) -> Result<Option<IndexedFile>> {
-    let table = self.indexed_files_table().await?;
+    let table = self.indexed_files_table();
 
     let results: Vec<RecordBatch> = table
       .query()
@@ -136,7 +148,7 @@ impl ProjectDb {
   /// List all indexed files for a project
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn list_indexed_files(&self, project_id: &str) -> Result<Vec<IndexedFile>> {
-    let table = self.indexed_files_table().await?;
+    let table = self.indexed_files_table();
 
     let results: Vec<RecordBatch> = table
       .query()
@@ -159,7 +171,7 @@ impl ProjectDb {
   /// Delete metadata for a specific file
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn delete_indexed_file(&self, project_id: &str, file_path: &str) -> Result<()> {
-    let table = self.indexed_files_table().await?;
+    let table = self.indexed_files_table();
     table
       .delete(&format!(
         "file_path = '{}' AND project_id = '{}'",
@@ -189,7 +201,7 @@ impl ProjectDb {
   /// Get count of indexed files for a project
   #[tracing::instrument(level = "trace", skip(self))]
   pub async fn count_indexed_files(&self, project_id: &str) -> Result<usize> {
-    let table = self.indexed_files_table().await?;
+    let table = self.indexed_files_table();
     let count = table.count_rows(Some(format!("project_id = '{}'", project_id))).await?;
     Ok(count)
   }

@@ -332,13 +332,12 @@ pub struct ResourceMonitor {
 }
 
 impl ResourceMonitor {
-  /// Create a new resource monitor for the current process.
-  pub fn new() -> Self {
+  /// Create a new resource monitor for a specific process.
+  pub fn new(pid: u32) -> Self {
     let system = System::new_all();
-    let pid = Pid::from_u32(std::process::id());
     Self {
       system,
-      pid,
+      pid: Pid::from_u32(pid),
       snapshots: Vec::new(),
     }
   }
@@ -376,12 +375,6 @@ impl ResourceMonitor {
     }
     let sum: f32 = self.snapshots.iter().map(|s| s.cpu_percent).sum();
     sum / self.snapshots.len() as f32
-  }
-}
-
-impl Default for ResourceMonitor {
-  fn default() -> Self {
-    Self::new()
   }
 }
 

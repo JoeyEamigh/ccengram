@@ -58,7 +58,20 @@ pub enum ProjectActorPayload {
 #[derive(Debug, Clone)]
 pub enum ProjectActorResponse {
   /// Streaming progress update (not final)
-  Progress { message: String, percent: Option<u8> },
+  Progress {
+    message: String,
+    percent: Option<u8>,
+    /// Pipeline stage (scanning, reading, parsing, embedding, writing)
+    stage: Option<String>,
+    /// Files processed in this stage
+    processed: Option<usize>,
+    /// Total files to process in this stage
+    total: Option<usize>,
+    /// Current file being processed
+    current_file: Option<String>,
+    /// Chunks created so far
+    chunks_created: Option<usize>,
+  },
   #[allow(dead_code)]
   /// Streaming data chunk (not final)
   Stream { data: ResponseData },
@@ -74,11 +87,33 @@ impl ProjectActorResponse {
     matches!(self, Self::Done(_) | Self::Error { .. })
   }
 
-  /// Create a progress response
+  /// Create a simple progress response (for backward compatibility)
   pub fn progress(message: impl Into<String>, percent: Option<u8>) -> Self {
     Self::Progress {
       message: message.into(),
       percent,
+      stage: None,
+      processed: None,
+      total: None,
+      current_file: None,
+      chunks_created: None,
+    }
+  }
+
+  /// Create a progress response from IndexProgress
+  pub fn from_index_progress(progress: &IndexProgress) -> Self {
+    Self::Progress {
+      message: progress.current_file.clone().unwrap_or_default(),
+      percent: Some(progress.percent()),
+      stage: Some(progress.stage.as_str().to_string()),
+      processed: Some(progress.processed),
+      total: Some(progress.total),
+      current_file: progress.current_file.clone(),
+      chunks_created: if progress.chunks_created > 0 {
+        Some(progress.chunks_created)
+      } else {
+        None
+      },
     }
   }
 
@@ -134,23 +169,48 @@ pub enum IndexJob {
   Shutdown,
 }
 
+/// Pipeline stage for progress reporting
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipelineStage {
+  Scanning,
+  Reading,
+  Parsing,
+  Embedding,
+  Writing,
+}
+
+impl PipelineStage {
+  pub fn as_str(&self) -> &'static str {
+    match self {
+      Self::Scanning => "scanning",
+      Self::Reading => "reading",
+      Self::Parsing => "parsing",
+      Self::Embedding => "embedding",
+      Self::Writing => "writing",
+    }
+  }
+}
+
 /// Progress update from batch indexing
 #[derive(Debug, Clone)]
 pub struct IndexProgress {
-  /// Number of files processed so far
+  /// Which pipeline stage is reporting
+  pub stage: PipelineStage,
+  /// Number of files processed so far in this stage
   pub processed: usize,
-  /// Total number of files to process
+  /// Total number of files to process in this stage
   pub total: usize,
   /// Current file being processed (if any)
   pub current_file: Option<String>,
-  /// Number of chunks created (populated in final progress update)
+  /// Number of chunks created so far (populated during writing stage)
   pub chunks_created: usize,
 }
 
 impl IndexProgress {
-  /// Create a new progress update
-  pub fn new(processed: usize, total: usize) -> Self {
+  /// Create a new progress update for a specific stage
+  pub fn new(stage: PipelineStage, processed: usize, total: usize) -> Self {
     Self {
+      stage,
       processed,
       total,
       current_file: None,
@@ -170,7 +230,7 @@ impl IndexProgress {
     self
   }
 
-  /// Calculate completion percentage
+  /// Calculate completion percentage for this stage
   pub fn percent(&self) -> u8 {
     if self.total == 0 {
       100
@@ -268,6 +328,11 @@ mod tests {
     let progress = ProjectActorResponse::Progress {
       message: "test".to_string(),
       percent: Some(50),
+      chunks_created: None,
+      current_file: None,
+      processed: None,
+      stage: None,
+      total: None,
     };
     assert!(!progress.is_final());
 

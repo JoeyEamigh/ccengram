@@ -1,3 +1,4 @@
+use ccengram::ipc::{code::CodeContextResponse, docs::DocContextResult};
 use ratatui::{
   buffer::Buffer,
   layout::{Constraint, Direction, Layout, Rect},
@@ -7,6 +8,21 @@ use ratatui::{
 use serde_json::Value;
 
 use crate::tui::theme::Theme;
+
+/// Which panel is focused
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Panel {
+  #[default]
+  Left,
+  Right,
+}
+
+/// Expanded context for a search result
+#[derive(Debug, Clone)]
+pub enum ExpandedContext {
+  Code(CodeContextResponse),
+  Document(DocContextResult),
+}
 
 /// Search result type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +56,12 @@ pub struct SearchState {
   pub error: Option<String>,
   pub filter_text: String,
   pub filter_active: bool,
+  /// Which panel is focused
+  pub focus: Panel,
+  /// Scroll position for detail panel
+  pub detail_scroll: usize,
+  /// Expanded context for the currently selected result
+  pub expanded_context: Option<ExpandedContext>,
 }
 
 impl SearchState {
@@ -51,12 +73,41 @@ impl SearchState {
       filter_text: String::new(),
       filter_active: false,
       filtered_results: Vec::new(),
+      expanded_context: None,
+      focus: Panel::Left,
+      detail_scroll: 0,
       ..Default::default()
     }
   }
 
+  /// Toggle focus between panels
+  pub fn toggle_focus(&mut self) {
+    self.focus = match self.focus {
+      Panel::Left => Panel::Right,
+      Panel::Right => Panel::Left,
+    };
+  }
+
+  /// Set expanded context for the current selection
+  pub fn set_expanded_context(&mut self, context: ExpandedContext) {
+    self.expanded_context = Some(context);
+    self.detail_scroll = 0;
+  }
+
+  /// Clear expanded context
+  pub fn clear_expanded_context(&mut self) {
+    self.expanded_context = None;
+  }
+
+  /// Check if we have expanded context
+  pub fn has_expanded_context(&self) -> bool {
+    self.expanded_context.is_some()
+  }
+
   pub fn set_results(&mut self, results: Vec<SearchResult>) {
     self.results = results;
+    self.expanded_context = None; // Clear context when results change
+    self.detail_scroll = 0;
     // Re-apply filter if active
     if self.filter_active {
       self.apply_filter();
@@ -75,19 +126,43 @@ impl SearchState {
   }
 
   pub fn select_next(&mut self) {
-    let display = self.display_results();
-    if display.is_empty() {
-      return;
+    match self.focus {
+      Panel::Left => {
+        let display = self.display_results();
+        if display.is_empty() {
+          return;
+        }
+        let new_selected = (self.selected + 1).min(display.len() - 1);
+        if new_selected != self.selected {
+          self.selected = new_selected;
+          self.expanded_context = None;
+          self.detail_scroll = 0;
+        }
+      }
+      Panel::Right => {
+        self.detail_scroll = self.detail_scroll.saturating_add(1);
+      }
     }
-    self.selected = (self.selected + 1).min(display.len() - 1);
   }
 
   pub fn select_prev(&mut self) {
-    let display = self.display_results();
-    if display.is_empty() {
-      return;
+    match self.focus {
+      Panel::Left => {
+        let display = self.display_results();
+        if display.is_empty() {
+          return;
+        }
+        let new_selected = self.selected.saturating_sub(1);
+        if new_selected != self.selected {
+          self.selected = new_selected;
+          self.expanded_context = None;
+          self.detail_scroll = 0;
+        }
+      }
+      Panel::Right => {
+        self.detail_scroll = self.detail_scroll.saturating_sub(1);
+      }
     }
-    self.selected = self.selected.saturating_sub(1);
   }
 
   pub fn toggle_memories(&mut self) -> bool {
@@ -409,11 +484,8 @@ impl SearchView<'_> {
       )
     };
 
-    let border_color = if !self.state.input_active {
-      Theme::ACCENT
-    } else {
-      Theme::OVERLAY
-    };
+    let is_focused = self.state.focus == Panel::Left && !self.state.input_active;
+    let border_color = if is_focused { Theme::ACCENT } else { Theme::OVERLAY };
 
     let block = Block::default()
       .title(title)
@@ -535,14 +607,34 @@ impl SearchView<'_> {
   }
 
   fn render_result_detail(&self, area: Rect, buf: &mut Buffer) {
+    // Check if we have expanded context
+    let title = if self.state.expanded_context.is_some() {
+      "CONTEXT (Enter to collapse)"
+    } else {
+      "DETAIL (Enter to expand)"
+    };
+
+    let is_focused = self.state.focus == Panel::Right;
+    let border_color = if is_focused { Theme::ACCENT } else { Theme::OVERLAY };
+
     let block = Block::default()
-      .title("DETAIL")
+      .title(title)
       .title_style(Style::default().fg(Theme::ACCENT).bold())
       .borders(Borders::ALL)
-      .border_style(Style::default().fg(Theme::OVERLAY));
+      .border_style(Style::default().fg(border_color));
 
     let inner = block.inner(area);
     block.render(area, buf);
+
+    // If we have expanded context, render that instead
+    if let Some(ref context) = self.state.expanded_context {
+      let scroll = self.state.detail_scroll;
+      match context {
+        ExpandedContext::Code(code_ctx) => self.render_code_context(code_ctx, inner, buf, scroll),
+        ExpandedContext::Document(doc_ctx) => self.render_doc_context(doc_ctx, inner, buf, scroll),
+      }
+      return;
+    }
 
     let Some(result) = self.state.selected_result() else {
       buf.set_string(
@@ -554,60 +646,268 @@ impl SearchView<'_> {
       return;
     };
 
+    let scroll = self.state.detail_scroll;
     match result.result_type {
-      SearchResultType::Memory => self.render_memory_detail(&result.data, inner, buf),
-      SearchResultType::Code => self.render_code_detail(&result.data, inner, buf),
-      SearchResultType::Document => self.render_document_detail(&result.data, inner, buf),
+      SearchResultType::Memory => self.render_memory_detail(&result.data, inner, buf, scroll),
+      SearchResultType::Code => self.render_code_detail(&result.data, inner, buf, scroll),
+      SearchResultType::Document => self.render_document_detail(&result.data, inner, buf, scroll),
     }
   }
 
-  fn render_memory_detail(&self, data: &Value, area: Rect, buf: &mut Buffer) {
+  fn render_code_context(&self, ctx: &CodeContextResponse, area: Rect, buf: &mut Buffer, scroll: usize) {
     let mut y = area.y;
+    let mut line_num = 0usize;
+
+    macro_rules! render_line {
+      ($render:expr) => {
+        if line_num >= scroll && y < area.y + area.height {
+          $render;
+          y += 1;
+        }
+        line_num += 1;
+      };
+    }
+
+    // File info
+    render_line!({
+      buf.set_string(area.x, y, "File: ", Style::default().fg(Theme::SUBTEXT));
+      buf.set_string(area.x + 6, y, &ctx.file_path, Style::default().fg(Theme::TEXT));
+    });
+
+    render_line!({
+      buf.set_string(area.x, y, "Language: ", Style::default().fg(Theme::SUBTEXT));
+      buf.set_string(
+        area.x + 10,
+        y,
+        capitalize(&ctx.language),
+        Style::default().fg(Theme::language_color(&ctx.language)),
+      );
+    });
+
+    if let Some(ref warning) = ctx.warning {
+      render_line!({
+        buf.set_string(area.x, y, "Warning: ", Style::default().fg(Theme::ERROR));
+        buf.set_string(area.x + 9, y, warning, Style::default().fg(Theme::ERROR));
+      });
+    }
+
+    render_line!({}); // blank line
+
+    // Before section
+    if !ctx.context.before.content.is_empty() {
+      let header = format!("--- Before (line {}) ---", ctx.context.before.start_line);
+      render_line!({
+        buf.set_string(area.x, y, &header, Style::default().fg(Theme::MUTED));
+      });
+
+      for line in ctx.context.before.content.lines() {
+        if y >= area.y + area.height {
+          return;
+        }
+        let display_line = truncate_line(line, area.width as usize);
+        render_line!({
+          buf.set_string(area.x, y, &display_line, Style::default().fg(Theme::SUBTEXT));
+        });
+      }
+      render_line!({}); // blank line
+    }
+
+    // Target section (highlighted)
+    let header = format!(
+      ">>> Target (lines {}-{}) <<<",
+      ctx.context.target.start_line, ctx.context.target.end_line
+    );
+    render_line!({
+      buf.set_string(area.x, y, &header, Style::default().fg(Theme::ACCENT).bold());
+    });
+
+    for line in ctx.context.target.content.lines() {
+      if y >= area.y + area.height {
+        return;
+      }
+      let display_line = truncate_line(line, area.width as usize);
+      render_line!({
+        buf.set_string(area.x, y, &display_line, Style::default().fg(Theme::TEXT));
+      });
+    }
+    render_line!({}); // blank line
+
+    // After section
+    if !ctx.context.after.content.is_empty() {
+      let header = format!("--- After (line {}) ---", ctx.context.after.start_line);
+      render_line!({
+        buf.set_string(area.x, y, &header, Style::default().fg(Theme::MUTED));
+      });
+
+      for line in ctx.context.after.content.lines() {
+        if y >= area.y + area.height {
+          return;
+        }
+        let display_line = truncate_line(line, area.width as usize);
+        render_line!({
+          buf.set_string(area.x, y, &display_line, Style::default().fg(Theme::SUBTEXT));
+        });
+      }
+    }
+  }
+
+  fn render_doc_context(&self, ctx: &DocContextResult, area: Rect, buf: &mut Buffer, scroll: usize) {
+    let mut y = area.y;
+    let mut line_num = 0usize;
+
+    macro_rules! render_line {
+      ($render:expr) => {
+        if line_num >= scroll && y < area.y + area.height {
+          $render;
+          y += 1;
+        }
+        line_num += 1;
+      };
+    }
+
+    // Document info
+    render_line!({
+      buf.set_string(area.x, y, "Title: ", Style::default().fg(Theme::SUBTEXT));
+      buf.set_string(area.x + 7, y, &ctx.title, Style::default().fg(Theme::TEXT).bold());
+    });
+
+    let source_display = truncate_line(&ctx.source, area.width as usize - 8);
+    render_line!({
+      buf.set_string(area.x, y, "Source: ", Style::default().fg(Theme::SUBTEXT));
+      buf.set_string(area.x + 8, y, &source_display, Style::default().fg(Theme::INFO));
+    });
+
+    let chunks_info = format!("Chunk {} of {}", ctx.context.target.chunk_index + 1, ctx.total_chunks);
+    render_line!({
+      buf.set_string(area.x, y, &chunks_info, Style::default().fg(Theme::MUTED));
+    });
+    render_line!({}); // blank line
+
+    // Before chunks
+    for chunk in &ctx.context.before {
+      if y >= area.y + area.height {
+        return;
+      }
+      let header = format!("--- Chunk {} ---", chunk.chunk_index + 1);
+      render_line!({
+        buf.set_string(area.x, y, &header, Style::default().fg(Theme::MUTED));
+      });
+
+      for line in chunk.content.lines().take(3) {
+        if y >= area.y + area.height {
+          return;
+        }
+        let display_line = truncate_line(line, area.width as usize);
+        render_line!({
+          buf.set_string(area.x, y, &display_line, Style::default().fg(Theme::SUBTEXT));
+        });
+      }
+      render_line!({}); // blank line
+    }
+
+    // Target chunk (highlighted)
+    let header = format!(">>> Chunk {} (target) <<<", ctx.context.target.chunk_index + 1);
+    render_line!({
+      buf.set_string(area.x, y, &header, Style::default().fg(Theme::ACCENT).bold());
+    });
+
+    for line in ctx.context.target.content.lines() {
+      if y >= area.y + area.height {
+        return;
+      }
+      let display_line = truncate_line(line, area.width as usize);
+      render_line!({
+        buf.set_string(area.x, y, &display_line, Style::default().fg(Theme::TEXT));
+      });
+    }
+    render_line!({}); // blank line
+
+    // After chunks
+    for chunk in &ctx.context.after {
+      if y >= area.y + area.height {
+        return;
+      }
+      let header = format!("--- Chunk {} ---", chunk.chunk_index + 1);
+      render_line!({
+        buf.set_string(area.x, y, &header, Style::default().fg(Theme::MUTED));
+      });
+
+      for line in chunk.content.lines().take(3) {
+        if y >= area.y + area.height {
+          return;
+        }
+        let display_line = truncate_line(line, area.width as usize);
+        render_line!({
+          buf.set_string(area.x, y, &display_line, Style::default().fg(Theme::SUBTEXT));
+        });
+      }
+    }
+  }
+
+  fn render_memory_detail(&self, data: &Value, area: Rect, buf: &mut Buffer, scroll: usize) {
+    let mut y = area.y;
+    let mut line_num = 0usize;
+
+    // Helper macro to render a line with scroll support
+    macro_rules! render_line {
+      ($render:expr) => {
+        if line_num >= scroll && y < area.y + area.height {
+          $render;
+          y += 1;
+        }
+        line_num += 1;
+      };
+    }
 
     // ID (full ID for copy/paste)
     if let Some(id) = data.get("id").and_then(|i| i.as_str()) {
-      buf.set_string(area.x, y, "ID: ", Style::default().fg(Theme::SUBTEXT));
       let max_id_width = area.width.saturating_sub(4) as usize;
       let display_id = if id.len() > max_id_width {
         format!("{}...", &id[..max_id_width.saturating_sub(3)])
       } else {
         id.to_string()
       };
-      buf.set_string(area.x + 4, y, &display_id, Style::default().fg(Theme::TEXT));
-      y += 1;
+      render_line!({
+        buf.set_string(area.x, y, "ID: ", Style::default().fg(Theme::SUBTEXT));
+        buf.set_string(area.x + 4, y, &display_id, Style::default().fg(Theme::TEXT));
+      });
     }
 
     // Sector
     if let Some(sector) = data.get("sector").and_then(|s| s.as_str()) {
-      buf.set_string(area.x, y, "Sector: ", Style::default().fg(Theme::SUBTEXT));
-      buf.set_string(
-        area.x + 8,
-        y,
-        capitalize(sector),
-        Style::default().fg(Theme::sector_color(sector)).bold(),
-      );
-      y += 1;
+      render_line!({
+        buf.set_string(area.x, y, "Sector: ", Style::default().fg(Theme::SUBTEXT));
+        buf.set_string(
+          area.x + 8,
+          y,
+          capitalize(sector),
+          Style::default().fg(Theme::sector_color(sector)).bold(),
+        );
+      });
     }
 
     // Salience
     if let Some(salience) = data.get("salience").and_then(|s| s.as_f64()) {
-      buf.set_string(area.x, y, "Salience: ", Style::default().fg(Theme::SUBTEXT));
       let pct = (salience * 100.0) as u32;
-      buf.set_string(
-        area.x + 10,
-        y,
-        format!("{}%", pct),
-        Style::default().fg(Theme::salience_color(salience as f32)),
-      );
-      y += 1;
+      render_line!({
+        buf.set_string(area.x, y, "Salience: ", Style::default().fg(Theme::SUBTEXT));
+        buf.set_string(
+          area.x + 10,
+          y,
+          format!("{}%", pct),
+          Style::default().fg(Theme::salience_color(salience as f32)),
+        );
+      });
     }
 
-    y += 1;
+    // Blank line
+    render_line!({});
 
     // Content
     if let Some(content) = data.get("content").and_then(|c| c.as_str()) {
-      buf.set_string(area.x, y, "Content:", Style::default().fg(Theme::ACCENT).bold());
-      y += 1;
+      render_line!({
+        buf.set_string(area.x, y, "Content:", Style::default().fg(Theme::ACCENT).bold());
+      });
 
       for line in content.lines() {
         if y >= area.y + area.height {
@@ -618,20 +918,33 @@ impl SearchView<'_> {
         } else {
           line.to_string()
         };
-        buf.set_string(area.x, y, &display_line, Style::default().fg(Theme::TEXT));
-        y += 1;
+        render_line!({
+          buf.set_string(area.x, y, &display_line, Style::default().fg(Theme::TEXT));
+        });
       }
     }
   }
 
-  fn render_code_detail(&self, data: &Value, area: Rect, buf: &mut Buffer) {
+  fn render_code_detail(&self, data: &Value, area: Rect, buf: &mut Buffer, scroll: usize) {
     let mut y = area.y;
+    let mut line_num = 0usize;
+
+    macro_rules! render_line {
+      ($render:expr) => {
+        if line_num >= scroll && y < area.y + area.height {
+          $render;
+          y += 1;
+        }
+        line_num += 1;
+      };
+    }
 
     // File path
     if let Some(file) = data.get("file_path").and_then(|f| f.as_str()) {
-      buf.set_string(area.x, y, "File: ", Style::default().fg(Theme::SUBTEXT));
-      buf.set_string(area.x + 6, y, file, Style::default().fg(Theme::TEXT));
-      y += 1;
+      render_line!({
+        buf.set_string(area.x, y, "File: ", Style::default().fg(Theme::SUBTEXT));
+        buf.set_string(area.x + 6, y, file, Style::default().fg(Theme::TEXT));
+      });
     }
 
     // Lines
@@ -639,33 +952,69 @@ impl SearchView<'_> {
       data.get("start_line").and_then(|l| l.as_u64()),
       data.get("end_line").and_then(|l| l.as_u64()),
     ) {
-      buf.set_string(area.x, y, "Lines: ", Style::default().fg(Theme::SUBTEXT));
-      buf.set_string(
-        area.x + 7,
-        y,
-        format!("{}-{}", start, end),
-        Style::default().fg(Theme::TEXT),
-      );
-      y += 1;
+      render_line!({
+        buf.set_string(area.x, y, "Lines: ", Style::default().fg(Theme::SUBTEXT));
+        buf.set_string(
+          area.x + 7,
+          y,
+          format!("{}-{}", start, end),
+          Style::default().fg(Theme::TEXT),
+        );
+      });
     }
 
     // Language
     if let Some(lang) = data.get("language").and_then(|l| l.as_str()) {
-      buf.set_string(area.x, y, "Language: ", Style::default().fg(Theme::SUBTEXT));
-      buf.set_string(
-        area.x + 10,
-        y,
-        capitalize(lang),
-        Style::default().fg(Theme::language_color(lang)),
-      );
-      y += 1;
+      render_line!({
+        buf.set_string(area.x, y, "Language: ", Style::default().fg(Theme::SUBTEXT));
+        buf.set_string(
+          area.x + 10,
+          y,
+          capitalize(lang),
+          Style::default().fg(Theme::language_color(lang)),
+        );
+      });
     }
 
-    // Symbols
-    if let Some(symbols) = data.get("symbols").and_then(|s| s.as_array())
+    // Chunk type and definition kind
+    let chunk_type = data.get("chunk_type").and_then(|t| t.as_str());
+    let def_kind = data.get("definition_kind").and_then(|k| k.as_str());
+    if chunk_type.is_some() || def_kind.is_some() {
+      let type_info = match (chunk_type, def_kind) {
+        (Some(ct), Some(dk)) => format!("{} ({})", capitalize(ct), dk),
+        (Some(ct), None) => capitalize(ct),
+        (None, Some(dk)) => dk.to_string(),
+        (None, None) => unreachable!(),
+      };
+      render_line!({
+        buf.set_string(area.x, y, "Type: ", Style::default().fg(Theme::SUBTEXT));
+        buf.set_string(area.x + 6, y, &type_info, Style::default().fg(Theme::PROCEDURAL));
+      });
+    }
+
+    // Visibility
+    if let Some(vis) = data.get("visibility").and_then(|v| v.as_str()) {
+      render_line!({
+        buf.set_string(area.x, y, "Visibility: ", Style::default().fg(Theme::SUBTEXT));
+        buf.set_string(area.x + 12, y, vis, Style::default().fg(Theme::MUTED));
+      });
+    }
+
+    // Symbol name with parent
+    let symbol_name = data.get("symbol_name").and_then(|n| n.as_str());
+    let parent = data.get("parent_definition").and_then(|p| p.as_str());
+    if let Some(name) = symbol_name {
+      let display = match parent {
+        Some(p) => format!("{}::{}", p, name),
+        None => name.to_string(),
+      };
+      render_line!({
+        buf.set_string(area.x, y, "Symbol: ", Style::default().fg(Theme::SUBTEXT));
+        buf.set_string(area.x + 8, y, &display, Style::default().fg(Theme::ACCENT));
+      });
+    } else if let Some(symbols) = data.get("symbols").and_then(|s| s.as_array())
       && !symbols.is_empty()
     {
-      buf.set_string(area.x, y, "Symbols: ", Style::default().fg(Theme::SUBTEXT));
       let symbols_str = symbols.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", ");
       let max_len = area.width as usize - 9;
       let symbols_str = if symbols_str.len() > max_len {
@@ -673,16 +1022,139 @@ impl SearchView<'_> {
       } else {
         symbols_str
       };
-      buf.set_string(area.x + 9, y, &symbols_str, Style::default().fg(Theme::INFO));
-      y += 1;
+      render_line!({
+        buf.set_string(area.x, y, "Symbols: ", Style::default().fg(Theme::SUBTEXT));
+        buf.set_string(area.x + 9, y, &symbols_str, Style::default().fg(Theme::INFO));
+      });
     }
 
-    y += 1;
+    // Signature
+    if let Some(sig) = data.get("signature").and_then(|s| s.as_str()) {
+      render_line!({});
+      render_line!({
+        buf.set_string(area.x, y, "Signature:", Style::default().fg(Theme::REFLECTIVE).bold());
+      });
+      let max_len = area.width as usize - 2;
+      let sig_display = if sig.len() > max_len {
+        format!("{}...", &sig[..max_len - 3])
+      } else {
+        sig.to_string()
+      };
+      render_line!({
+        buf.set_string(area.x + 2, y, &sig_display, Style::default().fg(Theme::TEXT));
+      });
+    }
+
+    // Docstring (truncated)
+    if let Some(doc) = data.get("docstring").and_then(|d| d.as_str()) {
+      render_line!({});
+      render_line!({
+        buf.set_string(
+          area.x,
+          y,
+          "Documentation:",
+          Style::default().fg(Theme::REFLECTIVE).bold(),
+        );
+      });
+      for line in doc.lines().take(3) {
+        if y >= area.y + area.height {
+          break;
+        }
+        let display_line = truncate_line(line, area.width as usize - 2);
+        render_line!({
+          buf.set_string(area.x + 2, y, &display_line, Style::default().fg(Theme::SUBTEXT));
+        });
+      }
+      let doc_lines = doc.lines().count();
+      if doc_lines > 3 {
+        render_line!({
+          buf.set_string(
+            area.x + 2,
+            y,
+            format!("... ({} more lines)", doc_lines - 3),
+            Style::default().fg(Theme::MUTED),
+          );
+        });
+      }
+    }
+
+    // Imports and calls
+    if let Some(imports) = data.get("imports").and_then(|i| i.as_array())
+      && !imports.is_empty()
+    {
+      render_line!({});
+      let imports_str: Vec<_> = imports.iter().filter_map(|v| v.as_str()).take(3).collect();
+      let more = imports.len().saturating_sub(3);
+      let suffix = if more > 0 {
+        format!(" (+{})", more)
+      } else {
+        String::new()
+      };
+      render_line!({
+        buf.set_string(
+          area.x,
+          y,
+          format!("Imports: {}{}", imports_str.join(", "), suffix),
+          Style::default().fg(Theme::INFO),
+        );
+      });
+    }
+
+    if let Some(calls) = data.get("calls").and_then(|c| c.as_array())
+      && !calls.is_empty()
+    {
+      let calls_str: Vec<_> = calls.iter().filter_map(|v| v.as_str()).take(3).collect();
+      let more = calls.len().saturating_sub(3);
+      let suffix = if more > 0 {
+        format!(" (+{})", more)
+      } else {
+        String::new()
+      };
+      render_line!({
+        buf.set_string(
+          area.x,
+          y,
+          format!("Calls: {}{}", calls_str.join(", "), suffix),
+          Style::default().fg(Theme::INFO),
+        );
+      });
+    }
+
+    // Relationship counts
+    let callers = data.get("caller_count").and_then(|c| c.as_u64());
+    let callees = data.get("callee_count").and_then(|c| c.as_u64());
+    if callers.is_some() || callees.is_some() {
+      let mut parts = Vec::new();
+      if let Some(c) = callers
+        && c > 0
+      {
+        parts.push(format!("{} callers", c));
+      }
+      if let Some(c) = callees
+        && c > 0
+      {
+        parts.push(format!("{} callees", c));
+      }
+      if !parts.is_empty() {
+        render_line!({
+          buf.set_string(
+            area.x,
+            y,
+            format!("Relationships: {}", parts.join(", ")),
+            Style::default().fg(Theme::MUTED),
+          );
+        });
+      }
+    }
+
+    // Blank line
+    render_line!({});
 
     // Code content
     if let Some(content) = data.get("content").and_then(|c| c.as_str()) {
-      buf.set_string(area.x, y, "Code:", Style::default().fg(Theme::ACCENT).bold());
-      y += 1;
+      render_line!({
+        buf.set_string(area.x, y, "Code:", Style::default().fg(Theme::ACCENT).bold());
+      });
 
       for line in content.lines() {
         if y >= area.y + area.height {
@@ -693,54 +1165,71 @@ impl SearchView<'_> {
         } else {
           line.to_string()
         };
-        buf.set_string(area.x, y, &display_line, Style::default().fg(Theme::TEXT));
-        y += 1;
+        render_line!({
+          buf.set_string(area.x, y, &display_line, Style::default().fg(Theme::TEXT));
+        });
       }
     }
   }
 
-  fn render_document_detail(&self, data: &Value, area: Rect, buf: &mut Buffer) {
+  fn render_document_detail(&self, data: &Value, area: Rect, buf: &mut Buffer, scroll: usize) {
     let mut y = area.y;
+    let mut line_num = 0usize;
+
+    macro_rules! render_line {
+      ($render:expr) => {
+        if line_num >= scroll && y < area.y + area.height {
+          $render;
+          y += 1;
+        }
+        line_num += 1;
+      };
+    }
 
     // Document ID (full ID for copy/paste)
     if let Some(id) = data.get("document_id").and_then(|i| i.as_str()) {
-      buf.set_string(area.x, y, "ID: ", Style::default().fg(Theme::SUBTEXT));
       let max_id_width = area.width.saturating_sub(4) as usize;
       let display_id = if id.len() > max_id_width {
         format!("{}...", &id[..max_id_width.saturating_sub(3)])
       } else {
         id.to_string()
       };
-      buf.set_string(area.x + 4, y, &display_id, Style::default().fg(Theme::TEXT));
-      y += 1;
+      render_line!({
+        buf.set_string(area.x, y, "ID: ", Style::default().fg(Theme::SUBTEXT));
+        buf.set_string(area.x + 4, y, &display_id, Style::default().fg(Theme::TEXT));
+      });
     }
 
     // Title
     if let Some(title) = data.get("title").and_then(|t| t.as_str()) {
-      buf.set_string(area.x, y, "Title: ", Style::default().fg(Theme::SUBTEXT));
-      buf.set_string(area.x + 7, y, title, Style::default().fg(Theme::TEXT).bold());
-      y += 1;
+      render_line!({
+        buf.set_string(area.x, y, "Title: ", Style::default().fg(Theme::SUBTEXT));
+        buf.set_string(area.x + 7, y, title, Style::default().fg(Theme::TEXT).bold());
+      });
     }
 
     // Source
     if let Some(source) = data.get("source").and_then(|s| s.as_str()) {
-      buf.set_string(area.x, y, "Source: ", Style::default().fg(Theme::SUBTEXT));
       let max_len = area.width as usize - 8;
       let source_display = if source.len() > max_len {
         format!("{}...", &source[..max_len - 3])
       } else {
         source.to_string()
       };
-      buf.set_string(area.x + 8, y, &source_display, Style::default().fg(Theme::INFO));
-      y += 1;
+      render_line!({
+        buf.set_string(area.x, y, "Source: ", Style::default().fg(Theme::SUBTEXT));
+        buf.set_string(area.x + 8, y, &source_display, Style::default().fg(Theme::INFO));
+      });
     }
 
-    y += 1;
+    // Blank line
+    render_line!({});
 
     // Content preview
     if let Some(content) = data.get("content").and_then(|c| c.as_str()) {
-      buf.set_string(area.x, y, "Preview:", Style::default().fg(Theme::ACCENT).bold());
-      y += 1;
+      render_line!({
+        buf.set_string(area.x, y, "Preview:", Style::default().fg(Theme::ACCENT).bold());
+      });
 
       for line in content.lines() {
         if y >= area.y + area.height {
@@ -751,8 +1240,9 @@ impl SearchView<'_> {
         } else {
           line.to_string()
         };
-        buf.set_string(area.x, y, &display_line, Style::default().fg(Theme::TEXT));
-        y += 1;
+        render_line!({
+          buf.set_string(area.x, y, &display_line, Style::default().fg(Theme::TEXT));
+        });
       }
     }
   }
@@ -768,4 +1258,12 @@ fn capitalize(s: &str) -> String {
 
 fn shorten_path(path: &str) -> &str {
   path.rsplit('/').next().unwrap_or(path)
+}
+
+fn truncate_line(line: &str, max_len: usize) -> String {
+  if line.len() > max_len && max_len > 3 {
+    format!("{}...", &line[..max_len - 3])
+  } else {
+    line.to_string()
+  }
 }

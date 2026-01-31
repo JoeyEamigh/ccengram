@@ -13,6 +13,7 @@ pub enum ProjectRequest {
   Info(ProjectInfoParams),
   Clean(ProjectCleanParams),
   CleanAll(ProjectCleanAllParams),
+  Sessions(SessionListParams),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -20,6 +21,16 @@ pub struct ProjectListParams;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProjectCleanAllParams;
+
+/// Parameters for session list request
+#[serde_with::skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SessionListParams {
+  /// Maximum number of sessions to return
+  pub limit: Option<usize>,
+  /// Filter for active sessions only
+  pub active_only: Option<bool>,
+}
 
 /// Parameters for project info request
 #[serde_with::skip_serializing_none]
@@ -50,6 +61,7 @@ pub enum ProjectResponse {
   Clean(ProjectCleanResult),
   CleanAll(ProjectCleanAllResult),
   Stats(ProjectStatsResult),
+  Sessions(Vec<SessionItem>),
 }
 
 /// Lightweight project item for list responses
@@ -99,6 +111,21 @@ pub struct ProjectStatsResult {
   pub code_chunks: usize,
   pub documents: usize,
   pub sessions: usize,
+  /// Memory count by sector (semantic, episodic, procedural, reflective)
+  pub memories_by_sector: Option<std::collections::HashMap<String, usize>>,
+  /// Average salience across all memories
+  pub average_salience: Option<f32>,
+}
+
+/// Session item for list responses
+#[serde_with::skip_serializing_none]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionItem {
+  pub id: String,
+  pub started_at: String,
+  pub ended_at: Option<String>,
+  pub summary: Option<String>,
+  pub user_prompt: Option<String>,
 }
 
 // ============================================================================
@@ -133,4 +160,10 @@ impl_ipc_request!(
   ResponseData::Project(ProjectResponse::CleanAll(v)) => v,
   v => RequestData::Project(ProjectRequest::CleanAll(v)),
   v => ResponseData::Project(ProjectResponse::CleanAll(v))
+);
+impl_ipc_request!(
+  SessionListParams => Vec<SessionItem>,
+  ResponseData::Project(ProjectResponse::Sessions(v)) => v,
+  v => RequestData::Project(ProjectRequest::Sessions(v)),
+  v => ResponseData::Project(ProjectResponse::Sessions(v))
 );

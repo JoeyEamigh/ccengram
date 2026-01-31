@@ -169,7 +169,24 @@ impl Response {
         progress: Some(StreamProgress {
           message: message.into(),
           percent,
+          stage: None,
+          processed: None,
+          total: None,
+          current_file: None,
+          chunks_created: None,
         }),
+        done: false,
+      },
+    }
+  }
+
+  /// Create a rich stream progress response with full stage info
+  pub fn stream_progress_full(id: impl Into<String>, progress: StreamProgress) -> Self {
+    Self {
+      id: id.into(),
+      scenario: ResponseScenario::Stream {
+        chunk: None,
+        progress: Some(progress),
         done: false,
       },
     }
@@ -206,8 +223,18 @@ impl Response {
 pub struct StreamProgress {
   /// Human-readable progress message
   pub message: String,
-  /// Percent complete (0-100)
+  /// Percent complete (0-100) for this stage
   pub percent: Option<u8>,
+  /// Pipeline stage name (scanning, reading, parsing, embedding, writing)
+  pub stage: Option<String>,
+  /// Files processed in this stage
+  pub processed: Option<usize>,
+  /// Total files to process in this stage
+  pub total: Option<usize>,
+  /// Current file being processed
+  pub current_file: Option<String>,
+  /// Chunks created so far (populated during writing)
+  pub chunks_created: Option<usize>,
 }
 
 #[serde_with::skip_serializing_none]

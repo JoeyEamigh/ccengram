@@ -31,7 +31,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
   actor::{
@@ -42,7 +42,7 @@ use crate::{
   domain::config::Config,
   embedding::EmbeddingProvider,
   ipc::{Client, IpcError},
-  server::{Server, ServerConfig},
+  server::{DaemonState, Server, ServerConfig},
 };
 
 // ============================================================================
@@ -122,11 +122,11 @@ impl Daemon {
   pub async fn connect_or_start(cwd: PathBuf) -> Result<Client, IpcError> {
     let running = dirs::is_daemon_running();
     if running {
-      tracing::debug!("Daemon is already running, connecting...");
+      debug!("Daemon is already running, connecting...");
       return Client::connect(cwd).await;
     }
 
-    tracing::info!("Daemon is not running, starting in background...");
+    info!("Daemon is not running, starting in background...");
     let _pid = Self::spawn_background().await?;
 
     // Poll for socket to become available (up to 5 seconds)
@@ -139,12 +139,12 @@ impl Daemon {
 
     while attempts < max_attempts {
       if let Ok(client) = Client::connect(socket_path.clone()).await {
-        tracing::info!("Successfully connected to daemon");
+        info!("Successfully connected to daemon");
         return Ok(client);
       }
 
       attempts += 1;
-      tracing::debug!("Waiting for daemon to start... (attempt {}/{})", attempts, max_attempts);
+      debug!("Waiting for daemon to start... (attempt {}/{})", attempts, max_attempts);
       tokio::time::sleep(delay).await;
     }
 
@@ -158,7 +158,7 @@ impl Daemon {
       }
 
       // We're in the child process
-      tracing::info!("Successfully forked into daemon process");
+      info!("Successfully forked into daemon process");
 
       let config = RuntimeConfig {
         foreground: false,
@@ -200,7 +200,7 @@ impl Daemon {
     }
 
     // We're in the child process
-    tracing::info!("Successfully forked into daemon process");
+    info!("Successfully forked into daemon process");
 
     let config = RuntimeConfig {
       foreground: false,
@@ -221,6 +221,12 @@ impl Daemon {
   /// 3. Runs the IPC server
   /// 4. Handles graceful shutdown
   async fn run(self) {
+    #[cfg(feature = "dhat-heap")]
+    let _profiler = dhat::Profiler::new_heap();
+
+    #[cfg(feature = "dhat-ad-hoc")]
+    let _profiler = dhat::Profiler::new_ad_hoc();
+
     info!("Starting CCEngram daemon");
     info!("Socket: {:?}", self.runtime_config.socket_path);
     info!("Data dir: {:?}", self.runtime_config.data_dir);
@@ -230,7 +236,7 @@ impl Daemon {
 
     // Create embedding provider (shared, immutable)
     let Ok(embedding) = <dyn EmbeddingProvider>::from_config(&self.runtime_config.config.embedding) else {
-      tracing::error!("Failed to create embedding provider, shutting down daemon");
+      error!("Failed to create embedding provider, shutting down daemon");
       panic!("Failed to create embedding provider");
     };
 
@@ -266,11 +272,16 @@ impl Daemon {
       }
     }
 
+    // Create daemon state for Status/Metrics requests
+    let auto_shutdown = !self.runtime_config.foreground;
+    let daemon_state = Arc::new(DaemonState::new(self.runtime_config.foreground, auto_shutdown));
+
     let server_config = ServerConfig {
       socket_path: self.runtime_config.socket_path.clone(),
       router: Arc::clone(&router),
       activity: Arc::clone(&activity),
       sessions: Arc::clone(&sessions),
+      daemon_state,
     };
 
     // Create server (fully configured, no mutation needed)

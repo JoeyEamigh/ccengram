@@ -157,6 +157,23 @@ pub struct CodeItem {
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub symbols: Vec<String>,
 
+  // Semantic context fields
+  /// The kind of definition (e.g., "function", "struct", "impl", "trait", "class", "method")
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub definition_kind: Option<String>,
+  /// Visibility modifier (e.g., "pub", "pub(crate)", "private")
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub visibility: Option<String>,
+  /// Full signature for display (e.g., "pub fn calculate_total(items: Vec<Item>) -> f64")
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub signature: Option<String>,
+  /// Extracted documentation comments
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub docstring: Option<String>,
+  /// Parent definition name for nested items (e.g., "UserRepo" for method in impl UserRepo)
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub parent_definition: Option<String>,
+
   // Search-specific
   #[serde(skip_serializing_if = "Option::is_none")]
   pub similarity: Option<f32>,
@@ -527,6 +544,12 @@ impl CodeItem {
       chunk_type: Some(format!("{:?}", c.chunk_type).to_lowercase()),
       symbol_name: c.definition_name.clone(),
       symbols: c.symbols.clone(),
+      // Semantic context - always include when available
+      definition_kind: c.definition_kind.clone(),
+      visibility: c.visibility.clone(),
+      signature: c.signature.clone(),
+      docstring: c.docstring.clone(),
+      parent_definition: c.parent_definition.clone(),
       similarity: opts.similarity,
       confidence: opts.confidence,
       file_hash: if opts.include_details {

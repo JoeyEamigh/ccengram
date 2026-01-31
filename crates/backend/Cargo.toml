@@ -75,6 +75,9 @@ tree-sitter-html = { version = "0.23", optional = true }
 tree-sitter-css = { version = "0.25", optional = true }
 tree-sitter-markdown = { version = "0.7", optional = true }
 
+# --- profiling dependencies ---
+dhat = { version = "0.3", optional = true }
+
 # --- platform-specific dependencies ---
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -85,11 +88,31 @@ windows-sys = { version = "0.61", features = [
   "Win32_System_Threading",
 ] }
 
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { version = "0.6", optional = true }
+jemalloc_pprof = { version = "0.8", features = [
+  "symbolize",
+  "flamegraph",
+], optional = true }
+
 [features]
-default = ["tree-sitter-tier1", "claude"]
+default = ["tree-sitter-tier1", "claude", "jemalloc"]
 
 automemory = ["dep:llm"]
 claude = ["automemory", "llm/claude"]
+
+# profiling
+statm = []
+jemalloc = ["dep:tikv-jemallocator"]
+jemalloc-pprof = [
+  "jemalloc",
+  "dep:jemalloc_pprof",
+  "tikv-jemallocator/profiling",
+  "tikv-jemallocator/stats",
+  "tikv-jemallocator/unprefixed_malloc_on_supported_platforms",
+]
+dhat-heap = ["dep:dhat"]
+dhat-ad-hoc = ["dep:dhat"]
 
 tree-sitter-tier1 = [
   "dep:tree-sitter",

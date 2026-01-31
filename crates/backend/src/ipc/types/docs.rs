@@ -65,9 +65,14 @@ pub struct DocSearchItem {
   pub document_id: String,
   pub title: String,
   pub source: String,
+  /// Source type: "file", "url", or "content"
+  pub source_type: String,
   pub content: String,
   pub chunk_index: usize,
   pub total_chunks: usize,
+  /// Character offset within the original document
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub char_offset: Option<usize>,
   #[serde(skip_serializing_if = "Option::is_none")]
   pub similarity: Option<f32>,
 }
@@ -149,9 +154,11 @@ impl DocSearchItem {
       document_id: d.document_id.to_string(),
       title: d.title.clone(),
       source: d.source.clone(),
+      source_type: d.source_type.as_str().to_string(),
       content: d.content.clone(),
       chunk_index: d.chunk_index,
       total_chunks: d.total_chunks,
+      char_offset: Some(d.char_offset),
       similarity,
     }
   }

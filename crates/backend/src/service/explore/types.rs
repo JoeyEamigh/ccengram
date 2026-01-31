@@ -129,6 +129,26 @@ pub struct ExploreResult {
   #[serde(skip_serializing_if = "Option::is_none")]
   pub context: Option<ExpandedContext>,
   pub score: f32,
+
+  // === Semantic metadata for relevance evaluation ===
+  /// Definition kind (function, class, struct, method, etc.)
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub definition_kind: Option<String>,
+  /// Full signature for quick relevance evaluation
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub signature: Option<String>,
+  /// Docstring/documentation (truncated)
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub docstring: Option<String>,
+  /// Parent definition (for methods: the class/impl they belong to)
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub parent: Option<String>,
+  /// Key imports used by this chunk
+  #[serde(skip_serializing_if = "Vec::is_empty")]
+  pub imports: Vec<String>,
+  /// Key function calls made by this chunk
+  #[serde(skip_serializing_if = "Vec::is_empty")]
+  pub calls: Vec<String>,
 }
 
 /// Full explore response
@@ -373,6 +393,12 @@ mod tests {
       },
       context: None,
       score: 0.95,
+      definition_kind: Some("function".to_string()),
+      signature: Some("fn main()".to_string()),
+      docstring: Some("Entry point".to_string()),
+      parent: None,
+      imports: vec![],
+      calls: vec!["println".to_string()],
     };
 
     let json = serde_json::to_value(&result).unwrap();
@@ -384,6 +410,8 @@ mod tests {
     assert_eq!(json["preview"], "fn main() {}");
     assert_eq!(json["symbols"][0], "main");
     assert_eq!(json["language"], "rust");
+    assert_eq!(json["definition_kind"], "function");
+    assert_eq!(json["signature"], "fn main()");
   }
 
   #[test]
@@ -403,6 +431,13 @@ mod tests {
       },
       context: None,
       score: 0.8,
+      // Not applicable to memories
+      definition_kind: None,
+      signature: None,
+      docstring: None,
+      parent: None,
+      imports: vec![],
+      calls: vec![],
     };
 
     let json = serde_json::to_value(&result).unwrap();
@@ -411,6 +446,9 @@ mod tests {
     assert!(json.get("file").is_none());
     assert!(json.get("lines").is_none());
     assert!(json.get("language").is_none());
+    // New semantic fields should also be skipped when empty
+    assert!(json.get("definition_kind").is_none());
+    assert!(json.get("signature").is_none());
   }
 
   #[test]
@@ -433,6 +471,12 @@ mod tests {
         },
         context: None,
         score: 1.0,
+        definition_kind: None,
+        signature: None,
+        docstring: None,
+        parent: None,
+        imports: vec![],
+        calls: vec![],
       }],
       counts: {
         let mut m = HashMap::new();

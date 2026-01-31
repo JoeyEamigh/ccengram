@@ -24,7 +24,10 @@
 
 use std::{
   path::{Path, PathBuf},
-  sync::Arc,
+  sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+  },
   time::Duration,
 };
 
@@ -59,6 +62,8 @@ pub struct IndexerConfig {
   pub embedding_batch_size: usize,
   /// Context length for embedding validation/truncation (from EmbeddingConfig)
   pub embedding_context_length: usize,
+  /// Log LanceDB cache stats after DB flushes (from DatabaseConfig)
+  pub log_cache_stats: bool,
 }
 
 // ============================================================================
@@ -115,6 +120,16 @@ pub struct PipelineConfig {
   pub db_flush_timeout: Duration,
 
   // ========================================================================
+  // Backpressure
+  // ========================================================================
+  /// Maximum pending embedding batches (backpressure limit)
+  /// Prevents unbounded memory growth when embedding API is rate-limited.
+  pub max_pending_batches: usize,
+
+  /// Whether to flush batches on timeout (false in bulk mode for better batching)
+  pub flush_on_timeout: bool,
+
+  // ========================================================================
   // Worker Counts
   // ========================================================================
   /// Number of reader workers (I/O-bound, default: 8-16)
@@ -122,6 +137,12 @@ pub struct PipelineConfig {
 
   /// Number of parser workers (CPU-bound, default: num_cpus)
   pub parser_workers: usize,
+
+  // ========================================================================
+  // Debugging
+  // ========================================================================
+  /// Log LanceDB cache statistics after flushes (from DatabaseConfig)
+  pub log_cache_stats: bool,
 }
 
 impl PipelineConfig {
@@ -153,8 +174,11 @@ impl PipelineConfig {
         embedding_context_length,
         db_flush_count: index.pipeline_db_flush_count,
         db_flush_timeout: Duration::from_millis(index.pipeline_db_flush_timeout_ms),
+        max_pending_batches: index.pipeline_max_pending_batches,
+        flush_on_timeout: false, // Bulk mode: only flush on size for better batching
         reader_workers: index.pipeline_reader_workers,
         parser_workers,
+        log_cache_stats: false, // Set via with_log_cache_stats()
       }
     } else {
       // Incremental mode: scale down for low latency
@@ -170,14 +194,24 @@ impl PipelineConfig {
         parser_buffer: (index.pipeline_parser_buffer / 8).max(32),
         embedder_buffer: (index.pipeline_embedder_buffer / 8).max(8),
         embedding_batch_size: (embedding_batch_size / 4).max(8),
-        embedding_batch_timeout: Duration::from_millis(10),
+        // 200ms timeout allows small file batches to accumulate while still being responsive
+        embedding_batch_timeout: Duration::from_millis(200),
         embedding_context_length,
         db_flush_count: (index.pipeline_db_flush_count / 10).max(50),
         db_flush_timeout: Duration::from_millis(100),
+        max_pending_batches: (index.pipeline_max_pending_batches / 4).max(8),
+        flush_on_timeout: true, // Incremental mode: flush on timeout for low latency
         reader_workers: (index.pipeline_reader_workers / 4).max(4),
         parser_workers,
+        log_cache_stats: false, // Set via with_log_cache_stats()
       }
     }
+  }
+
+  /// Enable logging of LanceDB cache statistics after DB flushes
+  pub fn with_log_cache_stats(mut self, enabled: bool) -> Self {
+    self.log_cache_stats = enabled;
+    self
   }
 
   /// Select configuration based on file count, using IndexConfig values
@@ -240,6 +274,8 @@ pub struct IndexerActor {
   cancel: CancellationToken,
   /// Unified file indexer for code and documents
   indexer: Indexer,
+  /// Shared counter for pending jobs (decremented after each job completes)
+  pending: Arc<AtomicUsize>,
 }
 
 impl IndexerActor {
@@ -252,6 +288,7 @@ impl IndexerActor {
     embedding: Arc<dyn EmbeddingProvider>,
     job_rx: mpsc::Receiver<IndexJob>,
     cancel: CancellationToken,
+    pending: Arc<AtomicUsize>,
   ) -> Self {
     // Generate a deterministic UUID from the project_id string using UUID v5
     let project_uuid = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, db.project_id.as_str().as_bytes());
@@ -262,6 +299,7 @@ impl IndexerActor {
       job_rx,
       cancel,
       indexer: Indexer::new(project_uuid),
+      pending,
     }
   }
 
@@ -276,9 +314,10 @@ impl IndexerActor {
     cancel: CancellationToken,
   ) -> IndexerHandle {
     let (tx, rx) = mpsc::channel(256);
-    let actor = Self::new(config, db, embedding, rx, cancel);
+    let pending = Arc::new(AtomicUsize::new(0));
+    let actor = Self::new(config, db, embedding, rx, cancel, pending.clone());
     tokio::spawn(actor.run());
-    IndexerHandle::new(tx)
+    IndexerHandle::with_pending(tx, pending)
   }
 
   /// Main actor loop
@@ -287,40 +326,104 @@ impl IndexerActor {
   /// - CancellationToken being cancelled
   /// - IndexJob::Shutdown message
   /// - Job channel being closed
+  ///
+  /// File jobs are batched for efficient embedding API usage.
   pub async fn run(mut self) {
     info!(root = ?self.config.root, "IndexerActor started");
 
+    // Batch collection for file jobs
+    let mut file_batch: Vec<PathBuf> = Vec::new();
+    let batch_size = self.config.index.watcher_batch_size;
+    let batch_timeout = Duration::from_millis(self.config.index.watcher_batch_timeout_ms);
+    let mut batch_timer = tokio::time::interval(batch_timeout);
+    batch_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     loop {
       tokio::select! {
-          // Check cancellation first (biased)
-          biased;
+        // Check cancellation first (biased)
+        biased;
 
-          _ = self.cancel.cancelled() => {
-              info!("IndexerActor shutting down (cancelled)");
-              break;
+        _ = self.cancel.cancelled() => {
+          info!("IndexerActor shutting down (cancelled)");
+          // Process any remaining batched files
+          if !file_batch.is_empty() {
+            self.flush_file_batch(&mut file_batch).await;
           }
+          break;
+        }
 
-          job = self.job_rx.recv() => {
-              match job {
-                  Some(IndexJob::Shutdown) => {
-                      info!("IndexerActor shutting down (requested)");
-                      break;
-                  }
-                  Some(job) => {
-                      if let Err(e) = self.handle_job(job).await {
-                          error!(error = %e, "IndexerActor job failed");
-                      }
-                  }
-                  None => {
-                      info!("IndexerActor shutting down (channel closed)");
-                      break;
-                  }
+        // Batch timeout - flush accumulated files
+        _ = batch_timer.tick() => {
+          if !file_batch.is_empty() {
+            self.flush_file_batch(&mut file_batch).await;
+          }
+        }
+
+        job = self.job_rx.recv() => {
+          match job {
+            Some(IndexJob::Shutdown) => {
+              info!("IndexerActor shutting down (requested)");
+              // Process any remaining batched files
+              if !file_batch.is_empty() {
+                self.flush_file_batch(&mut file_batch).await;
               }
+              break;
+            }
+            Some(IndexJob::File { path, old_content: _ }) => {
+              // Accumulate file jobs for batching
+              file_batch.push(path);
+
+              // Flush if batch is full
+              if file_batch.len() >= batch_size {
+                self.flush_file_batch(&mut file_batch).await;
+              }
+            }
+            Some(job) => {
+              // Non-file jobs are handled immediately
+              // First flush any pending file batch to maintain ordering
+              if !file_batch.is_empty() {
+                self.flush_file_batch(&mut file_batch).await;
+              }
+              if let Err(e) = self.handle_job(job).await {
+                error!(error = %e, "IndexerActor job failed");
+              }
+              // Decrement pending count after job completes
+              self.pending.fetch_sub(1, Ordering::Relaxed);
+            }
+            None => {
+              info!("IndexerActor shutting down (channel closed)");
+              // Process any remaining batched files
+              if !file_batch.is_empty() {
+                self.flush_file_batch(&mut file_batch).await;
+              }
+              break;
+            }
           }
+        }
       }
     }
 
     info!(root = ?self.config.root, "IndexerActor stopped");
+  }
+
+  /// Flush accumulated file batch through the pipeline
+  async fn flush_file_batch(&mut self, batch: &mut Vec<PathBuf>) {
+    let files: Vec<PathBuf> = std::mem::take(batch);
+    let count = files.len();
+
+    if count == 0 {
+      return;
+    }
+
+    debug!(count, "Flushing file batch");
+
+    // Use the batch pipeline for efficient processing
+    if let Err(e) = self.batch_index(files, None).await {
+      error!(error = %e, "Failed to index file batch");
+    }
+
+    // Decrement pending count for all files in batch
+    self.pending.fetch_sub(count, Ordering::Relaxed);
   }
 
   /// Dispatch a job to the appropriate handler
@@ -368,25 +471,24 @@ impl IndexerActor {
       return Ok(());
     }
 
-    // Delete existing chunks for this file before inserting new ones
     let relative_str = relative.to_string_lossy();
-    self.indexer.delete_file_chunks(&self.db, &relative_str).await?;
 
     // Generate embeddings
     let embeddings = self.embed_unified_chunks(&chunks).await?;
 
     // Prepare chunks with embeddings
     let chunks_with_embeddings: Vec<(Chunk, Vec<f32>)> = chunks.into_iter().zip(embeddings).collect();
+    let chunk_count = chunks_with_embeddings.len();
 
     // Store via unified Indexer
     self
       .indexer
-      .store_chunks(&self.db, &relative_str, &chunks_with_embeddings)
+      .store_chunks(&self.db, &relative_str, chunks_with_embeddings)
       .await?;
 
     debug!(
         file = %relative.display(),
-        chunks = chunks_with_embeddings.len(),
+        chunks = chunk_count,
         "File indexed successfully"
     );
 
@@ -402,10 +504,26 @@ impl IndexerActor {
     debug!(file = %relative.display(), "Deleting chunks for file");
 
     let relative_str = relative.to_string_lossy();
+
+    // Delete code chunks
     self.db.delete_chunks_for_file(&relative_str).await?;
 
-    // Also delete document metadata if this was a document file
+    // Delete document chunks and metadata (no-op for code files)
+    self.db.delete_document_chunks_by_source(&relative_str).await.ok();
     self.db.delete_document_by_source(&relative_str).await.ok();
+
+    // Delete indexed_files entry
+    self
+      .db
+      .delete_indexed_file(self.db.project_id.as_str(), &relative_str)
+      .await
+      .ok();
+
+    // Optimize indexes after delete to compact deleted rows
+    // This ensures deleted content is immediately removed from vector search results
+    if let Err(e) = self.db.optimize_indexes().await {
+      warn!(error = %e, "Failed to optimize indexes after delete");
+    }
 
     Ok(())
   }
@@ -479,7 +597,8 @@ impl IndexerActor {
       self.config.embedding_batch_size,
       self.config.embedding_context_length,
       total,
-    );
+    )
+    .with_log_cache_stats(self.config.log_cache_stats);
 
     debug!(
       total = total,
@@ -523,9 +642,21 @@ impl IndexerActor {
   /// Generate embeddings for unified chunks
   ///
   /// Uses batch embedding for efficiency. Works with the unified Chunk type.
+  /// Validates and truncates texts that exceed the embedding model's context limit.
   async fn embed_unified_chunks(&self, chunks: &[Chunk]) -> Result<Vec<Vec<f32>>, IndexError> {
-    // Collect texts for embedding using the Indexer's prepare_embedding_text
-    let texts: Vec<String> = chunks.iter().map(|c| self.indexer.prepare_embedding_text(c)).collect();
+    use crate::embedding::validation::{TextValidationConfig, validate_and_truncate};
+
+    let validation_config = TextValidationConfig::for_context_length(self.config.embedding_context_length);
+
+    // Collect and validate texts for embedding
+    let texts: Vec<String> = chunks
+      .iter()
+      .map(|c| {
+        let text = self.indexer.prepare_embedding_text(c);
+        let (validated, _) = validate_and_truncate(&text, &validation_config);
+        validated
+      })
+      .collect();
 
     let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
 

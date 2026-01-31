@@ -42,7 +42,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace, warn};
 
 use super::{handle::IndexerHandle, message::IndexJob};
-use crate::domain::{code::Language, config::IndexConfig};
+use crate::{
+  context::files::is_document_extension,
+  domain::{code::Language, config::IndexConfig},
+};
 
 // ============================================================================
 // Configuration
@@ -332,34 +335,34 @@ impl WatcherTask {
 
     loop {
       tokio::select! {
-          // Check cancellation first (biased)
-          biased;
+        // Check cancellation first (biased)
+        biased;
 
-          _ = self.cancel.cancelled() => {
-              info!("WatcherTask shutting down (cancelled)");
+        _ = self.cancel.cancelled() => {
+          info!("WatcherTask shutting down (cancelled)");
+          break;
+        }
+
+        // Process incoming file events
+        event = self.event_rx.recv() => {
+          match event {
+            Some(Ok(event)) => {
+              self.process_event(&mut pending, event);
+            }
+            Some(Err(e)) => {
+              warn!(error = %e, "Watcher error");
+            }
+            None => {
+              info!("WatcherTask shutting down (channel closed)");
               break;
+            }
           }
+      }
 
-          // Process incoming file events
-          event = self.event_rx.recv() => {
-              match event {
-                  Some(Ok(event)) => {
-                      self.process_event(&mut pending, event);
-                  }
-                  Some(Err(e)) => {
-                      warn!(error = %e, "Watcher error");
-                  }
-                  None => {
-                      info!("WatcherTask shutting down (channel closed)");
-                      break;
-                  }
-              }
-          }
-
-          // Check for settled (debounced) events
-          _ = debounce_interval.tick() => {
-              self.flush_settled(&mut pending).await;
-          }
+        // Check for settled (debounced) events
+        _ = debounce_interval.tick() => {
+          self.flush_settled(&mut pending).await;
+        }
       }
     }
 
@@ -382,19 +385,18 @@ impl WatcherTask {
     }
   }
 
-  /// Check if a file is a supported type for indexing
+  /// Check if a file is a supported type for indexing (code or document)
   fn is_indexable(&self, path: &Path) -> bool {
     // Skip directories
     if path.is_dir() {
       return false;
     }
 
-    // Check if we support this file type
+    // Check if we support this file type (code or document)
     path
       .extension()
       .and_then(|ext| ext.to_str())
-      .and_then(Language::from_extension)
-      .is_some()
+      .is_some_and(|ext| Language::from_extension(ext).is_some() || is_document_extension(ext))
   }
 
   /// Process a single notify event into pending changes
@@ -402,13 +404,13 @@ impl WatcherTask {
     for path in &event.paths {
       // Skip directories
       if path.is_dir() {
-        trace!(path = %path.display(), "Skipping directory event");
+        // trace!(path = %path.display(), "Skipping directory event");
         continue;
       }
 
       // Check gitignore
       if self.is_ignored(path) {
-        trace!(path = %path.display(), "Skipping ignored file");
+        // trace!(path = %path.display(), "Skipping ignored file");
         continue;
       }
 
@@ -514,7 +516,7 @@ impl WatcherTask {
         }
         EventKind::Access(_) | EventKind::Any | EventKind::Other => {
           // Ignore access and other events
-          trace!(file = %path.display(), kind = ?event.kind, "Ignoring event");
+          // trace!(file = %path.display(), kind = ?event.kind, "Ignoring event");
           continue;
         }
       };

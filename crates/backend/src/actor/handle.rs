@@ -4,6 +4,11 @@
 //! They encapsulate the channel sender and provide convenient methods for
 //! request/response patterns.
 
+use std::sync::{
+  Arc,
+  atomic::{AtomicUsize, Ordering},
+};
+
 use tokio::sync::mpsc;
 
 use super::message::{IndexJob, IndexProgress, ProjectActorMessage, ProjectActorPayload, ProjectActorResponse};
@@ -72,20 +77,47 @@ impl ProjectHandle {
 ///
 /// The indexer handle is simpler than ProjectHandle because index jobs
 /// are fire-and-forget (progress is sent through a separate channel if needed).
+///
+/// Tracks pending job count for backpressure and status reporting.
 #[derive(Clone, Debug)]
 pub struct IndexerHandle {
   pub tx: mpsc::Sender<IndexJob>,
+  pending: Arc<AtomicUsize>,
 }
 
 impl IndexerHandle {
+  #[allow(dead_code)]
   /// Create a new handle from a sender
   pub fn new(tx: mpsc::Sender<IndexJob>) -> Self {
-    Self { tx }
+    Self {
+      tx,
+      pending: Arc::new(AtomicUsize::new(0)),
+    }
+  }
+
+  /// Create a new handle with shared pending counter (for actor to decrement)
+  pub fn with_pending(tx: mpsc::Sender<IndexJob>, pending: Arc<AtomicUsize>) -> Self {
+    Self { tx, pending }
+  }
+
+  /// Get current pending job count
+  pub fn pending_count(&self) -> usize {
+    self.pending.load(Ordering::Relaxed)
   }
 
   /// Send an index job to the actor
   pub async fn send(&self, job: IndexJob) -> Result<(), SendError> {
-    self.tx.send(job).await.map_err(|_| SendError::ActorGone)
+    // Don't count shutdown as pending
+    if !matches!(job, IndexJob::Shutdown) {
+      self.pending.fetch_add(1, Ordering::Relaxed);
+    }
+    self.tx.send(job).await.map_err(|e| {
+      // Decrement on failure
+      if !matches!(e.0, IndexJob::Shutdown) {
+        self.pending.fetch_sub(1, Ordering::Relaxed);
+      }
+      SendError::ActorGone
+    })
   }
 
   /// Queue a batch of files for indexing with optional progress reporting
