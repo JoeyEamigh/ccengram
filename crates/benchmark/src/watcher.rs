@@ -484,6 +484,9 @@ impl WatcherBenchmark {
           };
         }
 
+        // Get the relative file path for matching
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
         // Delete the file
         let start = Instant::now();
         if let Err(e) = fixtures.delete_file(&path).await {
@@ -498,18 +501,26 @@ impl WatcherBenchmark {
         // Wait for deletion to be processed
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        // Content should no longer be searchable
+        // Check that the specific file is no longer in search results
+        // Note: Semantic search may return similar content from OTHER files,
+        // so we check file_path rather than just chunks.is_empty()
         let search_result = self
           .client
           .call(CodeSearchParams {
-            query: marker,
-            limit: Some(1),
+            query: marker.clone(),
+            limit: Some(10),
             ..Default::default()
           })
           .await;
 
         let deleted_from_index = match search_result {
-          Ok(result) => result.chunks.is_empty(),
+          Ok(result) => {
+            // File is deleted if no chunk has this file's path or contains the unique marker
+            !result
+              .chunks
+              .iter()
+              .any(|c| c.file_path.contains(file_name) || c.content.contains(&marker))
+          }
           Err(_) => false,
         };
 
@@ -551,19 +562,26 @@ impl WatcherBenchmark {
     tokio::time::sleep(Duration::from_millis(1000)).await;
     self.wait_for_watcher_ready().await?;
 
-    // Check which files are searchable
+    // Check which tracked files are searchable
+    // We verify by checking if the returned chunks contain the specific file path
     let mut tracked_detected = 0;
-    for (_, marker) in &tracked_files {
+    for (path, marker) in &tracked_files {
+      let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
       let search_result = self
         .client
         .call(CodeSearchParams {
           query: marker.clone(),
-          limit: Some(1),
+          limit: Some(10),
           ..Default::default()
         })
         .await?;
 
-      if !search_result.chunks.is_empty() {
+      // File is detected if any chunk has matching file path or contains the unique marker
+      let is_detected = search_result
+        .chunks
+        .iter()
+        .any(|c| c.file_path.contains(file_name) || c.content.contains(marker));
+      if is_detected {
         tracked_detected += 1;
       }
     }
@@ -571,6 +589,7 @@ impl WatcherBenchmark {
     // Check ignored files (should NOT be searchable)
     let mut false_positive_triggers = 0;
     for path in &ignored_files {
+      let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
       // Read content to get marker
       let content = tokio::fs::read_to_string(path).await?;
       if let Some(marker_line) = content.lines().find(|l| l.contains("Marker:")) {
@@ -579,12 +598,17 @@ impl WatcherBenchmark {
           .client
           .call(CodeSearchParams {
             query: marker.to_string(),
-            limit: Some(1),
+            limit: Some(10),
             ..Default::default()
           })
           .await?;
 
-        if !search_result.chunks.is_empty() {
+        // Only count as false positive if the specific ignored file is in results
+        let is_indexed = search_result
+          .chunks
+          .iter()
+          .any(|c| c.file_path.contains(file_name) || c.content.contains(marker));
+        if is_indexed {
           false_positive_triggers += 1;
         }
       }
