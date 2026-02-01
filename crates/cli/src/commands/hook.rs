@@ -6,8 +6,7 @@
 use std::io::Read;
 
 use anyhow::{Context, Result};
-use ccengram::ipc::{Client, hook::HookParams};
-use tracing::error;
+use ccengram::ipc::hook::HookParams;
 
 /// Read hook input from stdin (JSON parameters from Claude Code)
 fn read_hook_input() -> Result<serde_json::Value> {
@@ -25,12 +24,6 @@ fn read_hook_input() -> Result<serde_json::Value> {
 pub async fn cmd_hook(name: &str) -> Result<()> {
   // Read input from stdin
   let mut input = read_hook_input().context("Failed to read hook input")?;
-
-  // Daemon not running - can't process hook without daemon
-  if !ccengram::dirs::is_daemon_running() {
-    error!("Daemon is not running. Start with: ccengram daemon");
-    std::process::exit(1);
-  }
 
   // Extract session_id and cwd from the input JSON to avoid duplicate fields
   // (HookParams uses #[serde(flatten)] which would create duplicates)
@@ -66,10 +59,17 @@ pub async fn cmd_hook(name: &str) -> Result<()> {
     .map(std::path::PathBuf::from)
     .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
 
-  let client = Client::connect(cwd_path).await.context("Failed to connect to daemon")?;
+  // Auto-start daemon if not running
+  let client = match ccengram::Daemon::connect_or_start(cwd_path).await {
+    Ok(c) => c,
+    Err(e) => {
+      eprintln!("ccengram: failed to start daemon: {}", e);
+      return Ok(());
+    }
+  };
 
   if let Err(e) = client.fire_and_forget(params).await {
-    error!("Hook error: {}", e);
+    eprintln!("ccengram: hook send failed: {}", e);
   }
 
   Ok(())
