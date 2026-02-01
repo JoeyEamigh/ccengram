@@ -2,10 +2,12 @@
 
 Semantic code search and persistent memory for Claude Code.
 
-CCEngram lets Claude Code search your codebase by meaning, not just keywords. Ask questions like "how does authentication work?" or "where are errors handled?" and get relevant results even when the exact terms don't appear in the code. Optionally, enable persistent memory to have Claude remember your preferences, decisions, and project-specific patterns across sessions.
+CCEngram lets Claude Code search your codebase by meaning, not just keywords. Ask questions like "how does authentication work?" or "where are errors handled?" and get relevant results even when the exact terms don't appear in the code. Optionally, enable automatic memory extraction (uses Haiku on your Claude Code subscription) to have Claude remember your preferences, decisions, and project-specific patterns across sessions.
 
 > [!WARNING]
 > This project was primarily vibecoded. It is not a reflection of my skills and definitely not Rust best practices. I made it to solve a specific problem (working in large monorepos with Claude), so likely won't accept a bunch of tangential features.
+
+The intention is that this plugin is as set-and-forget as possible. Once you run an initial indexing for a project, CCEngram's file watcher keeps the index up-to-date automatically as you code. The daemon will shut itself down after 5 minutes of inactivity, and automatically restart and reconcile index changes as requests come in.
 
 ## Features
 
@@ -252,8 +254,6 @@ max_idle_days = 90
 
 [hooks]
 enabled = false                   # Set to true to enable automatic memory creation
-llm_extraction = true             # Use LLM for smart memory extraction
-high_priority_signals = true      # Detect corrections/preferences immediately
 
 [workspace]
 # alias = "/path/to/main-repo"    # Share memories with another project (useful for worktrees)
