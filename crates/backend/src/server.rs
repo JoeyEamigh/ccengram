@@ -230,12 +230,13 @@ impl Server {
               let activity = Arc::clone(&self.config.activity);
               let sessions = Arc::clone(&self.config.sessions);
               let daemon_state = Arc::clone(&self.config.daemon_state);
+              let cancel_token = cancel.clone();
               let request_count = &self.request_count;
 
               // Increment connection count (we track requests inside handle_connection)
               let _ = request_count;
 
-              tokio::spawn(handle_connection(stream, router, activity, sessions, daemon_state));
+              tokio::spawn(handle_connection(stream, router, activity, sessions, daemon_state, cancel_token));
             }
             Err(e) => {
               error!("Accept error: {}", e);
@@ -283,6 +284,7 @@ async fn handle_connection(
   activity: Arc<KeepAlive>,
   sessions: Arc<SessionTracker>,
   daemon_state: Arc<DaemonState>,
+  cancel: CancellationToken,
 ) -> Result<(), IpcError> {
   debug!("Client connected");
   let framed = Framed::new(stream, LinesCodec::new());
@@ -344,8 +346,16 @@ async fn handle_connection(
     // Handle daemon-level system requests directly (Status, Metrics, Shutdown)
     // These don't need a project context
     if let RequestData::System(ref sys_req) = request.data
-      && let Some(response) =
-        handle_daemon_request(&request.id, sys_req, &daemon_state, &router, &activity, &sessions).await
+      && let Some(response) = handle_daemon_request(
+        &request.id,
+        sys_req,
+        &daemon_state,
+        &router,
+        &activity,
+        &sessions,
+        &cancel,
+      )
+      .await
     {
       let json = serde_json::to_string(&response)?;
       sink.send(json).await?;
@@ -449,6 +459,7 @@ async fn handle_daemon_request(
   router: &ProjectRouter,
   activity: &KeepAlive,
   sessions: &SessionTracker,
+  cancel: &CancellationToken,
 ) -> Option<Response> {
   match sys_req {
     SystemRequest::Status(_) => {
@@ -522,9 +533,17 @@ async fn handle_daemon_request(
         ResponseData::System(SystemResponse::Metrics(result)),
       ))
     }
-    // Other daemon-level requests (Shutdown, MigrateEmbedding) could be
-    // handled here in the future. For now, let them fall through to ProjectActor
-    // which will return method_not_found.
+    SystemRequest::Shutdown(_) => {
+      info!("Shutdown requested via RPC");
+      cancel.cancel();
+      Some(Response::success(
+        request_id,
+        ResponseData::System(SystemResponse::Shutdown {
+          message: "Daemon shutting down".to_string(),
+        }),
+      ))
+    }
+    // Other requests fall through to ProjectActor
     _ => None,
   }
 }

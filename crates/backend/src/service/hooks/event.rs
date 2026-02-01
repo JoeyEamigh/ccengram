@@ -37,15 +37,16 @@ impl std::str::FromStr for HookEvent {
   type Err = ServiceError;
 
   fn from_str(s: &str) -> Result<Self, Self::Err> {
+    // Handle both PascalCase (from Claude Code JSON) and kebab-case (from CLI args)
     match s {
-      "SessionStart" => Ok(Self::SessionStart),
-      "SessionEnd" => Ok(Self::SessionEnd),
-      "UserPromptSubmit" => Ok(Self::UserPromptSubmit),
-      "PostToolUse" => Ok(Self::PostToolUse),
-      "PreCompact" => Ok(Self::PreCompact),
-      "Stop" => Ok(Self::Stop),
-      "SubagentStop" => Ok(Self::SubagentStop),
-      "Notification" => Ok(Self::Notification),
+      "SessionStart" | "session-start" => Ok(Self::SessionStart),
+      "SessionEnd" | "session-end" => Ok(Self::SessionEnd),
+      "UserPromptSubmit" | "user-prompt" | "user-prompt-submit" => Ok(Self::UserPromptSubmit),
+      "PostToolUse" | "post-tool" | "post-tool-use" => Ok(Self::PostToolUse),
+      "PreCompact" | "pre-compact" => Ok(Self::PreCompact),
+      "Stop" | "stop" => Ok(Self::Stop),
+      "SubagentStop" | "subagent-stop" => Ok(Self::SubagentStop),
+      "Notification" | "notification" => Ok(Self::Notification),
       _ => Err(ServiceError::validation(format!("Unknown hook event: {}", s))),
     }
   }

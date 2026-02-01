@@ -8,7 +8,6 @@ mod hook;
 mod index;
 mod logs;
 mod memory;
-mod migrate;
 mod projects;
 mod search;
 mod update;
@@ -25,7 +24,6 @@ pub use hook::cmd_hook;
 pub use index::cmd_index;
 pub use logs::{cmd_logs, cmd_logs_list};
 pub use memory::{cmd_delete, cmd_deleted, cmd_restore, cmd_show};
-pub use migrate::cmd_migrate;
 #[cfg(all(unix, feature = "jemalloc-pprof"))]
 pub use pprof::cmd_pprof;
 pub use projects::{cmd_projects_clean, cmd_projects_clean_all, cmd_projects_list, cmd_projects_show};

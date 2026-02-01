@@ -1509,11 +1509,10 @@ impl ProjectActor {
           Err(e) => Self::service_error_response(service::util::ServiceError::from(e)),
         }
       }
-      // These are handled at the router level, not here
-      SystemRequest::Metrics(_)
-      | SystemRequest::Shutdown(_)
-      | SystemRequest::Status(_)
-      | SystemRequest::MigrateEmbedding(_) => ProjectActorResponse::method_not_found(&format!("{:?}", request)),
+      // These are handled at the daemon level, not here
+      SystemRequest::Metrics(_) | SystemRequest::Shutdown(_) | SystemRequest::Status(_) => {
+        ProjectActorResponse::method_not_found(&format!("{:?}", request))
+      }
     };
 
     let _ = reply.send(response).await;
@@ -1556,8 +1555,16 @@ impl ProjectActor {
       None
     };
 
+    // Merge session_id into data for handlers (session_id comes from HookParams, not data)
+    let mut hook_data = params.data.clone();
+    if let Some(session_id) = &params.session_id
+      && let Some(obj) = hook_data.as_object_mut()
+    {
+      obj.insert("session_id".to_string(), serde_json::Value::String(session_id.clone()));
+    }
+
     // Dispatch to hook service
-    let result = service::hooks::dispatch(&hook_ctx, &mut self.hook_state, event, &params.data, session_info).await;
+    let result = service::hooks::dispatch(&hook_ctx, &mut self.hook_state, event, &hook_data, session_info).await;
 
     let response = match result {
       Ok(data) => ProjectActorResponse::Done(ResponseData::Hook(HookResult { data })),

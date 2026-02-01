@@ -14,7 +14,6 @@ pub enum SystemRequest {
   Shutdown(ShutdownParams),
   Status(StatusParams),
   ProjectStats(ProjectStatsParams),
-  MigrateEmbedding(MigrateEmbeddingParams),
   Resolve(ResolveParams),
 }
 
@@ -28,7 +27,6 @@ pub enum SystemResponse {
   Shutdown { message: String },
   Status(StatusResult),
   ProjectStats(super::project::ProjectStatsResult),
-  MigrateEmbedding(MigrateEmbeddingResult),
   Resolve(ResolveResult),
 }
 
@@ -53,9 +51,6 @@ pub struct StatusParams;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProjectStatsParams;
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct MigrateEmbeddingParams;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolveParams {
@@ -160,17 +155,6 @@ pub struct HealthCheck {
 }
 
 // ============================================================================
-// Migration result
-// ============================================================================
-
-#[serde_with::skip_serializing_none]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MigrateEmbeddingResult {
-  pub migrated: usize,
-  pub message: String,
-}
-
-// ============================================================================
 // Resolve result
 // ============================================================================
 
@@ -223,12 +207,6 @@ impl_ipc_request!(
   ResponseData::System(SystemResponse::ProjectStats(v)) => v,
   v => RequestData::System(SystemRequest::ProjectStats(v)),
   v => ResponseData::System(SystemResponse::ProjectStats(v))
-);
-impl_ipc_request!(
-  MigrateEmbeddingParams => MigrateEmbeddingResult,
-  ResponseData::System(SystemResponse::MigrateEmbedding(v)) => v,
-  v => RequestData::System(SystemRequest::MigrateEmbedding(v)),
-  v => ResponseData::System(SystemResponse::MigrateEmbedding(v))
 );
 impl_ipc_request!(
   ResolveParams => ResolveResult,

@@ -17,9 +17,9 @@ mod tui;
 use commands::cmd_pprof;
 use commands::{
   cmd_agent, cmd_archive, cmd_config_init, cmd_config_reset, cmd_config_show, cmd_context, cmd_daemon, cmd_delete,
-  cmd_deleted, cmd_health, cmd_hook, cmd_index, cmd_logs, cmd_logs_list, cmd_migrate, cmd_projects_clean,
-  cmd_projects_clean_all, cmd_projects_list, cmd_projects_show, cmd_restore, cmd_search, cmd_search_code,
-  cmd_search_docs, cmd_show, cmd_stats, cmd_tui, cmd_update, cmd_watch,
+  cmd_deleted, cmd_health, cmd_hook, cmd_index, cmd_logs, cmd_logs_list, cmd_projects_clean, cmd_projects_clean_all,
+  cmd_projects_list, cmd_projects_show, cmd_restore, cmd_search, cmd_search_code, cmd_search_docs, cmd_show, cmd_stats,
+  cmd_tui, cmd_update, cmd_watch,
 };
 use logging::{init_cli_logging, init_daemon_logging_with_config};
 use mcp::cmd_mcp;
@@ -419,15 +419,6 @@ USAGE:
     #[arg(long)]
     version: Option<String>,
   },
-  /// Migrate embeddings to new dimensions/model
-  Migrate {
-    /// Preview what would be migrated without making changes
-    #[arg(long)]
-    dry_run: bool,
-    /// Force re-embed even if dimensions match
-    #[arg(long)]
-    force: bool,
-  },
   /// Generate a SemExplore subagent for Claude Code
   Agent {
     /// Output path (default: .claude/agents/SemExplore.md)
@@ -651,7 +642,6 @@ async fn main() -> Result<()> {
     Commands::Stats => cmd_stats().await,
     Commands::Health => cmd_health().await,
     Commands::Update { check, version } => cmd_update(check, version).await,
-    Commands::Migrate { dry_run, force } => cmd_migrate(dry_run, force).await,
     Commands::Agent { output, force } => cmd_agent(output.as_deref(), force).await,
     Commands::Tui { project } => cmd_tui(project).await,
 

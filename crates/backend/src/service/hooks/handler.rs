@@ -320,7 +320,7 @@ pub async fn handle_post_tool_use(
     .get("tool_input")
     .cloned()
     .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
-  let tool_result = params.get("tool_result");
+  let tool_result = params.get("tool_response"); // Claude Code sends "tool_response", not "tool_result"
 
   debug!(session_id = %session_id, tool = %tool_name, "Tool use recorded");
 
