@@ -495,11 +495,6 @@ impl ScenarioRunner {
       }
     }
 
-    // Extract and record suggestions
-    if let Some(suggestions) = &result.suggestions {
-      session.record_suggestions(suggestions);
-    }
-
     // Record in session
     session.record_explore_step(&step.query, &result_ids, &files_found, &symbols_found, latency);
 

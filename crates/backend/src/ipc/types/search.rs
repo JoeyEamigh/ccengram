@@ -28,7 +28,6 @@ pub struct ContextParams {
 pub struct ExploreResult {
   pub query: String,
   pub results: Vec<ExploreResultItem>,
-  pub suggestions: Option<Vec<String>>,
 }
 
 #[serde_with::skip_serializing_none]
@@ -81,6 +80,7 @@ pub struct ExploreCallInfo {
   pub preview: String,
   #[serde(default, skip_serializing_if = "Vec::is_empty")]
   pub symbols: Vec<String>,
+  pub signature: Option<String>,
 }
 
 /// Sibling symbol info

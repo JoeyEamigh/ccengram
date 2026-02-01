@@ -8,7 +8,7 @@ pub struct MemoryId(Uuid);
 
 impl MemoryId {
   pub fn new() -> Self {
-    Self(Uuid::now_v7()) // Time-ordered UUIDs
+    Self(Uuid::new_v4())
   }
 
   pub fn from_uuid(id: Uuid) -> Self {
@@ -393,7 +393,7 @@ impl MemoryRelationship {
   pub fn new(from: MemoryId, to: MemoryId, rel_type: RelationshipType, confidence: f32, extracted_by: &str) -> Self {
     let now = Utc::now();
     Self {
-      id: Uuid::now_v7(),
+      id: Uuid::new_v4(),
       from_memory_id: from,
       to_memory_id: to,
       relationship_type: rel_type,

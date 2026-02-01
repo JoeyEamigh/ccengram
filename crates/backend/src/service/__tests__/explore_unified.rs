@@ -67,7 +67,6 @@ pub async fn authenticate_oauth(provider: &str, token: &str) -> Result<User, Aut
       expand_top: 0,
       limit: 10,
       depth: 3,
-      max_suggestions: 3,
     };
 
     let all_result = search(&explore_ctx, &all_params).await.expect("search all");
@@ -86,7 +85,6 @@ pub async fn authenticate_oauth(provider: &str, token: &str) -> Result<User, Aut
       expand_top: 0,
       limit: 10,
       depth: 3,
-      max_suggestions: 3,
     };
 
     let code_result = search(&explore_ctx, &code_params).await.expect("search code");
@@ -101,49 +99,12 @@ pub async fn authenticate_oauth(provider: &str, token: &str) -> Result<User, Aut
       expand_top: 0,
       limit: 10,
       depth: 3,
-      max_suggestions: 3,
     };
 
     let memory_result = search(&explore_ctx, &memory_params).await.expect("search memory");
     for result in &memory_result.results {
       assert_eq!(result.result_type, "memory", "Should only return memory results");
     }
-  }
-
-  /// Test that search returns suggestions.
-  #[tokio::test]
-  async fn test_explore_suggestions() {
-    let ctx = TestContext::new().await;
-    let explore_ctx = ExploreContext::new(&ctx.db, ctx.embedding.as_ref());
-
-    // Add some code with specific symbols
-    ctx
-      .index_code(
-        "src/user/repository.rs",
-        r#"
-pub fn find_user_by_id(id: UserId) -> Option<User> { todo!() }
-pub fn find_user_by_email(email: &str) -> Option<User> { todo!() }
-pub fn save_user(user: &User) -> Result<(), DbError> { todo!() }
-"#,
-        Language::Rust,
-      )
-      .await;
-
-    let params = SearchParams {
-      query: "user".to_string(),
-      scope: ExploreScope::All,
-      expand_top: 0,
-      limit: 10,
-      depth: 3,
-      max_suggestions: 5,
-    };
-
-    let result = search(&explore_ctx, &params).await.expect("search");
-
-    // Should have suggestions based on content
-    // Suggestions are generated from content, so we just check they exist
-    // (actual suggestions depend on the algorithm)
-    assert!(result.suggestions.len() <= 5, "Should respect max_suggestions");
   }
 
   /// Test that results are sorted by score.
@@ -178,7 +139,6 @@ pub fn save_user(user: &User) -> Result<(), DbError> { todo!() }
       expand_top: 0,
       limit: 10,
       depth: 3,
-      max_suggestions: 0,
     };
 
     let result = search(&explore_ctx, &params).await.expect("search");
@@ -204,7 +164,6 @@ pub fn save_user(user: &User) -> Result<(), DbError> { todo!() }
       expand_top: 0,
       limit: 10,
       depth: 3,
-      max_suggestions: 3,
     };
 
     let result = search(&explore_ctx, &params).await;

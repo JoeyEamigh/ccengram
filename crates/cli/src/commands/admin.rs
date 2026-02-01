@@ -318,7 +318,7 @@ pub async fn cmd_config_init(preset: &str) -> Result<()> {
 
   println!("Created project config: {:?}", config_path);
   println!();
-  println!("Note: Daemon-level settings (embedding, daemon, hooks) should be");
+  println!("Note: Daemon-level settings (embedding, auto-shutdown) should be");
   println!("configured in ~/.config/ccengram/config.toml instead.");
   println!();
   println!("Tool preset: {}", preset);

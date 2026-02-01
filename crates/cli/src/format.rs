@@ -217,12 +217,16 @@ fn format_explore(result: &ExploreResult) -> String {
         out.push_str(&format!("Callers ({}):\n", ctx.callers.len()));
         for caller in &ctx.callers {
           out.push_str(&format!(
-            "  - [{}] {}:{}-{}\n",
+            "  - [{}] {}:{}-{}",
             &caller.id[..8.min(caller.id.len())],
             caller.file,
             caller.start_line,
             caller.end_line
           ));
+          if let Some(ref sig) = caller.signature {
+            out.push_str(&format!(" `{}`", sig.lines().next().unwrap_or(sig).trim()));
+          }
+          out.push('\n');
         }
       }
 
@@ -230,12 +234,16 @@ fn format_explore(result: &ExploreResult) -> String {
         out.push_str(&format!("Callees ({}):\n", ctx.callees.len()));
         for callee in &ctx.callees {
           out.push_str(&format!(
-            "  - [{}] {}:{}-{}\n",
+            "  - [{}] {}:{}-{}",
             &callee.id[..8.min(callee.id.len())],
             callee.file,
             callee.start_line,
             callee.end_line
           ));
+          if let Some(ref sig) = callee.signature {
+            out.push_str(&format!(" `{}`", sig.lines().next().unwrap_or(sig).trim()));
+          }
+          out.push('\n');
         }
       }
 
@@ -250,13 +258,6 @@ fn format_explore(result: &ExploreResult) -> String {
     }
 
     out.push_str("</result>\n\n");
-  }
-
-  // Suggestions
-  if let Some(ref suggestions) = result.suggestions
-    && !suggestions.is_empty()
-  {
-    out.push_str(&format!("Suggested queries: {}\n", suggestions.join(", ")));
   }
 
   out
@@ -285,12 +286,16 @@ fn format_context(items: &[ContextItem]) -> String {
       out.push_str(&format!("Callers ({}):\n", callers.len()));
       for c in callers {
         out.push_str(&format!(
-          "  - [{}] {}:{}-{}\n",
+          "  - [{}] {}:{}-{}",
           &c.id[..8.min(c.id.len())],
           c.file_path,
           c.start_line,
           c.end_line
         ));
+        if let Some(ref sig) = c.signature {
+          out.push_str(&format!(" `{}`", sig.lines().next().unwrap_or(sig).trim()));
+        }
+        out.push('\n');
       }
     }
 
@@ -301,12 +306,16 @@ fn format_context(items: &[ContextItem]) -> String {
       out.push_str(&format!("Callees ({}):\n", callees.len()));
       for c in callees {
         out.push_str(&format!(
-          "  - [{}] {}:{}-{}\n",
+          "  - [{}] {}:{}-{}",
           &c.id[..8.min(c.id.len())],
           c.file_path,
           c.start_line,
           c.end_line
         ));
+        if let Some(ref sig) = c.signature {
+          out.push_str(&format!(" `{}`", sig.lines().next().unwrap_or(sig).trim()));
+        }
+        out.push('\n');
       }
     }
 

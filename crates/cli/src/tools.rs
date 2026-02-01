@@ -17,7 +17,7 @@ pub fn all_tool_definitions() -> HashMap<&'static str, Value> {
     "explore",
     json!({
         "name": "explore",
-        "description": "Search code, memories, and docs by natural language or symbol name. Returns ranked results with navigation hints. Use expand_top to include full context (callers, callees, related memories) for top results in one call.",
+        "description": "Search code and docs by natural language or symbol name. Returns ranked results with navigation hints. Use expand_top to include full context (callers, callees, related memories) for top results in one call. By default searches code+docs only; use scope='memory' or scope='all' to include memories.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -28,7 +28,7 @@ pub fn all_tool_definitions() -> HashMap<&'static str, Value> {
                 "scope": {
                     "type": "string",
                     "enum": ["code", "memory", "docs", "all"],
-                    "description": "Where to search: 'code' for implementation, 'memory' for past decisions/patterns, 'docs' for documentation, 'all' for everything (default: all)"
+                    "description": "Where to search: 'code' for implementation, 'memory' for past decisions/patterns, 'docs' for documentation, 'all' for everything including memory. Default searches code+docs only; use 'memory' or 'all' to include memories."
                 },
                 "expand_top": {
                     "type": "number",

@@ -13,11 +13,9 @@
 //!
 //! - [`search`] - Unified search across code, memories, and documents
 //! - [`get_context`] - Get comprehensive context for an explore result
-//! - [`suggestions`] - Generate search suggestions
 
 pub mod context;
 mod search;
-mod suggestions;
 mod types;
 mod util;
 

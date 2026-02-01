@@ -346,11 +346,6 @@ impl ExplorationSession {
     });
   }
 
-  /// Record suggestions shown to user.
-  pub fn record_suggestions(&mut self, suggestions: &[String]) {
-    self.suggestions_shown.extend(suggestions.iter().cloned());
-  }
-
   /// Check if a query matches a previous suggestion and mark it as used.
   pub fn check_suggestion_used(&mut self, query: &str) {
     let query_lower = query.to_lowercase();

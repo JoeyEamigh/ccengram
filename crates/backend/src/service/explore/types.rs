@@ -17,8 +17,12 @@ pub enum ExploreScope {
   Code,
   Memory,
   Docs,
-  #[default]
+  /// Search all scopes including memory (explicit)
   All,
+  /// Default: code + docs (memory requires explicit scope)
+  #[default]
+  #[serde(other)]
+  Default,
 }
 
 impl ExploreScope {
@@ -31,6 +35,21 @@ impl ExploreScope {
       "all" => Some(ExploreScope::All),
       _ => None,
     }
+  }
+
+  /// Check if this scope includes code search
+  pub fn includes_code(self) -> bool {
+    matches!(self, ExploreScope::Code | ExploreScope::All | ExploreScope::Default)
+  }
+
+  /// Check if this scope includes memory search
+  pub fn includes_memory(self) -> bool {
+    matches!(self, ExploreScope::Memory | ExploreScope::All)
+  }
+
+  /// Check if this scope includes docs search
+  pub fn includes_docs(self) -> bool {
+    matches!(self, ExploreScope::Docs | ExploreScope::All | ExploreScope::Default)
   }
 }
 
@@ -158,7 +177,6 @@ pub struct ExploreResult {
 pub struct ExploreResponse {
   pub results: Vec<ExploreResult>,
   pub counts: HashMap<String, usize>,
-  pub suggestions: Vec<String>,
 }
 
 // ============================================================================
@@ -298,19 +316,16 @@ pub struct SearchParams {
   pub limit: usize,
   /// Context depth for expanded results
   pub depth: usize,
-  /// Maximum number of suggestions to generate
-  pub max_suggestions: usize,
 }
 
 impl Default for SearchParams {
   fn default() -> Self {
     Self {
       query: String::new(),
-      scope: ExploreScope::All,
+      scope: ExploreScope::default(),
       expand_top: 3,
       limit: 10,
       depth: 5,
-      max_suggestions: 5,
     }
   }
 }
@@ -345,6 +360,48 @@ mod tests {
     assert_eq!(ExploreScope::from_str("docs"), Some(ExploreScope::Docs));
     assert_eq!(ExploreScope::from_str("all"), Some(ExploreScope::All));
     assert_eq!(ExploreScope::from_str("invalid"), None);
+  }
+
+  #[test]
+  fn test_explore_scope_includes() {
+    // Default includes code and docs, but NOT memory
+    assert!(ExploreScope::Default.includes_code(), "Default should include code");
+    assert!(ExploreScope::Default.includes_docs(), "Default should include docs");
+    assert!(
+      !ExploreScope::Default.includes_memory(),
+      "Default should NOT include memory"
+    );
+
+    // All includes everything
+    assert!(ExploreScope::All.includes_code(), "All should include code");
+    assert!(ExploreScope::All.includes_docs(), "All should include docs");
+    assert!(ExploreScope::All.includes_memory(), "All should include memory");
+
+    // Individual scopes
+    assert!(ExploreScope::Code.includes_code());
+    assert!(!ExploreScope::Code.includes_docs());
+    assert!(!ExploreScope::Code.includes_memory());
+
+    assert!(ExploreScope::Memory.includes_memory());
+    assert!(!ExploreScope::Memory.includes_code());
+    assert!(!ExploreScope::Memory.includes_docs());
+
+    assert!(ExploreScope::Docs.includes_docs());
+    assert!(!ExploreScope::Docs.includes_code());
+    assert!(!ExploreScope::Docs.includes_memory());
+  }
+
+  #[test]
+  fn test_explore_scope_default() {
+    // Default should be the Default variant (code + docs)
+    assert_eq!(ExploreScope::default(), ExploreScope::Default);
+  }
+
+  #[test]
+  fn test_explore_scope_serde_unknown_is_default() {
+    // Unknown values should deserialize to Default due to #[serde(other)]
+    let scope: ExploreScope = serde_json::from_str(r#""unknown_value""#).unwrap();
+    assert_eq!(scope, ExploreScope::Default);
   }
 
   #[test]
@@ -486,14 +543,12 @@ mod tests {
         m.insert("memory".to_string(), 0);
         m
       },
-      suggestions: vec!["related_query".to_string()],
     };
 
     let json = serde_json::to_value(&response).unwrap();
     assert_eq!(json["results"].as_array().unwrap().len(), 1);
     assert_eq!(json["counts"]["code"], 1);
     assert_eq!(json["counts"]["memory"], 0);
-    assert_eq!(json["suggestions"][0], "related_query");
   }
 
   #[test]

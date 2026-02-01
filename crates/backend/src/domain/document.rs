@@ -9,7 +9,7 @@ pub struct DocumentId(Uuid);
 
 impl DocumentId {
   pub fn new() -> Self {
-    Self(Uuid::now_v7()) // Time-ordered UUIDs
+    Self(Uuid::new_v4())
   }
 
   pub fn from_uuid(id: Uuid) -> Self {

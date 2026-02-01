@@ -249,13 +249,6 @@ log_level = "info"                # error, warn, info, debug, trace
 log_rotation = "daily"            # daily, hourly, never
 log_retention_days = 7            # 0 = keep forever
 
-[hooks]
-enabled = true                    # Master toggle for automatic memory capture
-llm_extraction = true             # Use LLM for smart memory extraction
-tool_observations = true          # Create episodic memories from tool uses
-high_priority_signals = true      # Detect corrections/preferences immediately
-background_extraction = true      # Extract in background for some hooks
-
 [database]
 index_cache_mb = 256              # Vector index cache (reduce for less RAM)
 metadata_cache_mb = 64            # Metadata cache
@@ -295,6 +288,13 @@ archive_threshold = 0.1           # Archive memories below this salience
 max_idle_days = 90                # Days without access before decay
 decay_interval_hours = 60         # How often to run decay
 
+[hooks]
+enabled = true                    # Master toggle for automatic memory capture
+llm_extraction = true             # Use LLM for smart memory extraction
+tool_observations = true          # Create episodic memories from tool uses
+high_priority_signals = true      # Detect corrections/preferences immediately
+background_extraction = true      # Extract in background for some hooks
+
 [workspace]
 # alias = "/path/to/main-repo"    # Share memories with another project
 # disable_worktree_detection = false
@@ -313,6 +313,24 @@ decay_interval_hours = 60         # How often to run decay
 ## File Watching
 
 The file watcher keeps your code index up-to-date automatically as you edit files.
+
+### Ignoring Files
+
+CCEngram respects `.gitignore` patterns by default. For additional exclusions specific to CCEngram (files you want git to track but don't want indexed), create a `.ccengramignore` file in your project root:
+
+```
+# Example .ccengramignore - uses gitignore syntax
+generated/
+*.auto.ts
+*.generated.rs
+vendor/
+third_party/
+```
+
+Both `.gitignore` and `.ccengramignore` patterns are applied during:
+- Initial indexing (`ccengram index`)
+- File watching (real-time updates)
+- Startup scans (detecting changes after daemon restart)
 
 ### Automatic Start
 

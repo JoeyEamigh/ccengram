@@ -114,6 +114,17 @@ This scans your project and creates semantic embeddings. Depending on project si
 
 The file watcher **automatically starts** after indexing and whenever an indexed project is accessed. Your index stays up-to-date as you edit files.
 
+#### Ignoring Files
+
+CCEngram respects `.gitignore` patterns. For additional exclusions specific to CCEngram, create a `.ccengramignore` file in your project root using the same syntax:
+
+```
+# Example .ccengramignore
+generated/
+*.auto.ts
+vendor/
+```
+
 To manually control the watcher:
 
 ```bash
@@ -208,12 +219,6 @@ log_level = "info"                # error, warn, info, debug, trace
 log_rotation = "daily"
 log_retention_days = 7
 
-[hooks]
-enabled = false                   # Set to true to enable automatic memory creation
-llm_extraction = true             # Use LLM for smart memory extraction
-tool_observations = true          # Create episodic memories from tool uses
-high_priority_signals = true      # Detect corrections/preferences immediately
-
 [database]
 index_cache_mb = 256
 metadata_cache_mb = 64
@@ -244,6 +249,12 @@ extensions = ["md", "txt", "rst", "adoc", "org"]
 [decay]
 archive_threshold = 0.1
 max_idle_days = 90
+
+[hooks]
+enabled = false                   # Set to true to enable automatic memory creation
+llm_extraction = true             # Use LLM for smart memory extraction
+tool_observations = true          # Create episodic memories from tool uses
+high_priority_signals = true      # Detect corrections/preferences immediately
 
 [workspace]
 # alias = "/path/to/main-repo"    # Share memories with another project (useful for worktrees)

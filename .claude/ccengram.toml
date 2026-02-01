@@ -5,7 +5,6 @@
 # and should be configured in ~/.config/ccengram/config.toml instead:
 #   [embedding]  - Embedding provider (shared across all projects)
 #   [daemon]     - Daemon lifecycle settings
-#   [hooks]      - Hook behavior settings
 #   [database]   - Database cache settings
 #   decay.decay_interval_hours, decay.session_cleanup_hours, decay.max_session_age_hours
 
@@ -73,9 +72,6 @@ context_depth = 5
 
 # Max IDs in a single batch context call
 context_max_batch = 5
-
-# Max suggestions to generate from explore results
-explore_max_suggestions = 5
 
 # ---- Query embedding cache settings ----
 
@@ -213,3 +209,31 @@ max_file_size = 5242880 # 5MB
 # Disable automatic worktree detection (default: false)
 # Set to true to treat git worktrees as separate projects.
 # disable_worktree_detection = false
+
+# ============================================================================
+# Hook Behavior (Automatic Memory Creation)
+# ============================================================================
+
+[hooks]
+# Enable automatic memory capture from hooks (default: false)
+# When true, memories are automatically created from your Claude Code sessions.
+# When false, hooks still run but don't create memories automatically.
+# Manual memory creation via memory_add tool is still available.
+enabled = true
+
+# Enable LLM-based memory extraction (default: true)
+# When false, uses basic summary extraction without LLM inference.
+# This uses your Claude Code subscription.
+llm_extraction = true
+
+# Enable background extraction for PreCompact/Stop hooks (default: true)
+# When true, extraction runs asynchronously without blocking hook responses.
+background_extraction = true
+
+# Enable tool observation memories (default: true)
+# Creates episodic memories for individual tool uses (the "tool trail").
+tool_observations = true
+
+# Enable high-priority signal detection (default: true)
+# Scans user prompts for corrections/preferences for immediate extraction.
+high_priority_signals = true

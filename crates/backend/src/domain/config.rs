@@ -267,9 +267,6 @@ pub struct SearchConfig {
   /// Max items in batch context call (default: 5)
   pub context_max_batch: usize,
 
-  /// Max suggestions to generate from explore results (default: 5)
-  pub explore_max_suggestions: usize,
-
   // ---- Query embedding cache settings ----
   /// Embedding cache size for query embeddings (default: 1000)
   #[serde(default = "default_embedding_cache_size")]
@@ -299,7 +296,6 @@ impl Default for SearchConfig {
       explore_limit: 10,
       context_depth: 5,
       context_max_batch: 5,
-      explore_max_suggestions: 5,
       embedding_cache_size: default_embedding_cache_size(),
       embedding_cache_ttl_secs: default_embedding_cache_ttl_secs(),
     }
@@ -645,8 +641,10 @@ impl Default for DatabaseConfig {
 ///
 /// This separation ensures that:
 /// - Embedding settings are consistent across all projects (shared provider)
-/// - Hook behavior is uniform (uses shared Claude subscription)
 /// - Database cache settings are daemon-wide
+///
+/// Note: Hook settings are NOT included here - they are project-specific
+/// and loaded via Config::load_for_project() which merges global + project configs.
 #[derive(Debug, Clone)]
 pub struct DaemonSettings {
   /// Maximum batch size for embedding requests (from embedding.max_batch_size)
@@ -655,8 +653,6 @@ pub struct DaemonSettings {
   pub embedding_context_length: usize,
   /// Whether to log cache stats during indexing (from database.log_cache_stats)
   pub log_cache_stats: bool,
-  /// Hook behavior configuration (from hooks section)
-  pub hooks: HooksConfig,
 }
 
 impl DaemonSettings {
@@ -666,7 +662,6 @@ impl DaemonSettings {
       embedding_batch_size: config.embedding.max_batch_size,
       embedding_context_length: config.embedding.context_length,
       log_cache_stats: config.database.log_cache_stats,
-      hooks: config.hooks.clone(),
     }
   }
 }
@@ -979,8 +974,9 @@ impl Config {
 
   /// Generate a project-level config file (excludes daemon-only sections)
   ///
-  /// Project configs should NOT include `[embedding]`, `[daemon]`, `[hooks]`, or `[database]`
+  /// Project configs should NOT include `[embedding]`, `[daemon]`, or `[database]`
   /// because these are only read at daemon startup and shared across all projects.
+  /// `[hooks]` IS supported at project level for per-project memory capture settings.
   pub fn generate_project_template(preset: ToolPreset) -> String {
     let preset_name = match preset {
       ToolPreset::Minimal => "minimal",
@@ -996,7 +992,6 @@ impl Config {
 # and should be configured in ~/.config/ccengram/config.toml instead:
 #   [embedding]  - Embedding provider (shared across all projects)
 #   [daemon]     - Daemon lifecycle settings
-#   [hooks]      - Hook behavior settings
 #   [database]   - Database cache settings
 #   decay.decay_interval_hours, decay.session_cleanup_hours, decay.max_session_age_hours
 
@@ -1064,9 +1059,6 @@ context_depth = 5
 
 # Max IDs in a single batch context call
 context_max_batch = 5
-
-# Max suggestions to generate from explore results
-explore_max_suggestions = 5
 
 # ---- Query embedding cache settings ----
 
@@ -1204,6 +1196,34 @@ max_file_size = 5242880  # 5MB
 # Disable automatic worktree detection (default: false)
 # Set to true to treat git worktrees as separate projects.
 # disable_worktree_detection = false
+
+# ============================================================================
+# Hook Behavior (Automatic Memory Creation)
+# ============================================================================
+
+[hooks]
+# Enable automatic memory capture from hooks (default: false)
+# When true, memories are automatically created from your Claude Code sessions.
+# When false, hooks still run but don't create memories automatically.
+# Manual memory creation via memory_add tool is still available.
+enabled = false
+
+# Enable LLM-based memory extraction (default: true)
+# When false, uses basic summary extraction without LLM inference.
+# This uses your Claude Code subscription.
+llm_extraction = true
+
+# Enable background extraction for PreCompact/Stop hooks (default: true)
+# When true, extraction runs asynchronously without blocking hook responses.
+background_extraction = true
+
+# Enable tool observation memories (default: true)
+# Creates episodic memories for individual tool uses (the "tool trail").
+tool_observations = true
+
+# Enable high-priority signal detection (default: true)
+# Scans user prompts for corrections/preferences for immediate extraction.
+high_priority_signals = true
 "#,
       tool_count = ALL_TOOLS.len(),
       preset_name = preset_name
@@ -1342,9 +1362,6 @@ context_depth = 5
 
 # Max IDs in a single batch context call
 context_max_batch = 5
-
-# Max suggestions to generate from explore results
-explore_max_suggestions = 5
 
 # ---- Query embedding cache settings ----
 
@@ -1497,52 +1514,6 @@ log_retention_days = 7
 # Idle check interval in seconds (default: 30)
 # How often the scheduler checks if the daemon should shutdown due to inactivity.
 idle_check_interval_secs = 30
-
-# ============================================================================
-# Workspace Aliasing
-# ============================================================================
-
-[workspace]
-# Alias this project to share memory with another project.
-# Useful for multiple clones of the same repo or custom workspace groupings.
-# Git worktrees are automatically detected and don't need this setting.
-# alias = "/home/user/main-repo"
-
-# Disable automatic worktree detection (default: false)
-# Set to true to treat git worktrees as separate projects.
-# disable_worktree_detection = false
-
-# ============================================================================
-# Hook Behavior (Automatic Memory Creation)
-# ============================================================================
-
-[hooks]
-# Enable automatic memory capture from hooks (default: false)
-# When true, memories are automatically created from your Claude Code sessions.
-# When false, hooks still run but don't create memories automatically.
-# Manual memory creation via memory_add tool is still available.
-#
-# Recommendation: Enable per-project for codebases where you want Claude to
-# remember preferences, decisions, and patterns across sessions.
-enabled = false
-
-# Enable LLM-based memory extraction (default: true)
-# When false, uses basic summary extraction without LLM inference.
-# This uses your Claude Code subscription.
-llm_extraction = true
-
-# Enable background extraction for PreCompact/Stop hooks (default: true)
-# When true, extraction runs asynchronously without blocking hook responses.
-# It is not recommended to disable this unless debugging.
-background_extraction = true
-
-# Enable tool observation memories (default: true)
-# Creates episodic memories for individual tool uses (the "tool trail").
-tool_observations = true
-
-# Enable high-priority signal detection (default: true)
-# Scans user prompts for corrections/preferences for immediate extraction.
-high_priority_signals = true
 
 # ============================================================================
 # Database Cache Settings
@@ -1775,38 +1746,6 @@ preset = "minimal"
   }
 
   #[test]
-  fn test_generate_template() {
-    let template = Config::generate_template(ToolPreset::Standard);
-    assert!(template.contains("preset = \"standard\""));
-    // User template includes all sections
-    assert!(template.contains("[embedding]"));
-    assert!(template.contains("[daemon]"));
-    assert!(template.contains("[hooks]"));
-    assert!(template.contains("[database]"));
-    assert!(template.contains("[decay]"));
-    assert!(template.contains("[search]"));
-    assert!(template.contains("[index]"));
-  }
-
-  #[test]
-  fn test_generate_project_template() {
-    let template = Config::generate_project_template(ToolPreset::Minimal);
-    assert!(template.contains("preset = \"minimal\""));
-    // Project template includes project-level sections
-    assert!(template.contains("[tools]"));
-    assert!(template.contains("[decay]"));
-    assert!(template.contains("[search]"));
-    assert!(template.contains("[index]"));
-    assert!(template.contains("[docs]"));
-    assert!(template.contains("[workspace]"));
-    // Project template excludes daemon-level sections
-    assert!(!template.contains("\n[embedding]"));
-    assert!(!template.contains("\n[daemon]"));
-    assert!(!template.contains("\n[hooks]"));
-    assert!(!template.contains("\n[database]"));
-  }
-
-  #[test]
   fn test_toml_roundtrip() {
     let config = Config {
       tools: ToolConfig {
@@ -1911,7 +1850,7 @@ max_batch_size = 16
 
   #[test]
   fn test_workspace_config_in_template() {
-    let template = Config::generate_template(ToolPreset::Standard);
+    let template = Config::generate_project_template(ToolPreset::Standard);
     assert!(template.contains("[workspace]"));
     assert!(template.contains("alias"));
     assert!(template.contains("disable_worktree_detection"));
@@ -1959,17 +1898,6 @@ preset = "minimal"
   }
 
   #[test]
-  fn test_hooks_config_in_template() {
-    let template = Config::generate_template(ToolPreset::Standard);
-    assert!(template.contains("[hooks]"));
-    assert!(template.contains("enabled = false")); // Default is now false
-    assert!(template.contains("llm_extraction = true"));
-    assert!(template.contains("background_extraction"));
-    assert!(template.contains("tool_observations"));
-    assert!(template.contains("high_priority_signals"));
-  }
-
-  #[test]
   fn test_hooks_config_roundtrip() {
     let config = Config {
       hooks: HooksConfig {
@@ -2009,14 +1937,119 @@ llm_extraction = false
   }
 
   #[test]
-  fn test_hooks_config_optional() {
-    // Hooks section can be completely omitted (uses defaults)
-    let toml_content = r#"
-[tools]
-preset = "minimal"
+  fn test_project_config_overrides_global_hooks_enabled() {
+    // Regression test: project config should override global config
+    // Bug: when global had hooks.enabled=false and project had hooks.enabled=true,
+    // the global value was incorrectly winning.
+
+    let global_content = r#"
+[hooks]
+enabled = false
 "#;
-    let config: Config = toml::from_str(toml_content).unwrap();
-    assert!(!config.hooks.enabled); // Default is now false
-    assert!(config.hooks.llm_extraction);
+
+    let project_content = r#"
+[hooks]
+enabled = true
+"#;
+
+    let global_toml: toml::Value = toml::from_str(global_content).unwrap();
+    let project_toml: toml::Value = toml::from_str(project_content).unwrap();
+
+    let merged = Config::merge_toml(global_toml, project_toml);
+    let merged_config: Config = merged.try_into().unwrap();
+
+    assert!(
+      merged_config.hooks.enabled,
+      "project config hooks.enabled=true should override global hooks.enabled=false"
+    );
+  }
+
+  #[test]
+  fn test_project_config_overrides_global_with_full_config() {
+    // Test with a more realistic scenario: global config has many fields set,
+    // project config only overrides one field in a section.
+
+    // Simulate serialized global config (as if loaded from file and re-serialized)
+    let global_config = Config {
+      hooks: HooksConfig {
+        enabled: false, // Global disables hooks
+        llm_extraction: true,
+        background_extraction: true,
+        tool_observations: true,
+        high_priority_signals: true,
+      },
+      ..Default::default()
+    };
+    let global_str = toml::to_string(&global_config).unwrap();
+    let global_toml: toml::Value = toml::from_str(&global_str).unwrap();
+
+    // Project config only sets hooks.enabled = true (sparse config)
+    let project_content = r#"
+[hooks]
+enabled = true
+"#;
+    let project_toml: toml::Value = toml::from_str(project_content).unwrap();
+
+    let merged = Config::merge_toml(global_toml, project_toml);
+    let merged_config: Config = merged.try_into().unwrap();
+
+    assert!(
+      merged_config.hooks.enabled,
+      "project hooks.enabled=true should override global hooks.enabled=false"
+    );
+    // Other hooks fields should retain global values
+    assert!(merged_config.hooks.llm_extraction);
+    assert!(merged_config.hooks.background_extraction);
+  }
+
+  #[tokio::test]
+  async fn test_load_for_project_overrides_global_hooks() {
+    // End-to-end test: project config file should override global config file
+    use tempfile::TempDir;
+
+    // Create a temp directory to act as both config home and project
+    let temp = TempDir::new().unwrap();
+    let config_dir = temp.path().join("config");
+    let project_dir = temp.path().join("project");
+    let claude_dir = project_dir.join(".claude");
+
+    tokio::fs::create_dir_all(&config_dir).await.unwrap();
+    tokio::fs::create_dir_all(&claude_dir).await.unwrap();
+
+    // Global config: hooks disabled
+    let global_config = r#"
+[hooks]
+enabled = false
+"#;
+    tokio::fs::write(config_dir.join("config.toml"), global_config)
+      .await
+      .unwrap();
+
+    // Project config: hooks enabled
+    let project_config = r#"
+[hooks]
+enabled = true
+"#;
+    tokio::fs::write(claude_dir.join("ccengram.toml"), project_config)
+      .await
+      .unwrap();
+
+    // Set CONFIG_DIR env var to use our temp config
+    // SAFETY: This test runs single-threaded and we clean up immediately after
+    unsafe {
+      std::env::set_var("CONFIG_DIR", &config_dir);
+    }
+
+    let config = Config::load_for_project(&project_dir).await;
+
+    // Clean up env var
+    unsafe {
+      std::env::remove_var("CONFIG_DIR");
+    }
+
+    assert!(
+      config.hooks.enabled,
+      "project hooks.enabled=true should override global hooks.enabled=false"
+    );
   }
 }

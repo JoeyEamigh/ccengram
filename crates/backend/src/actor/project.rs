@@ -130,11 +130,11 @@ pub enum ProjectActorError {
 pub struct ProjectActor {
   config: ProjectActorConfig,
   db: Arc<ProjectDb>,
-  /// Project-level config (tools, decay, search, index, docs, workspace)
+  /// Project-level config (tools, decay, search, index, docs, workspace, hooks)
   project_config: Arc<Config>,
-  /// Daemon-level settings (embedding batch size, hooks, etc.)
-  daemon_settings: Arc<DaemonSettings>,
   embedding: Arc<dyn EmbeddingProvider>,
+  /// LLM provider for memory extraction (None if unavailable)
+  llm_provider: Option<Box<dyn llm::LlmProvider>>,
   /// Deterministic UUID for this project (used in memory creation)
   project_uuid: Uuid,
   /// Hook state for session tracking and deduplication
@@ -202,12 +202,24 @@ impl ProjectActor {
     // Generate deterministic project UUID from project ID (for memory creation)
     let project_uuid = Uuid::new_v5(&Uuid::NAMESPACE_OID, config.id.as_str().as_bytes());
 
+    // Create LLM provider for memory extraction (if available)
+    let llm_provider = match llm::create_provider() {
+      Ok(provider) => {
+        debug!("LLM provider available: {}", provider.name());
+        Some(provider)
+      }
+      Err(e) => {
+        debug!("LLM provider not available: {}", e);
+        None
+      }
+    };
+
     let actor = Self {
       config,
       db,
       project_config,
-      daemon_settings,
       embedding,
+      llm_provider,
       project_uuid,
       hook_state: service::hooks::HookState::new(),
       indexer,
@@ -987,7 +999,7 @@ impl ProjectActor {
       .scope
       .as_deref()
       .and_then(ExploreScope::from_str)
-      .unwrap_or(ExploreScope::All);
+      .unwrap_or_default();
 
     let search_params = service::explore::SearchParams {
       query: params.query.clone(),
@@ -995,7 +1007,6 @@ impl ProjectActor {
       expand_top: params.expand_top.unwrap_or(3),
       limit: params.limit.unwrap_or(10),
       depth: params.depth.unwrap_or(5),
-      max_suggestions: 5,
     };
 
     let response = match service::explore::search(&ctx, &search_params).await {
@@ -1017,6 +1028,7 @@ impl ProjectActor {
                   end_line: c.lines.1,
                   preview: c.preview,
                   symbols: c.symbols.unwrap_or_default(),
+                  signature: c.signature,
                 })
                 .collect(),
               callees: ctx
@@ -1029,6 +1041,7 @@ impl ProjectActor {
                   end_line: c.lines.1,
                   preview: c.preview,
                   symbols: c.symbols.unwrap_or_default(),
+                  signature: c.signature,
                 })
                 .collect(),
               siblings: ctx
@@ -1064,7 +1077,6 @@ impl ProjectActor {
         ProjectActorResponse::Done(ResponseData::Explore(crate::ipc::search::ExploreResult {
           query: params.query,
           results: items,
-          suggestions: Some(explore_response.suggestions),
         }))
       }
       Err(e) => Self::service_error_response(e),
@@ -1119,7 +1131,7 @@ impl ProjectActor {
                     symbols: caller.symbols.unwrap_or_default(),
                     definition_kind: None,
                     visibility: None,
-                    signature: None,
+                    signature: caller.signature,
                     docstring: None,
                     parent_definition: None,
                     similarity: None,
@@ -1133,7 +1145,35 @@ impl ProjectActor {
                   })
                   .collect(),
               ),
-              callees: None,
+              callees: Some(
+                c.callees
+                  .into_iter()
+                  .map(|callee| crate::ipc::types::code::CodeItem {
+                    id: callee.id,
+                    file_path: callee.file,
+                    content: callee.preview,
+                    start_line: callee.lines.0,
+                    end_line: callee.lines.1,
+                    language: None,
+                    chunk_type: None,
+                    symbol_name: None,
+                    symbols: callee.symbols.unwrap_or_default(),
+                    definition_kind: None,
+                    visibility: None,
+                    signature: callee.signature,
+                    docstring: None,
+                    parent_definition: None,
+                    similarity: None,
+                    confidence: None,
+                    file_hash: None,
+                    tokens_estimate: None,
+                    imports: vec![],
+                    calls: vec![],
+                    caller_count: None,
+                    callee_count: None,
+                  })
+                  .collect(),
+              ),
               related_memories: None,
             })
             .collect(),
@@ -1529,13 +1569,13 @@ impl ProjectActor {
       }
     };
 
-    // Build hook context (use daemon-level hooks config, not project config)
+    // Build hook context (use project-level hooks config, merged with global defaults)
     let hook_ctx = service::hooks::HookContext::new(
       &self.db,
       self.embedding.as_ref(),
-      None, // LLM provider not currently available in actor
+      self.llm_provider.as_deref(),
       self.project_uuid,
-      &self.daemon_settings.hooks,
+      &self.project_config.hooks,
     );
 
     // For SessionStart, provide project info

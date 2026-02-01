@@ -6,8 +6,7 @@
 use std::collections::HashMap;
 
 use super::{
-  suggestions::generate_suggestions,
-  types::{ExpandedContext, ExploreContext, ExploreHints, ExploreResponse, ExploreResult, ExploreScope, SearchParams},
+  types::{ExpandedContext, ExploreContext, ExploreHints, ExploreResponse, ExploreResult, SearchParams},
   util::{semantic_code_preview, truncate_preview},
 };
 use crate::{
@@ -19,6 +18,10 @@ use crate::{
 // ============================================================================
 // Core Search Implementation
 // ============================================================================
+
+/// Minimum similarity score threshold for results.
+/// Results below this threshold are filtered out as noise.
+const MIN_SCORE_THRESHOLD: f32 = 0.15;
 
 /// Unified search across code, memories, and documents.
 ///
@@ -40,12 +43,11 @@ pub async fn search(ctx: &ExploreContext<'_>, params: &SearchParams) -> Result<E
 
   let mut all_results: Vec<ExploreResult> = Vec::new();
   let mut counts: HashMap<String, usize> = HashMap::new();
-  let mut result_symbols: Vec<String> = Vec::new();
 
   // Determine which scopes to search
-  let search_code = params.scope == ExploreScope::Code || params.scope == ExploreScope::All;
-  let search_memory = params.scope == ExploreScope::Memory || params.scope == ExploreScope::All;
-  let search_docs = params.scope == ExploreScope::Docs || params.scope == ExploreScope::All;
+  let search_code = params.scope.includes_code();
+  let search_memory = params.scope.includes_memory();
+  let search_docs = params.scope.includes_docs();
 
   // Run all applicable searches in parallel
   let (code_results, memory_results, doc_results) = tokio::join!(
@@ -60,7 +62,6 @@ pub async fn search(ctx: &ExploreContext<'_>, params: &SearchParams) -> Result<E
 
     for (chunk, distance) in code_results {
       let similarity: f32 = 1.0 - distance.min(1.0);
-      result_symbols.extend(chunk.symbols.clone());
 
       // Compute hints
       let hints = compute_code_hints(ctx.db, &chunk).await;
@@ -170,8 +171,9 @@ pub async fn search(ctx: &ExploreContext<'_>, params: &SearchParams) -> Result<E
     }
   }
 
-  // Sort all results by score
+  // Sort all results by score and filter out low-score noise
   all_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+  all_results.retain(|r| r.score >= MIN_SCORE_THRESHOLD);
 
   // Expand top N results
   for (i, result) in all_results.iter_mut().enumerate() {
@@ -187,20 +189,9 @@ pub async fn search(ctx: &ExploreContext<'_>, params: &SearchParams) -> Result<E
     // Memory and doc expansion handled in context tool
   }
 
-  // Generate suggestions using vector search
-  let suggestions = generate_suggestions(
-    ctx.db,
-    &query_embedding,
-    &params.query,
-    &result_symbols,
-    params.max_suggestions,
-  )
-  .await;
-
   Ok(ExploreResponse {
     results: all_results,
     counts,
-    suggestions,
   })
 }
 
