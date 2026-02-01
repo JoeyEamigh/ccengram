@@ -294,6 +294,45 @@ impl Client {
   pub fn change_cwd(&mut self, new_cwd: PathBuf) {
     self.cwd = new_cwd;
   }
+
+  /// Send a typed request without waiting for a response.
+  ///
+  /// This is useful for fire-and-forget operations like hooks where
+  /// blocking on the response would delay the caller unnecessarily.
+  ///
+  /// Opens a direct connection to avoid race conditions with process exit -
+  /// ensures the request is fully written before returning.
+  pub async fn fire_and_forget<R: Into<RequestData>>(&self, req: R) -> Result<(), IpcError> {
+    Self::fire_and_forget_to(self.cwd.clone(), &crate::dirs::default_socket_path(), req).await
+  }
+
+  /// Send a typed request to a specific socket without waiting for a response.
+  pub async fn fire_and_forget_to<R: Into<RequestData>>(
+    cwd: PathBuf,
+    socket_path: &Path,
+    req: R,
+  ) -> Result<(), IpcError> {
+    use futures::SinkExt;
+    use tokio_util::codec::{Framed, LinesCodec};
+
+    let stream = UnixStream::connect(socket_path).await?;
+    let mut framed = Framed::new(stream, LinesCodec::new());
+
+    let request = Request {
+      id: "fire-and-forget".to_string(),
+      cwd: cwd.to_string_lossy().to_string(),
+      data: req.into(),
+    };
+
+    let json = serde_json::to_string(&request).map_err(|e| IpcError::Serde(e.to_string()))?;
+
+    framed
+      .send(json)
+      .await
+      .map_err(|e| IpcError::Connection(e.to_string()))?;
+
+    Ok(())
+  }
 }
 
 /// Helper to collect all stream chunks into a Vec.

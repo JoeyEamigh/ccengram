@@ -1,4 +1,7 @@
 //! Hook command for handling hook events
+//!
+//! Hooks are fire-and-forget: we send the request to the daemon and exit immediately
+//! without waiting for a response. This ensures hooks don't block Claude Code.
 
 use std::io::Read;
 
@@ -18,37 +21,55 @@ fn read_hook_input() -> Result<serde_json::Value> {
   serde_json::from_str(&input).context("Invalid JSON in hook input")
 }
 
-/// Handle a hook event
+/// Handle a hook event (fire-and-forget)
 pub async fn cmd_hook(name: &str) -> Result<()> {
   // Read input from stdin
-  let input = read_hook_input().context("Failed to read hook input")?;
+  let mut input = read_hook_input().context("Failed to read hook input")?;
 
-  // Try to connect to running daemon first
-  if ccengram::dirs::is_daemon_running() {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let cwd_str = cwd.to_string_lossy().to_string();
-    let client = Client::connect(cwd).await.context("Failed to connect to daemon")?;
-
-    let params = HookParams {
-      hook_name: name.to_string(),
-      session_id: None,
-      cwd: Some(cwd_str),
-      data: input,
-    };
-
-    match client.call(params).await {
-      Ok(result) => {
-        // Output the hook result
-        println!("{}", serde_json::to_string(&result)?);
-      }
-      Err(e) => {
-        error!("Hook error: {}", e);
-      }
-    }
-  } else {
-    // Daemon not running - can't process hook without daemon
+  // Daemon not running - can't process hook without daemon
+  if !ccengram::dirs::is_daemon_running() {
     error!("Daemon is not running. Start with: ccengram daemon");
     std::process::exit(1);
+  }
+
+  // Extract session_id and cwd from the input JSON to avoid duplicate fields
+  // (HookParams uses #[serde(flatten)] which would create duplicates)
+  let session_id = input
+    .as_object()
+    .and_then(|obj| obj.get("session_id"))
+    .and_then(|v| v.as_str())
+    .map(String::from);
+
+  let cwd = input
+    .as_object()
+    .and_then(|obj| obj.get("cwd"))
+    .and_then(|v| v.as_str())
+    .map(String::from)
+    .or_else(|| std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string()));
+
+  // Remove session_id and cwd from data to avoid duplicates when flattened
+  if let Some(obj) = input.as_object_mut() {
+    obj.remove("session_id");
+    obj.remove("cwd");
+  }
+
+  let params = HookParams {
+    hook_name: name.to_string(),
+    session_id,
+    cwd: cwd.clone(),
+    data: input,
+  };
+
+  // Fire-and-forget: send request without waiting for response
+  // This ensures hooks don't block Claude Code
+  let cwd_path = cwd
+    .map(std::path::PathBuf::from)
+    .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+
+  let client = Client::connect(cwd_path).await.context("Failed to connect to daemon")?;
+
+  if let Err(e) = client.fire_and_forget(params).await {
+    error!("Hook error: {}", e);
   }
 
   Ok(())

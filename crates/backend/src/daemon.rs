@@ -170,7 +170,7 @@ impl Daemon {
     let max_attempts = 10;
 
     while attempts < max_attempts {
-      if let Ok(client) = Client::connect(socket_path.clone()).await {
+      if let Ok(client) = Client::connect_to(cwd.clone(), &socket_path).await {
         info!("Successfully connected to daemon");
         return Ok(client);
       }

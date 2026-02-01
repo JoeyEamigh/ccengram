@@ -379,7 +379,9 @@ impl WatcherTask {
   fn is_ignored(&self, path: &PathBuf) -> bool {
     if let Some(ref gitignore) = self.gitignore {
       let is_dir = path.is_dir();
-      gitignore.matched(path, is_dir).is_ignore()
+      // Use matched_path_or_any_parents to correctly handle ignored directories
+      // e.g., .git/ pattern should ignore all files under .git/
+      gitignore.matched_path_or_any_parents(path, is_dir).is_ignore()
     } else {
       false
     }
