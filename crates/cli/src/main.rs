@@ -57,7 +57,7 @@ pub enum IndexCommand {
   },
   /// Index documents from a directory
   Docs {
-    /// Directory to index (default: configured docs.directory)
+    /// Directory to index (default: configured docs.directories)
     #[arg(short, long)]
     directory: Option<String>,
     /// Force re-index all documents

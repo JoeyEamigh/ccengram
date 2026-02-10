@@ -6,7 +6,7 @@ You are building **CCEngram** - intelligent memory and code search for Claude Co
 
 **Single daemon + thin clients** via Unix socket IPC
 **Storage: LanceDB** (per-project isolation)
-**Search: Pure vector** - Semantic similarity via embeddings
+**Search: Hybrid** - Vector similarity + optional keyword FTS + optional cross-encoder reranking
 
 ## Project Structure
 

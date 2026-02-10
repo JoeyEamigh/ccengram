@@ -33,15 +33,18 @@ use tokio::signal;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
+#[cfg(feature = "llama-cpp")]
+use crate::rerank::llamacpp::LlamaCppReranker;
 use crate::{
   actor::{
     IdleShutdownConfig, ProjectRouter, Scheduler, SchedulerConfig,
     lifecycle::{activity::KeepAlive, session::SessionTracker},
   },
   dirs,
-  domain::config::{Config, DaemonSettings},
+  domain::config::{Config, DaemonSettings, RerankerProviderKind},
   embedding::EmbeddingProvider,
   ipc::{Client, IpcError},
+  rerank::{DeepInfraReranker, RerankerProvider},
   server::{DaemonState, Server, ServerConfig},
 };
 
@@ -283,7 +286,7 @@ impl Daemon {
     let cancel = CancellationToken::new();
 
     // Create embedding provider (shared, immutable)
-    let Ok(embedding) = <dyn EmbeddingProvider>::from_config(&self.runtime_config.config.embedding) else {
+    let Ok(embedding) = <dyn EmbeddingProvider>::from_config(&self.runtime_config.config.embedding).await else {
       error!("Failed to create embedding provider, shutting down daemon");
       panic!("Failed to create embedding provider");
     };
@@ -295,6 +298,53 @@ impl Daemon {
       embedding.dimensions()
     );
 
+    // Create reranker provider if configured
+    let reranker: Option<Arc<dyn RerankerProvider>> = if self.runtime_config.config.reranker.enabled {
+      match self.runtime_config.config.reranker.provider {
+        RerankerProviderKind::DeepInfra => match DeepInfraReranker::new(&self.runtime_config.config.reranker) {
+          Ok(r) => {
+            info!(
+              "Reranker provider: {} (max_candidates: {})",
+              r.name(),
+              r.max_candidates()
+            );
+            Some(Arc::new(r))
+          }
+          Err(e) => {
+            warn!("Failed to create DeepInfra reranker: {}, reranking disabled", e);
+            None
+          }
+        },
+        RerankerProviderKind::LlamaCpp => {
+          #[cfg(feature = "llama-cpp")]
+          {
+            match LlamaCppReranker::new(&self.runtime_config.config.reranker).await {
+              Ok(r) => {
+                info!(
+                  "Reranker provider: {} (max_candidates: {})",
+                  r.name(),
+                  r.max_candidates()
+                );
+                Some(Arc::new(r) as Arc<dyn RerankerProvider>)
+              }
+              Err(e) => {
+                warn!("Failed to create LlamaCpp reranker: {}, reranking disabled", e);
+                None
+              }
+            }
+          }
+          #[cfg(not(feature = "llama-cpp"))]
+          {
+            warn!("LlamaCpp reranker requires the 'llama-cpp' feature, reranking disabled");
+            None
+          }
+        }
+        RerankerProviderKind::None => None,
+      }
+    } else {
+      None
+    };
+
     // Create daemon-level settings to pass to project actors
     let daemon_settings = DaemonSettings::from_config(&self.runtime_config.config);
 
@@ -302,6 +352,7 @@ impl Daemon {
     let router = Arc::new(ProjectRouter::new(
       self.runtime_config.data_dir.clone(),
       embedding,
+      reranker,
       daemon_settings,
       cancel.child_token(),
     ));

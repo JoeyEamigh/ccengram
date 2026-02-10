@@ -59,8 +59,9 @@ impl ActorTestContext {
     config.index.watcher_debounce_ms = 50; // Fast debounce for tests
 
     // Use the real OpenRouter provider - tests expect real embeddings
-    let embedding =
-      <dyn EmbeddingProvider>::from_config(&config.embedding).expect("OpenRouter should be available for tests");
+    let embedding = <dyn EmbeddingProvider>::from_config(&config.embedding)
+      .await
+      .expect("OpenRouter should be available for tests");
 
     Self {
       project_dir,
@@ -88,7 +89,7 @@ impl ActorTestContext {
     // Create daemon settings from the test config
     let daemon_settings = Arc::new(DaemonSettings::from_config(&self.config));
 
-    let handle = ProjectActor::spawn(config, self.embedding.clone(), daemon_settings, cancel.clone()).await?;
+    let handle = ProjectActor::spawn(config, self.embedding.clone(), None, daemon_settings, cancel.clone()).await?;
 
     Ok((handle, cancel))
   }

@@ -36,6 +36,7 @@ use super::{
 use crate::{
   domain::{config::DaemonSettings, project::ProjectId},
   embedding::EmbeddingProvider,
+  rerank::RerankerProvider,
 };
 
 // ============================================================================
@@ -94,6 +95,11 @@ pub struct ProjectRouter {
   /// and thread-safe, we just clone the Arc for each project.
   embedding: Arc<dyn EmbeddingProvider>,
 
+  /// Optional reranker provider for cross-encoder reranking
+  ///
+  /// Shared across all projects, same as embedding provider.
+  reranker: Option<Arc<dyn RerankerProvider>>,
+
   /// Daemon-level settings (embedding batch size, hooks config, etc.)
   ///
   /// These settings are read from the global config at daemon startup and
@@ -120,6 +126,7 @@ impl ProjectRouter {
   pub fn new(
     data_dir: PathBuf,
     embedding: Arc<dyn EmbeddingProvider>,
+    reranker: Option<Arc<dyn RerankerProvider>>,
     daemon_settings: DaemonSettings,
     cancel: CancellationToken,
   ) -> Self {
@@ -128,6 +135,7 @@ impl ProjectRouter {
       path_cache: DashMap::new(),
       data_dir,
       embedding,
+      reranker,
       daemon_settings: Arc::new(daemon_settings),
       cancel,
     }
@@ -208,6 +216,7 @@ impl ProjectRouter {
     let handle = ProjectActor::spawn(
       config,
       self.embedding.clone(),
+      self.reranker.clone(),
       Arc::clone(&self.daemon_settings),
       self.cancel.child_token(),
     )
@@ -328,10 +337,12 @@ mod tests {
   #[tokio::test]
   async fn test_router_shutdown_nonexistent() {
     let config = Config::default();
-    let embedding = <dyn EmbeddingProvider>::from_config(&config.embedding).expect("embedding provider required");
+    let embedding = <dyn EmbeddingProvider>::from_config(&config.embedding)
+      .await
+      .expect("embedding provider required");
     let daemon_settings = DaemonSettings::from_config(&config);
     let cancel = CancellationToken::new();
-    let router = ProjectRouter::new(PathBuf::from("/tmp/data"), embedding, daemon_settings, cancel);
+    let router = ProjectRouter::new(PathBuf::from("/tmp/data"), embedding, None, daemon_settings, cancel);
 
     // Should not panic when shutting down nonexistent project
     let fake_id = ProjectId::from_path_exact(Path::new("/fake/project"));
@@ -341,10 +352,12 @@ mod tests {
   #[tokio::test]
   async fn test_router_shutdown_all_empty() {
     let config = Config::default();
-    let embedding = <dyn EmbeddingProvider>::from_config(&config.embedding).expect("embedding provider required");
+    let embedding = <dyn EmbeddingProvider>::from_config(&config.embedding)
+      .await
+      .expect("embedding provider required");
     let daemon_settings = DaemonSettings::from_config(&config);
     let cancel = CancellationToken::new();
-    let router = ProjectRouter::new(PathBuf::from("/tmp/data"), embedding, daemon_settings, cancel);
+    let router = ProjectRouter::new(PathBuf::from("/tmp/data"), embedding, None, daemon_settings, cancel);
 
     // Should not panic when no projects exist
     router.shutdown_all().await;

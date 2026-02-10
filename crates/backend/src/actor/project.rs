@@ -70,6 +70,7 @@ use crate::{
       watch::{StartupScanInfo, WatchRequest, WatchResponse, WatchStartResult, WatchStatusResult, WatchStopResult},
     },
   },
+  rerank::RerankerProvider,
   service::{
     self,
     explore::ExploreScope,
@@ -133,6 +134,8 @@ pub struct ProjectActor {
   /// Project-level config (tools, decay, search, index, docs, workspace, hooks)
   project_config: Arc<Config>,
   embedding: Arc<dyn EmbeddingProvider>,
+  /// Reranker provider for cross-encoder reranking (None if disabled)
+  reranker: Option<Arc<dyn RerankerProvider>>,
   /// LLM provider for memory extraction (None if unavailable)
   llm_provider: Option<Box<dyn llm::LlmProvider>>,
   /// Deterministic UUID for this project (used in memory creation)
@@ -160,11 +163,13 @@ impl ProjectActor {
   ///
   /// * `config` - Project-specific actor config (id, root, data_dir)
   /// * `embedding` - Shared embedding provider
+  /// * `reranker` - Optional reranker provider for cross-encoder reranking
   /// * `daemon_settings` - Daemon-level settings (embedding batch size, hooks, etc.)
   /// * `cancel` - Cancellation token for coordinated shutdown
   pub async fn spawn(
     config: ProjectActorConfig,
     embedding: Arc<dyn EmbeddingProvider>,
+    reranker: Option<Arc<dyn RerankerProvider>>,
     daemon_settings: Arc<DaemonSettings>,
     cancel: CancellationToken,
   ) -> Result<ProjectHandle, ProjectActorError> {
@@ -219,6 +224,7 @@ impl ProjectActor {
       db,
       project_config,
       embedding,
+      reranker,
       llm_provider,
       project_uuid,
       hook_state: service::hooks::HookState::new(),
@@ -621,15 +627,17 @@ impl ProjectActor {
     let ctx = self.memory_context();
 
     let response = match req {
-      MemoryRequest::Search(params) => match service::memory::search(&ctx, params, &self.project_config).await {
-        Ok(result) => ProjectActorResponse::Done(ResponseData::Memory(MemoryResponse::Search(
-          crate::ipc::types::memory::MemorySearchResult {
-            items: result.items,
-            search_quality: Some(result.search_quality),
-          },
-        ))),
-        Err(e) => Self::service_error_response(e),
-      },
+      MemoryRequest::Search(params) => {
+        match service::memory::search(&ctx, params, &self.project_config, self.reranker.as_deref()).await {
+          Ok(result) => ProjectActorResponse::Done(ResponseData::Memory(MemoryResponse::Search(
+            crate::ipc::types::memory::MemorySearchResult {
+              items: result.items,
+              search_quality: Some(result.search_quality),
+            },
+          ))),
+          Err(e) => Self::service_error_response(e),
+        }
+      }
       MemoryRequest::Get(params) => match service::memory::get(&ctx, params).await {
         Ok(detail) => ProjectActorResponse::Done(ResponseData::Memory(MemoryResponse::Get(detail))),
         Err(e) => Self::service_error_response(e),
@@ -779,7 +787,15 @@ impl ProjectActor {
         };
         let config = service::code::RankingConfig::default();
 
-        match service::code::search(&ctx, params, &config).await {
+        match service::code::search(
+          &ctx,
+          params,
+          &config,
+          Some(&self.project_config.search),
+          self.reranker.as_deref(),
+        )
+        .await
+        {
           Ok(result) => ProjectActorResponse::Done(ResponseData::Code(CodeResponse::Search(
             crate::ipc::types::code::CodeSearchResult {
               query: result.query,
@@ -1286,7 +1302,14 @@ impl ProjectActor {
       DocsRequest::Search(params) => {
         let ctx = service::docs::DocsContext::new(&self.db, self.embedding.as_ref());
         let search_params = service::docs::SearchParams::from(params);
-        match service::docs::search(&ctx, search_params).await {
+        match service::docs::search(
+          &ctx,
+          search_params,
+          Some(&self.project_config.search),
+          self.reranker.as_deref(),
+        )
+        .await
+        {
           Ok(items) => ProjectActorResponse::Done(ResponseData::Docs(DocsResponse::Search(items))),
           Err(e) => Self::service_error_response(e),
         }

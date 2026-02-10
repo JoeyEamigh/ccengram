@@ -121,8 +121,10 @@ impl ToolPreset {
 #[serde(rename_all = "lowercase")]
 pub enum EmbeddingProvider {
   Ollama,
-  #[default]
   OpenRouter,
+  DeepInfra,
+  #[default]
+  LlamaCpp,
 }
 
 /// Embedding configuration
@@ -145,6 +147,11 @@ pub struct EmbeddingConfig {
   /// If not set, reads from OPENROUTER_API_KEY env var
   #[serde(skip_serializing_if = "Option::is_none")]
   pub openrouter_api_key: Option<String>,
+
+  /// DeepInfra API key (only used when provider = deepinfra)
+  /// If not set, reads from DEEPINFRA_API_KEY env var
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub deepinfra_api_key: Option<String>,
 
   /// Context length for batch size calculation (default: 32768)
   /// Should match OLLAMA_CONTEXT_LENGTH environment variable if set
@@ -173,6 +180,18 @@ pub struct EmbeddingConfig {
   /// Set to empty string "" to disable instruction prefixing.
   #[serde(skip_serializing_if = "Option::is_none")]
   pub query_instruction: Option<String>,
+
+  /// LlamaCpp: HuggingFace repo for the GGUF model (e.g., "Qwen/Qwen3-Embedding-0.6B-GGUF")
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub llamacpp_model_repo: Option<String>,
+
+  /// LlamaCpp: GGUF filename within the repo (e.g., "qwen3-embedding-0.6b-q8_0.gguf")
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub llamacpp_model_file: Option<String>,
+
+  /// LlamaCpp: number of layers to offload to GPU (-1 = all)
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub llamacpp_gpu_layers: Option<i32>,
 }
 
 /// Default query instruction for qwen3-embedding.
@@ -183,14 +202,18 @@ pub const DEFAULT_QUERY_INSTRUCTION: &str =
 impl Default for EmbeddingConfig {
   fn default() -> Self {
     Self {
-      provider: EmbeddingProvider::OpenRouter,
-      model: "qwen/qwen3-embedding-8b".to_string(),
-      dimensions: 4096,
+      provider: EmbeddingProvider::LlamaCpp,
+      model: "Qwen3-Embedding-0.6B".to_string(),
+      dimensions: 1024,
       ollama_url: "http://localhost:11434".to_string(),
       openrouter_api_key: None,
+      deepinfra_api_key: None,
       context_length: 32768,
-      max_batch_size: None, // Auto-calculated from context_length
+      max_batch_size: None,
       query_instruction: Some(DEFAULT_QUERY_INSTRUCTION.to_string()),
+      llamacpp_model_repo: None,
+      llamacpp_model_file: None,
+      llamacpp_gpu_layers: None,
     }
   }
 }
@@ -267,6 +290,21 @@ pub struct SearchConfig {
   /// Max items in batch context call (default: 5)
   pub context_max_batch: usize,
 
+  // ---- Hybrid search settings ----
+  /// Enable full-text search alongside vector search (default: true)
+  /// Works best together with a reranker. Without reranking, keyword search
+  /// may degrade results compared to pure vector search.
+  #[serde(default = "default_fts_enabled")]
+  pub fts_enabled: bool,
+
+  /// RRF constant k (default: 60). Standard value from the RRF paper.
+  #[serde(default = "default_rrf_k")]
+  pub rrf_k: u32,
+
+  /// Number of candidates to send to the reranker after RRF fusion (default: 30)
+  #[serde(default = "default_rerank_candidates")]
+  pub rerank_candidates: usize,
+
   // ---- Query embedding cache settings ----
   /// Embedding cache size for query embeddings (default: 1000)
   #[serde(default = "default_embedding_cache_size")]
@@ -277,6 +315,15 @@ pub struct SearchConfig {
   pub embedding_cache_ttl_secs: u64,
 }
 
+fn default_fts_enabled() -> bool {
+  true
+}
+fn default_rrf_k() -> u32 {
+  60
+}
+fn default_rerank_candidates() -> usize {
+  30
+}
 fn default_embedding_cache_size() -> u64 {
   1000
 }
@@ -296,6 +343,9 @@ impl Default for SearchConfig {
       explore_limit: 10,
       context_depth: 5,
       context_max_batch: 5,
+      fts_enabled: default_fts_enabled(),
+      rrf_k: default_rrf_k(),
+      rerank_candidates: default_rerank_candidates(),
       embedding_cache_size: default_embedding_cache_size(),
       embedding_cache_ttl_secs: default_embedding_cache_ttl_secs(),
     }
@@ -630,6 +680,73 @@ impl Default for DatabaseConfig {
 }
 
 // ============================================================================
+// Reranker Configuration
+// ============================================================================
+
+/// Reranker provider options
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RerankerProviderKind {
+  DeepInfra,
+  #[default]
+  LlamaCpp,
+  None,
+}
+
+/// Reranker configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RerankerConfig {
+  /// Whether reranking is enabled (default: true)
+  pub enabled: bool,
+
+  /// Which reranker provider to use
+  pub provider: RerankerProviderKind,
+
+  /// Model name (e.g., "Qwen/Qwen3-Reranker-8B")
+  pub model: String,
+
+  /// Task instruction for the reranker
+  pub instruction: String,
+
+  /// Maximum candidates to send per rerank request (default: 30)
+  pub max_candidates: usize,
+
+  /// DeepInfra API key (can share with embedding config)
+  /// If not set, reads from DEEPINFRA_API_KEY env var
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub deepinfra_api_key: Option<String>,
+
+  /// LlamaCpp: HuggingFace repo for the GGUF model
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub llamacpp_model_repo: Option<String>,
+
+  /// LlamaCpp: GGUF filename within the repo
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub llamacpp_model_file: Option<String>,
+
+  /// LlamaCpp: number of layers to offload to GPU (-1 = all)
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub llamacpp_gpu_layers: Option<i32>,
+}
+
+impl Default for RerankerConfig {
+  fn default() -> Self {
+    Self {
+      enabled: true,
+      provider: RerankerProviderKind::LlamaCpp,
+      model: "jina-reranker-v2-base-multilingual".to_string(),
+      instruction: "Given a code search query, retrieve relevant code snippets and documentation".to_string(),
+      max_candidates: 30,
+      deepinfra_api_key: None,
+      llamacpp_model_repo: None,
+      llamacpp_model_file: None,
+      llamacpp_gpu_layers: None,
+    }
+  }
+}
+
+// ============================================================================
 // Daemon-Level Settings (for passing to ProjectActors)
 // ============================================================================
 
@@ -738,10 +855,10 @@ pub struct WorkspaceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DocsConfig {
-  /// Directory to watch for documents (relative to project root)
-  /// When set, the file watcher will auto-index files in this directory
-  #[serde(skip_serializing_if = "Option::is_none")]
-  pub directory: Option<String>,
+  /// Directories to watch for documents (relative to project root)
+  /// When set, the file watcher will auto-index files in these directories
+  #[serde(skip_serializing_if = "Vec::is_empty")]
+  pub directories: Vec<String>,
 
   /// File extensions to treat as documents (default: md, txt, rst, adoc)
   pub extensions: Vec<String>,
@@ -753,7 +870,7 @@ pub struct DocsConfig {
 impl Default for DocsConfig {
   fn default() -> Self {
     Self {
-      directory: None,
+      directories: Vec::new(),
       extensions: vec![
         "md".to_string(),
         "txt".to_string(),
@@ -813,6 +930,10 @@ pub struct Config {
   /// Database cache settings
   #[serde(default)]
   pub database: DatabaseConfig,
+
+  /// Reranker settings
+  #[serde(default)]
+  pub reranker: RerankerConfig,
 }
 
 /// Tool filtering configuration
@@ -980,6 +1101,7 @@ impl Config {
 # NOTE: This is a project-level config. The following are daemon-level
 # and should be configured in ~/.config/ccengram/config.toml instead:
 #   [embedding]  - Embedding provider (shared across all projects)
+#   [reranker]   - Reranker provider (shared across all projects)
 #   [daemon]     - Daemon lifecycle settings
 #   [database]   - Database cache settings
 #   decay.decay_interval_hours, decay.session_cleanup_hours, decay.max_session_age_hours
@@ -1048,6 +1170,18 @@ context_depth = 5
 
 # Max IDs in a single batch context call
 context_max_batch = 5
+
+# ---- Hybrid search settings ----
+
+# Enable full-text search alongside vector search (default: true)
+# Works best together with a reranker (enabled by default).
+fts_enabled = true
+
+# RRF fusion constant k (default: 60). Standard value from the RRF paper.
+# rrf_k = 60
+
+# Number of candidates to send to the reranker after RRF fusion (default: 30)
+# rerank_candidates = 30
 
 # ---- Query embedding cache settings ----
 
@@ -1162,9 +1296,9 @@ pipeline_parser_workers = 0
 # ============================================================================
 
 [docs]
-# Directory to watch for documents (relative to project root)
-# When set, file watcher will auto-index files in this directory
-directory = "docs"
+# Directories to watch for documents (relative to project root)
+# When set, file watcher will auto-index files in these directories
+directories = ["docs"]
 
 # File extensions to treat as documents
 extensions = ["md", "txt", "rst", "adoc", "org"]
@@ -1254,15 +1388,25 @@ preset = "{preset_name}"
 # ============================================================================
 
 [embedding]
-# Provider: ollama (local) or openrouter (cloud)
-provider = "openrouter"
+# Provider: "llamacpp", "openrouter", "deepinfra", or "ollama"
+#   llamacpp   - In-process llama.cpp (default, free, no API key needed)
+#   openrouter - OpenRouter cloud API (recommended for speed and performance, requires OPENROUTER_API_KEY)
+#   deepinfra  - DeepInfra cloud API (recommended for speed and performance, requires DEEPINFRA_API_KEY)
+#   ollama     - Local Ollama server (free, requires Ollama running)
+provider = "llamacpp"
 
-# Model name
-model = "qwen/qwen3-embedding-8b" # would be "qwen3-embedding" for ollama
+# Model name (format varies by provider)
+#   LlamaCpp:   uses llamacpp_model_repo/llamacpp_model_file below
+#   OpenRouter: "qwen/qwen3-embedding-8b" (dimensions = 4096)
+#   DeepInfra:  "BAAI/bge-en-icl" or "Qwen/Qwen3-Embedding-8B" (dimensions = 4096)
+#   Ollama:     "qwen3-embedding" (dimensions = 4096)
+model = "Qwen3-Embedding-0.6B"
 
 # Embedding dimensions (must match model output)
 # WARNING: Changing dimensions requires re-embedding all data!
-dimensions = 4096
+#   LlamaCpp default (0.6B): 1024
+#   OpenRouter/DeepInfra/Ollama (8B): 4096
+dimensions = 1024
 
 # Ollama server URL (for ollama provider)
 # ollama_url = "http://localhost:11434"
@@ -1271,8 +1415,12 @@ dimensions = 4096
 # Can also be set via OPENROUTER_API_KEY env var
 # openrouter_api_key = "sk-or-..."
 
+# DeepInfra API key (for deepinfra provider)
+# Can also be set via DEEPINFRA_API_KEY env var
+# deepinfra_api_key = "..."
+
 # Context length for batch size calculation
-# for OpenRouter, set to the context length of your model
+# for OpenRouter/DeepInfra, set to the context length of your model
 # for Ollama, this should match your OLLAMA_CONTEXT_LENGTH environment variable
 # Lower VRAM requires smaller context_length:
 #   24 GB VRAM -> 32768 (default)
@@ -1281,7 +1429,7 @@ dimensions = 4096
 #   6 GB VRAM  -> 4096
 context_length = 32768
 
-# Maximum batch size (default: auto-calculated from context_length, or 512 for openrouter)
+# Maximum batch size (default: auto-calculated from context_length, or 512 for openrouter/deepinfra)
 # max_batch_size = 512
 
 # Query instruction for retrieval-optimized embeddings.
@@ -1291,6 +1439,12 @@ context_length = 32768
 # Default: A code search instruction for qwen3-embedding.
 # Set to empty string "" to disable instruction prefixing.
 query_instruction = "Given a code search query, retrieve relevant code snippets and documentation that match the query"
+
+# LlamaCpp-specific settings (only when provider = "llamacpp"):
+# Models are auto-downloaded from HuggingFace on first use.
+# llamacpp_model_repo = "Qwen/Qwen3-Embedding-0.6B-GGUF"
+# llamacpp_model_file = "Qwen3-Embedding-0.6B-Q8_0.gguf"
+# llamacpp_gpu_layers = -1
 
 # ============================================================================
 # Decay & Memory Lifecycle
@@ -1342,6 +1496,18 @@ context_depth = 5
 
 # Max IDs in a single batch context call
 context_max_batch = 5
+
+# ---- Hybrid search settings ----
+
+# Enable full-text search alongside vector search (default: true)
+# Works best together with a reranker (enabled by default).
+fts_enabled = true
+
+# RRF fusion constant k (default: 60). Standard value from the RRF paper.
+# rrf_k = 60
+
+# Number of candidates to send to the reranker after RRF fusion (default: 30)
+# rerank_candidates = 30
 
 # ---- Query embedding cache settings ----
 
@@ -1456,9 +1622,9 @@ pipeline_parser_workers = 0
 # ============================================================================
 
 [docs]
-# Directory to watch for documents (relative to project root)
-# When set, file watcher will auto-index files in this directory
-# directory = "docs"
+# Directories to watch for documents (relative to project root)
+# When set, file watcher will auto-index files in these directories
+# directories = ["docs"]
 
 # File extensions to treat as documents
 extensions = ["md", "txt", "rst", "adoc", "org"]
@@ -1514,6 +1680,41 @@ metadata_cache_mb = 64
 # Log cache stats periodically during indexing (default: false)
 # Useful for debugging memory usage and cache hit rates.
 log_cache_stats = false
+
+# ============================================================================
+# Reranker (Cross-Encoder Reranking)
+# ============================================================================
+
+[reranker]
+# Enable cross-encoder reranking of search results (default: true)
+# Search candidates are re-scored by a cross-encoder model for higher quality ranking.
+enabled = true
+
+# Reranker provider: "llamacpp" (default) or "deepinfra"
+#   llamacpp  - In-process llama.cpp (default, free, no API key needed)
+#   deepinfra - DeepInfra cloud API (recommended for speed and performance, requires DEEPINFRA_API_KEY)
+provider = "llamacpp"
+
+# Model name (provider-specific)
+#   LlamaCpp:  auto-downloads jina-reranker-v2-base-multilingual by default
+#   DeepInfra: "Qwen/Qwen3-Reranker-8B"
+# model = "jina-reranker-v2-base-multilingual"
+
+# Task instruction for the reranker (DeepInfra only)
+# instruction = "Given a code search query, retrieve relevant code snippets and documentation"
+
+# Maximum candidates per rerank request (default: 30)
+# max_candidates = 30
+
+# DeepInfra API key (can also be set via DEEPINFRA_API_KEY env var)
+# Shared with embedding config if both use DeepInfra.
+# deepinfra_api_key = "..."
+
+# LlamaCpp-specific settings (only when provider = "llamacpp"):
+# Models are auto-downloaded from HuggingFace on first use.
+# llamacpp_model_repo = "gpustack/jina-reranker-v2-base-multilingual-GGUF"
+# llamacpp_model_file = "jina-reranker-v2-base-multilingual-Q8_0.gguf"
+# llamacpp_gpu_layers = -1
 "#,
       tool_count = ALL_TOOLS.len(),
       preset_name = preset_name

@@ -5,7 +5,10 @@ use sha2::{Digest, Sha256};
 use tracing::{debug, trace, warn};
 use uuid::Uuid;
 
-use super::parser::{Definition, DefinitionKind, TreeSitterParser};
+use super::{
+  parser::{Definition, DefinitionKind, TreeSitterParser},
+  tokenize::tokenize_code,
+};
 use crate::{
   config::CHARS_PER_TOKEN,
   domain::code::{ChunkType, CodeChunk, Language},
@@ -854,6 +857,13 @@ impl Chunker {
 
     // The actual code
     result.push_str(code);
+
+    // Append tokenized version for FTS (splits camelCase, snake_case, paths)
+    let tokenized = tokenize_code(&result);
+    if !tokenized.is_empty() {
+      result.push_str("\n[TOKENS] ");
+      result.push_str(&tokenized);
+    }
 
     result
   }

@@ -1,14 +1,14 @@
 # Embedding System
 
-This document explains the embedding system used in CCEngram, including the design decisions and configuration options.
+This document explains the embedding system used in CCEngram, including the provider architecture and configuration options.
 
 ## Overview
 
-CCEngram uses **qwen3-embedding** (8B parameter model) producing **4096-dimensional embeddings** for both code and memory search. The embedding system is designed around two key principles:
+CCEngram uses embedding models (default: **Qwen3-Embedding-0.6B** via llama.cpp) producing high-dimensional embeddings for code, memory, and document search. The embedding system supports multiple providers through a unified architecture:
 
-1. **Trust the model**: Modern embedding models like qwen3-embedding understand semantic relationships between programming concepts. They know "mutex" relates to "lock", "auth" relates to "jwt", etc. without being explicitly told.
-
-2. **Pure vector search**: Instead of relying on hardcoded synonym dictionaries or SQL LIKE queries, we use vector similarity search exclusively. This provides better recall, performance, and maintainability.
+1. **Multi-provider**: Four embedding backends -- LlamaCpp (default, in-process via llama-cpp-2), OpenRouter, DeepInfra, and Ollama. Cloud providers (OpenRouter, DeepInfra) are recommended for better speed and performance.
+2. **Trust the model**: Modern embedding models understand semantic relationships between programming concepts without explicit synonym dictionaries.
+3. **Hybrid search**: Vector embeddings power semantic search, complemented by keyword search (FTS) and cross-encoder reranking by default (see `embedding_search.md`).
 
 ## EmbeddingMode
 
@@ -100,39 +100,59 @@ By trusting the embedding model, we get:
 │  embed(text, mode) -> Vec<f32>                              │
 │  embed_batch(texts, mode) -> Vec<Vec<f32>>                  │
 └─────────────────────────────────────────────────────────────┘
-                              │
-          ┌───────────────────┼───────────────────┐
-          ▼                   ▼                   ▼
-┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
-│ OpenRouterProv. │ │  OllamaProvider │ │ RateLimitedProv │
-│ (Cloud API)     │ │ (Local)         │ │ (Wrapper)       │
-└─────────────────┘ └─────────────────┘ └─────────────────┘
-                              │
-                              ▼
-                    ┌─────────────────┐
-                    │ ResilientProv.  │
-                    │ (Retries/Split) │
-                    └─────────────────┘
+              │
+    ┌─────────┼──────────────┬──────────────────┐
+    ▼         ▼              ▼                   ▼
+┌────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+│ Ollama │ │ OpenAiCompat │ │ OpenAiCompat │ │ LlamaCpp     │
+│Provider│ │ (OpenRouter) │ │ (DeepInfra)  │ │ Provider     │
+│ /api/  │ │ /v1/embed    │ │ /v1/embed    │ │ (in-process) │
+│ embed  │ └──────┬───────┘ └──────┬───────┘ │ feature-gate │
+└────────┘        └──────┬─────────┘         └──────────────┘
+                         ▼
+                ┌─────────────────┐
+                │ ResilientProv.  │
+                │ (Retries/Split) │
+                └─────────────────┘
 ```
+
+### Providers
+
+| Provider | Type | API Format | Auth | Notes |
+|----------|------|------------|------|-------|
+| **Ollama** | Local | `/api/embed` (Ollama-native) | None | Separate implementation |
+| **OpenRouter** | Cloud | `/v1/embeddings` (OpenAI-compat) | `OPENROUTER_API_KEY` | Via `OpenAiCompatibleProvider` |
+| **DeepInfra** | Cloud | `/v1/embeddings` (OpenAI-compat) | `DEEPINFRA_API_KEY` | Via `OpenAiCompatibleProvider` |
+| **LlamaCpp** | In-process | Direct FFI via `llama-cpp-2` | None | Feature-gated (`llama-cpp` feature) |
+
+### `OpenAiCompatibleProvider`
+
+OpenRouter, DeepInfra, and external llama-server all use the same OpenAI `/v1/embeddings` API format. Rather than duplicating code, a single `OpenAiCompatibleProvider` handles all three. It is configured with a base URL, optional API key, and model name. The old `OpenRouterProvider` was replaced by this generic provider.
+
+The `LlamaCpp` config variant can also use this provider when pointing at an external `llama-server` HTTP endpoint.
+
+### LlamaCpp In-Process Embedding
+
+When the `llama-cpp` feature is enabled and `provider = "llamacpp"`, CCEngram loads a GGUF embedding model in-process via `llama-cpp-2` FFI bindings. No subprocess or HTTP involved.
+
+- Models auto-download from HuggingFace on first use via `hf-hub`
+- Default model: `Qwen/Qwen3-Embedding-0.6B-GGUF` (~639MB)
+- GPU offloading via Vulkan (default), CUDA, or Metal feature flags
+- Uses `spawn_blocking` for CPU/GPU-bound inference calls
 
 ### Provider Layers
 
-1. **Base providers** (OpenRouter, Ollama): Handle API communication and instruction formatting
-2. **RateLimitedProvider**: Wraps a provider with rate limiting to avoid API throttling
-3. **ResilientProvider**: Wraps a provider with retry logic, exponential backoff, and batch splitting on failure
+1. **Base providers** (Ollama, OpenAiCompatible, LlamaCpp): Handle API communication and instruction formatting
+2. **ResilientProvider**: Wraps cloud providers with retry logic, exponential backoff, and batch splitting on failure
 
 ## Search Flow
+
+The search pipeline now supports hybrid retrieval. See `embedding_search.md` for the full pipeline diagram. At the embedding level:
 
 ```
 Query: "how does auth work"
          │
          ▼
-┌─────────────────────────┐
-│   Intent Detection      │
-│   (logging only)        │
-└─────────────────────────┘
-         │
-         ▼ "how does auth work" (unchanged)
 ┌─────────────────────────┐
 │   format_for_embedding  │
 │   (Query mode)          │
@@ -140,42 +160,30 @@ Query: "how does auth work"
          │
          ▼ "Instruct: Given a code search...\nQuery:how does auth work"
 ┌─────────────────────────┐
-│   Embedding API         │
+│   Embedding Provider    │
+│   (any of the 4 above)  │
 └─────────────────────────┘
          │
-         ▼ [f32; 4096]
-┌─────────────────────────┐
-│   Vector Search         │
-│   (LanceDB)             │
-└─────────────────────────┘
-         │
-         ▼ Vec<(CodeChunk, distance)>
-┌─────────────────────────┐
-│   Ranking               │
-│   - semantic_weight     │
-│   - symbol_weight       │
-│   - importance_weight   │
-└─────────────────────────┘
-         │
-         ▼ Vec<CodeItem>
+         ▼ Vec<f32>
+    ┌─────────┐
+    │  Hybrid  │  Vector search + optional FTS + optional reranking
+    │ Pipeline │  (see embedding_search.md)
+    └─────────┘
 ```
 
-## Ranking Weights
+## Environment Variables
 
-Search results are ranked using a weighted combination of signals:
-
-| Signal | Weight | Description |
-|--------|--------|-------------|
-| Semantic | 0.55 | Vector similarity (primary signal) |
-| Symbol | 0.30 | Exact/partial matches on symbols, definition names |
-| Importance | 0.15 | Visibility (pub > private) |
-
-The semantic weight is higher because we now rely on the embedding model for concept matching rather than hardcoded expansion.
+| Variable | Provider | Required |
+|----------|----------|----------|
+| `OPENROUTER_API_KEY` | OpenRouter | Yes (or set in config) |
+| `DEEPINFRA_API_KEY` | DeepInfra | Yes (or set in config) |
+| `OLLAMA_URL` | Ollama | No (defaults to `http://localhost:11434`) |
 
 ## References
 
 - [qwen3-embedding documentation](https://huggingface.co/Alibaba-NLP/qwen3-embedding-8b)
 - `crates/backend/src/embedding/mod.rs` - EmbeddingMode and provider trait
-- `crates/backend/src/embedding/openrouter.rs` - OpenRouter implementation
+- `crates/backend/src/embedding/openai_compat.rs` - OpenAiCompatibleProvider (OpenRouter, DeepInfra, llama-server)
+- `crates/backend/src/embedding/llamacpp.rs` - LlamaCpp in-process provider (feature-gated)
 - `crates/backend/src/embedding/ollama.rs` - Ollama implementation
 - `crates/backend/src/service/code/search.rs` - Code search with ranking

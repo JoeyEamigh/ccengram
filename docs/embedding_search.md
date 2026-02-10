@@ -1,97 +1,178 @@
-# Embedding-First Search Design
+# Hybrid Search Design
 
-CCEngram uses qwen3-embedding (8B parameters) to produce 4096-dimensional embeddings for all indexed content. This document explains the design philosophy behind our search system and why we rely on vector similarity rather than traditional text matching.
+CCEngram supports a multi-stage search pipeline: parallel vector + keyword retrieval, RRF fusion, and cross-encoder reranking. This document explains the design philosophy and pipeline architecture.
 
-## The Core Principle
+## Search Modes
 
-**Trust the embedding model.**
+Users effectively get three search modes:
 
-High-dimensional embeddings naturally encode semantic relationships. The model understands that "auth" relates to "authentication", "JWT", and "OAuth" without being told. It knows "mutex" connects to "lock", "concurrent", and "sync". These relationships emerge from training on vast amounts of code and documentation.
+1. **Hybrid + Rerank** (`fts_enabled = true`, `reranker.enabled = true`): Full pipeline. **The default.** Keyword search finds exact matches, vector search finds semantic matches, reranker sorts by true relevance. Best quality.
+2. **Vector-only** (`fts_enabled = false`, `reranker.enabled = false`): Pure semantic similarity. Good for conceptual queries.
+3. **Hybrid** (`fts_enabled = true`, `reranker.enabled = false`): Vector + keyword with RRF fusion. Not recommended -- keyword search without reranking tends to degrade results.
 
-When we layer hardcoded synonym dictionaries or SQL LIKE queries on top of vector search, we're second-guessing the model with inferior heuristics. The embedding model has seen more code than any human could curate into a synonym map.
+Recommendation: use mode 1 (default, best quality) or mode 2 (simple).
 
-## Why Vector Search Over Text Matching
+## Pipeline Architecture
 
-### Semantic Recall
+```
+Query
+  |
+  +---> Vector Search (LanceDB ANN, top 50) -------+
+  |                                                  |
+  +---> Keyword Search (LanceDB FTS, top 50) -------+   [only if fts_enabled]
+  |                                                  |
+  v                                                  v
+          Fusion (RRF if both, passthrough if vector-only)
+                       |
+                       v
+              Top 30 candidates
+                       |
+            [if reranker enabled]
+                       |
+                       v
+              Cross-encoder rerank
+                       |
+                       v
+         Domain-specific post-ranking
+              (existing logic)
+                       |
+                       v
+                Final results
+```
 
-A memory stating "The authentication system verifies JSON Web Tokens before granting access" won't match a LIKE query for the symbol `validate_token`. But in embedding space, these concepts are close neighbors. Vector search finds what users mean, not just what they typed.
+When `fts_enabled = false`, the pipeline degrades to vector-only retrieval. When the reranker is disabled, fusion results pass directly to domain-specific ranking.
 
-### Domain Adaptation
+## Why Vector Search?
 
-Hardcoded synonyms miss domain-specific relationships. A synonym map might know "auth" relates to "login", but it won't know that in your codebase, "LTV" means "lifetime value" or that "the coordinator" refers to a specific service. The embedding model learns these relationships from context.
+High-dimensional embeddings naturally encode semantic relationships. The model understands that "auth" relates to "authentication", "JWT", and "OAuth" without explicit synonym dictionaries. By trusting the embedding model:
 
-### Performance
+- **Better recall**: Finds domain-specific relationships no synonym map could cover
+- **Weighted similarity**: Closer vectors = stronger relationship
+- **Zero maintenance**: The model already knows these relationships
 
-LIKE queries with wildcards (`%pattern%`) require full table scans. Vector search uses indexes. For a codebase with thousands of chunks and hundreds of memories, this matters.
+## Keyword Search (FTS)
 
-### Maintenance
+### LanceDB Full-Text Search
 
-A 300-line synonym map requires constant human curation. It's always incomplete and sometimes wrong. Embeddings handle this automatically.
+LanceDB provides native FTS indexes alongside vector indexes on the same tables. No additional infrastructure needed.
 
-## Design Decisions
+FTS indexes are created on:
+- `code_chunks.embedding_text` -- enriched text containing definitions, signatures, symbols
+- `memories.content` -- natural language memory content
+- `documents.content` -- document text
 
-### Related Content Discovery
+### Code Tokenizer
 
-When finding memories related to a code chunk, we use the chunk's embedding to search the memory table directly. This replaces the previous approach of iterating through symbols and running LIKE queries for each one.
+Code identifiers need pre-processing for effective FTS. The tokenizer in `context/files/code/tokenize.rs` splits identifiers for indexing:
 
-The chunk's `embedding_text` already captures its semantic content—the function signature, docstring, and context. One vector search against this embedding finds all semantically related memories regardless of whether they mention specific symbol names.
+```
+"camelCase"          -> "camelcase camel case"
+"snake_case"         -> "snake_case snake case"
+"HTTPServer"         -> "httpserver http server"
+"src/auth/handler.rs" -> "src auth handler rs"
+```
 
-### Query Processing
+Rules:
+- Split on `_` (snake_case), case transitions (camelCase), path separators
+- Preserve original token alongside splits (exact matches still work)
+- Lowercase all tokens
+- Filter common code stop words (`fn`, `pub`, `struct`, `impl`, `def`, `class`, etc.)
 
-User queries go directly to the embedding model without synonym expansion. Intent detection still cleans queries ("how does X work" → "X"), but we don't inflate "auth" into ten related terms before embedding.
+For memories and documents, no special pre-processing is needed -- the default tokenizer handles natural language well.
 
-The embedding model handles this naturally. Embedding "auth" produces a vector already close to authentication-related concepts. Pre-expanding the query just adds noise and can dilute the original intent.
+### FTS Index Lifecycle
 
-### Metadata Filtering
+- Created during `ProjectDb::connect()` alongside scalar indexes
+- Rebuilt on daemon startup and after full re-index operations
+- No column changes needed -- reuses existing `embedding_text` for code
 
-LanceDB supports pre-filtering during vector search. We filter by:
+## Reciprocal Rank Fusion (RRF)
 
-- **visibility**: pub, private, pub(crate)
-- **chunk_type**: Function, Class, Module, Block
-- **language**: rust, typescript, python, etc.
-- **caller_count**: Centrality metric for importance
+When both vector and FTS results are available, they're merged using RRF:
 
-Filtering before vector search is more efficient than filtering after. It also produces more relevant results—if someone searches for public APIs, they shouldn't see private helpers even if those are semantically similar.
+```
+score(d) = sum(1 / (k + rank_i(d))) for each ranker i
+```
 
-### Cross-Domain Search
+`k=60` is the standard constant from the original RRF paper. Items appearing in both result sets get boosted scores. The `rrf_k` parameter is configurable but rarely needs tuning.
 
-Code chunks and memories exist in the same embedding space. A memory about database migrations lives near code that performs migrations. This enables bidirectional discovery:
+Implementation: `crates/backend/src/service/util/fusion.rs`
 
-- Exploring a code chunk shows related memories (decisions, context, history)
-- Exploring a memory shows related code (implementations, examples)
+## Reranking
 
-This emerges naturally from using the same embedding model for both domains.
+### Overview
 
-### Confidence Signals
+After fusion produces top-N candidates, an optional cross-encoder reranker scores each (query, document) pair for relevance. Cross-encoders are more accurate than embedding similarity because they see query and document together, but too expensive for first-stage retrieval.
 
-Vector distance indicates confidence. A distance of 0.1 means high confidence; 0.6 means the match might be noise. We use this for:
+### Providers
 
-- **Adaptive limiting**: When top results are very confident, return fewer results rather than padding with weak matches
-- **Quality warnings**: When nothing is close (best distance > 0.5), flag that results may not be relevant
-- **Result metadata**: Each result includes its confidence score so consumers can make informed decisions
+| Provider | Type | API | Notes |
+|----------|------|-----|-------|
+| **DeepInfra** | Cloud | DeepInfra native inference API | Default model: `Qwen/Qwen3-Reranker-8B` |
+| **LlamaCpp** | In-process | Direct FFI via `llama-cpp-2` | Default model: `jina-reranker-v2-base-multilingual` |
 
-## What We Don't Do
+Embedding and reranking providers are fully independent -- mix and match freely:
 
-### Hybrid Search
+| Embedding | Reranker | Use Case |
+|-----------|----------|----------|
+| Ollama | DeepInfra | Local embedding, cloud reranking |
+| DeepInfra | DeepInfra | All-cloud, best quality |
+| LlamaCpp | LlamaCpp | Zero API keys, fully local |
+| OpenRouter | None | Vector-only (current behavior) |
 
-Some systems combine BM25 (keyword matching) with vector search. We don't. Our embeddings are good enough that adding keyword matching adds complexity without improving results. If a user needs exact string matching, they can use grep.
+### Position-Aware Blending
 
-### Query Expansion
+When a reranker is present, RRF scores are blended with reranker scores using position-aware weights:
 
-We removed the 300-line synonym dictionary. The embedding model handles semantic relationships better than any manually curated list. Keeping both would mean maintaining two systems that do the same thing, with the worse one occasionally overriding the better one.
+| RRF Position | RRF Weight | Reranker Weight | Rationale |
+|--------------|------------|-----------------|-----------|
+| 0-2 | 0.75 | 0.25 | Trust retrieval for top hits |
+| 3-9 | 0.60 | 0.40 | Balanced |
+| 10+ | 0.40 | 0.60 | Trust reranker more for lower-ranked |
 
-### Re-ranking with LLMs
+This ensures top retrieval results maintain stability even when the reranker slightly disagrees, while allowing the reranker to promote genuinely relevant items from deeper in the list.
 
-Some systems use an LLM to re-rank vector search results. This adds latency and cost for marginal improvement. Our ranking combines vector similarity with structural signals (visibility, caller count) which is fast and effective.
+## Domain-Specific Integration
+
+### Code Search
+
+With hybrid search, the existing ranking signals are redistributed:
+- **RRF score** (vector + keyword fusion) replaces the separate semantic and symbol signals
+- **Importance** (caller_count, visibility) remains as a post-ranking signal
+- When FTS is enabled, the in-memory `calculate_symbol_boost` is skipped (FTS subsumes it)
+
+### Memory Search
+
+Memory ranking combines RRF scores with salience, recency, and sector boost as post-ranking signals. Reranking is useful for memories since natural language content is where cross-encoders excel.
+
+### Document Search
+
+Simplest integration: RRF fusion + reranking, no additional domain-specific signals.
+
+## Config Reference
+
+```toml
+[search]
+fts_enabled = true        # Keyword search alongside vector search (default: true)
+rrf_k = 60               # RRF constant (standard value, rarely needs tuning)
+rerank_candidates = 30    # Candidates sent to reranker after fusion
+```
+
+See `embedding.md` for embedding provider configuration and `user-guide.md` for full config reference.
 
 ## Key Files
 
 | Path | Purpose |
 |------|---------|
-| `service/code/search.rs` | Code search with ranking |
-| `service/memory/search.rs` | Memory search |
-| `service/explore/context.rs` | Cross-domain context retrieval |
-| `service/util/filter.rs` | Filter building for vector search |
-| `context/files/code/chunker.rs` | Creates enriched `embedding_text` |
-| `db/code/codes.rs` | Code chunk DB operations |
-| `db/memory/memories.rs` | Memory DB operations |
+| `service/code/search.rs` | Code search with hybrid pipeline |
+| `service/memory/search.rs` | Memory search with hybrid pipeline |
+| `service/docs/search.rs` | Document search with hybrid pipeline |
+| `service/util/fusion.rs` | RRF implementation and position-aware blending |
+| `context/files/code/tokenize.rs` | Code identifier tokenizer for FTS |
+| `rerank/mod.rs` | RerankerProvider trait and types |
+| `rerank/deepinfra.rs` | DeepInfra reranker implementation |
+| `rerank/llamacpp.rs` | LlamaCpp reranker (feature-gated) |
+| `db/code/codes.rs` | Code chunk DB operations including FTS search |
+| `db/memory/memories.rs` | Memory DB operations including FTS search |
+| `db/document/documents.rs` | Document DB operations including FTS search |
+| `db/connection.rs` | FTS index creation |

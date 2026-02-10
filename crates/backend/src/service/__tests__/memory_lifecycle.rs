@@ -88,7 +88,7 @@ mod tests {
       query: "dark mode".to_string(),
       ..Default::default()
     };
-    let search_result = memory::search(&mem_ctx, search_params, &ctx.config)
+    let search_result = memory::search(&mem_ctx, search_params, &ctx.config, None)
       .await
       .expect("search");
     assert!(!search_result.items.is_empty(), "Should find the memory");
@@ -170,7 +170,7 @@ mod tests {
       query: "dark mode".to_string(),
       ..Default::default()
     };
-    let search_result2 = memory::search(&mem_ctx, search_after_delete, &ctx.config)
+    let search_result2 = memory::search(&mem_ctx, search_after_delete, &ctx.config, None)
       .await
       .expect("search after delete");
     let found_deleted = search_result2.items.iter().any(|m| m.id == memory_id);
@@ -189,7 +189,7 @@ mod tests {
       query: "dark mode".to_string(),
       ..Default::default()
     };
-    let search_result3 = memory::search(&mem_ctx, search_after_restore, &ctx.config)
+    let search_result3 = memory::search(&mem_ctx, search_after_restore, &ctx.config, None)
       .await
       .expect("search after restore");
     let found_restored = search_result3.items.iter().any(|m| m.id == memory_id);
@@ -427,7 +427,7 @@ mod tests {
       limit: Some(10),
       include_superseded: false,
     };
-    let sector_result = memory::search(&mem_ctx, search_by_sector, &ctx.config)
+    let sector_result = memory::search(&mem_ctx, search_by_sector, &ctx.config, None)
       .await
       .expect("search by sector");
 
@@ -453,7 +453,7 @@ mod tests {
       limit: Some(10),
       include_superseded: false,
     };
-    let type_result = memory::search(&mem_ctx, search_by_type, &ctx.config)
+    let type_result = memory::search(&mem_ctx, search_by_type, &ctx.config, None)
       .await
       .expect("search by type");
 
@@ -477,7 +477,7 @@ mod tests {
       limit: Some(10),
       include_superseded: false,
     };
-    let combined_result = memory::search(&mem_ctx, search_combined, &ctx.config)
+    let combined_result = memory::search(&mem_ctx, search_combined, &ctx.config, None)
       .await
       .expect("search combined");
 
@@ -564,7 +564,7 @@ mod tests {
       include_superseded: false,
     };
 
-    let result = memory::search(&mem_ctx, search_params, &ctx.config)
+    let result = memory::search(&mem_ctx, search_params, &ctx.config, None)
       .await
       .expect("search");
 

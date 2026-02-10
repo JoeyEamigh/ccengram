@@ -11,7 +11,8 @@ The intention is that this plugin is as set-and-forget as possible. Once you run
 
 ## Features
 
-- **Semantic Code Search** - Find code by meaning, not just keywords
+- **Hybrid Code Search** - Find code by meaning (vector) and keywords (FTS), fused via Reciprocal Rank Fusion
+- **Cross-Encoder Reranking** - Reranker refines results after initial retrieval (enabled by default via llama.cpp)
 - **Persistent Memory** - Preferences, decisions, and patterns remembered across sessions (opt-in per project)
 - **File Watching** - Index updates automatically as you code
 - **Per-Project Isolation** - Each project has its own index and memories
@@ -21,9 +22,12 @@ The intention is that this plugin is as set-and-forget as possible. Once you run
 
 ### Prerequisites
 
-You need an embedding provider:
+CCEngram uses **llama.cpp** for embedding and reranking by default - no API keys required. Models are downloaded automatically from HuggingFace on first use.
 
-- **[OpenRouter](https://openrouter.ai/)** (cloud, recommended) - Get an API key
+For better speed and performance, cloud providers are recommended:
+
+- **[OpenRouter](https://openrouter.ai/)** (cloud, recommended) - Set `OPENROUTER_API_KEY`
+- **[DeepInfra](https://deepinfra.com/)** (cloud, recommended) - Set `DEEPINFRA_API_KEY`
 - **[Ollama](https://ollama.ai/)** (local) - Run embeddings locally
 
 ### Install
@@ -38,6 +42,13 @@ Or install from source:
 cargo install --git https://github.com/JoeyEamigh/ccengram --bin ccengram
 ```
 
+For in-process llama.cpp with GPU acceleration (recommended for local inference):
+
+```bash
+cargo install --git https://github.com/JoeyEamigh/ccengram --bin ccengram --features llama-cpp,vulkan
+# GPU options: vulkan (recommended), cuda, metal
+```
+
 ### Claude Code Plugin
 
 Install from the Claude Code plugin marketplace:
@@ -49,42 +60,7 @@ Install from the Claude Code plugin marketplace:
 
 ## Quick Start
 
-### 1. Configure Embedding Provider
-
-The global config at `~/.config/ccengram/config.toml` is created automatically on first use, or by running `ccengram config reset`. Set up your embedding provider:
-
-**For OpenRouter (Cloud):**
-
-```bash
-# Set your API key as an environment variable (recommended)
-export OPENROUTER_API_KEY="sk-or-..."
-# Add to ~/.bashrc or ~/.zshrc for persistence
-```
-
-Or add directly to config:
-
-```toml
-[embedding]
-provider = "openrouter"
-openrouter_api_key = "sk-or-..."
-```
-
-**For Ollama (Local):**
-
-```bash
-ollama pull qwen3-embedding
-```
-
-Then edit `~/.config/ccengram/config.toml`:
-
-```toml
-[embedding]
-provider = "ollama"
-model = "qwen3-embedding"
-ollama_url = "http://localhost:11434"
-```
-
-### 2. Initialize Your Project
+### 1. Initialize Your Project
 
 Navigate to your project and create a project-specific config:
 
@@ -104,15 +80,18 @@ This creates `.claude/ccengram.toml`. The default `minimal` preset is recommende
 ccengram config init --preset standard  # If you want the agent to be able to modify the database
 ```
 
-### 3. Index Your Codebase
+### 2. Index Your Codebase
 
 ```bash
 ccengram index
 ```
 
-This scans your project and creates semantic embeddings. Depending on project size, this may take a few minutes.
+This scans your project and creates semantic embeddings. By default, CCEngram uses llama.cpp for embedding and reranking - models are downloaded automatically on first use, no configuration needed.
 
-### 4. File Watching (Automatic)
+> [!TIP]
+> **For better speed and performance**, use a cloud embedding provider. OpenRouter and DeepInfra are recommended. See [Embedding Providers](#embedding-providers) below.
+
+### 3. File Watching (Automatic)
 
 The file watcher **automatically starts** after indexing and whenever an indexed project is accessed. Your index stays up-to-date as you edit files.
 
@@ -137,7 +116,7 @@ ccengram watch             # Manually start (if stopped)
 
 The watcher performs a **startup scan** when launched to detect any files that changed while it wasn't running.
 
-### 5. Start Using
+### 4. Start Using
 
 **With Claude Code:** MCP tools are automatically available. Claude uses `explore` and `context` to search your codebase and memories.
 
@@ -210,10 +189,12 @@ These settings are daemon-level and **must** be in global config:
 
 ```toml
 [embedding]
-provider = "openrouter"           # or "ollama"
-model = "qwen/qwen3-embedding-8b"
-dimensions = 4096
-# openrouter_api_key = "..."      # Or use OPENROUTER_API_KEY env var
+provider = "llamacpp"             # "llamacpp" (default), "openrouter", "deepinfra", or "ollama"
+dimensions = 1024                 # 1024 for llamacpp 0.6B, 4096 for cloud 8B models
+
+[reranker]
+enabled = true                    # Cross-encoder reranking (default: true)
+provider = "llamacpp"             # "llamacpp" (default) or "deepinfra"
 
 [daemon]
 idle_timeout_secs = 300           # Auto-shutdown after 5 min idle (0 = never)
@@ -239,13 +220,16 @@ default_limit = 10
 semantic_weight = 0.5
 salience_weight = 0.3
 recency_weight = 0.2
+fts_enabled = true                # Keyword search + vector search (default: true)
+rrf_k = 60                        # Reciprocal Rank Fusion constant
+rerank_candidates = 30            # Max candidates sent to reranker
 
 [index]
 max_file_size = 1048576           # 1MB
 parallel_files = 32
 
 [docs]
-directory = "docs"
+directories = ["docs"]
 extensions = ["md", "txt", "rst", "adoc", "org"]
 
 [decay]
@@ -259,13 +243,71 @@ enabled = false                   # Set to true to enable automatic memory creat
 # alias = "/path/to/main-repo"    # Share memories with another project (useful for worktrees)
 ```
 
+## Embedding Providers
+
+By default, CCEngram uses **llama.cpp** for both embedding and reranking. This works out of the box with no API keys - models are auto-downloaded from HuggingFace on first use. For better speed and performance, cloud providers are recommended.
+
+### OpenRouter (Recommended Cloud)
+
+```bash
+export OPENROUTER_API_KEY="sk-or-..."
+```
+
+```toml
+# ~/.config/ccengram/config.toml
+[embedding]
+provider = "openrouter"
+model = "qwen/qwen3-embedding-8b"
+dimensions = 4096
+```
+
+### DeepInfra (Recommended Cloud)
+
+Supports both embedding and reranking.
+
+```bash
+export DEEPINFRA_API_KEY="..."
+```
+
+```toml
+# ~/.config/ccengram/config.toml
+[embedding]
+provider = "deepinfra"
+model = "Qwen/Qwen3-Embedding-8B"
+dimensions = 4096
+
+[reranker]
+provider = "deepinfra"
+model = "Qwen/Qwen3-Reranker-8B"
+```
+
+### Ollama (Local)
+
+```bash
+ollama pull qwen3-embedding
+```
+
+```toml
+# ~/.config/ccengram/config.toml
+[embedding]
+provider = "ollama"
+model = "qwen3-embedding"
+dimensions = 4096
+ollama_url = "http://localhost:11434"
+```
+
+> [!IMPORTANT]
+> When switching providers, you must re-index if the embedding dimensions change. The default llamacpp model uses 1024 dimensions; cloud models typically use 4096.
+
 ## How It Works
 
 CCEngram runs as a daemon that Claude Code connects to via MCP.
 
-### Semantic Search
+### Hybrid Search
 
 Your codebase is parsed into semantic chunks (functions, classes, etc.) and embedded into a vector database. When you search, queries are matched by meaning rather than exact text. "Where is authentication handled?" finds auth-related code even if it doesn't contain the word "authentication".
+
+By default, CCEngram also performs full-text keyword search in parallel and merges results using Reciprocal Rank Fusion (RRF). This catches exact identifier matches that vector search might miss. A cross-encoder reranker then re-scores the top candidates for higher precision.
 
 ### Optional: Persistent Memory
 
@@ -317,13 +359,15 @@ Launch with `ccengram tui`
 ├─────────────┬─────────────┬─────────────┬──────────────────┤
 │   Memory    │    Code     │    Docs     │   Embedding      │
 │   Service   │   Indexer   │   Ingester  │   Service        │
-└──────┬──────┴──────┬──────┴──────┬──────┴────────┬─────────┘
-       │             │             │               │
-       └─────────────┴─────────────┴───────────────┘
-                           │
-                           ▼
+├─────────────┴──────┬──────┴─────────────┴──────────────────┤
+│   Hybrid Search    │   Reranker                            │
+│   Vector + FTS     │   llama.cpp / DeepInfra               │
+└──────┬─────────────┴───────────────────────────────────────┘
+       │
+       ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                 LanceDB (per-project)                       │
+│             Vector Index + FTS Index                        │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -334,6 +378,7 @@ Launch with `ccengram tui`
 | Global Config  | `~/.config/ccengram/config.toml`         |
 | Project Config | `.claude/ccengram.toml`                  |
 | Database       | `~/.local/share/ccengram/projects/{id}/` |
+| Models         | `~/.cache/huggingface/hub/` (llama.cpp)  |
 | Logs           | `~/.local/share/ccengram/ccengram.log*`  |
 | Socket         | `$XDG_RUNTIME_DIR/ccengram.sock`         |
 

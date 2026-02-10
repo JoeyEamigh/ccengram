@@ -11,6 +11,7 @@
 
 mod error;
 mod filter;
+pub mod fusion;
 mod resolve;
 
 pub use error::ServiceError;

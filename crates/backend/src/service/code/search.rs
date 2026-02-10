@@ -1,18 +1,20 @@
-//! Code search with symbol boosting and ranking.
+//! Code search with hybrid retrieval and ranking.
 //!
 //! This module provides the business logic for code search operations,
-//! including vector search with text fallback and multi-signal ranking.
+//! including vector search, optional FTS keyword search with RRF fusion,
+//! optional cross-encoder reranking, and multi-signal ranking.
 
-use std::cmp::Ordering;
+use std::{cmp::Ordering, collections::HashMap};
 
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{
   db::ProjectDb,
-  domain::code::CodeChunk,
+  domain::{code::CodeChunk, config::SearchConfig},
   embedding::EmbeddingProvider,
   ipc::types::code::{CodeItem, SearchQuality},
-  service::util::{FilterBuilder, ServiceError},
+  rerank::{RerankCandidate, RerankRequest, RerankerProvider},
+  service::util::{FilterBuilder, ServiceError, fusion},
 };
 
 // ============================================================================
@@ -128,23 +130,22 @@ pub struct SearchResult {
 // Core Search Implementation
 // ============================================================================
 
-/// Search for code chunks with vector search and ranking.
+/// Search for code chunks with hybrid retrieval, RRF fusion, and optional reranking.
 ///
-/// # Arguments
-/// * `ctx` - Code context with database and embedding provider
-/// * `params` - Search parameters
-/// * `config` - Ranking configuration
+/// When `search_config.fts_enabled` is true, runs vector and FTS search in parallel,
+/// then fuses results with RRF. Otherwise falls back to vector-only search with
+/// the existing symbol boost ranking.
 ///
-/// # Returns
-/// * `Ok(SearchResult)` - Search results with query info
-/// * `Err(ServiceError)` - If search fails
+/// When a reranker is provided, the top candidates after fusion are reranked
+/// with position-aware score blending.
 pub async fn search(
   ctx: &CodeContext<'_>,
   params: SearchParams,
   config: &RankingConfig,
+  search_config: Option<&SearchConfig>,
+  reranker: Option<&dyn RerankerProvider>,
 ) -> Result<SearchResult, ServiceError> {
   let limit = params.limit.unwrap_or(10);
-  let oversample = (limit * config.oversample_factor).min(50);
 
   // Build filter using FilterBuilder for all metadata filters
   let filter = FilterBuilder::new()
@@ -173,35 +174,144 @@ pub async fn search(
 
   debug!("Code search: query='{}'", params.query);
 
-  // Embed the original query - the model understands natural language
+  let fts_enabled = search_config.is_some_and(|c| c.fts_enabled);
+  let rrf_k = search_config.map_or(60, |c| c.rrf_k);
+  let rerank_candidates = search_config.map_or(30, |c| c.rerank_candidates);
+  let oversample = if fts_enabled {
+    50
+  } else {
+    (limit * config.oversample_factor).min(50)
+  };
+
+  // Embed the query
   let query_vec = ctx.get_embedding(&params.query).await?;
-  debug!("Using vector search with ranking for code query");
-  let results = ctx
-    .db
-    .search_code_chunks(&query_vec, oversample, filter.as_deref())
-    .await?;
 
-  // Apply ranking
-  let ranked = rank_results(results, &params.query, config);
+  if fts_enabled {
+    // Hybrid path: parallel vector + FTS retrieval, RRF fusion
+    search_hybrid(
+      ctx,
+      &params,
+      config,
+      &query_vec,
+      filter.as_deref(),
+      oversample,
+      limit,
+      rrf_k,
+      rerank_candidates,
+      reranker,
+    )
+    .await
+  } else {
+    // Vector-only path: existing behavior with symbol boost
+    search_vector_only(
+      ctx,
+      &params,
+      config,
+      &query_vec,
+      filter.as_deref(),
+      oversample,
+      limit,
+      reranker,
+      rerank_candidates,
+      rrf_k,
+    )
+    .await
+  }
+}
 
-  // Collect distances for search quality calculation (before limiting)
-  let distances: Vec<f32> = ranked.iter().map(|r| r.distance).collect();
+/// Hybrid search: parallel vector + FTS, RRF fusion, optional reranking.
+#[allow(clippy::too_many_arguments)]
+async fn search_hybrid(
+  ctx: &CodeContext<'_>,
+  params: &SearchParams,
+  _config: &RankingConfig,
+  query_vec: &[f32],
+  filter: Option<&str>,
+  oversample: usize,
+  limit: usize,
+  rrf_k: u32,
+  rerank_candidates: usize,
+  reranker: Option<&dyn RerankerProvider>,
+) -> Result<SearchResult, ServiceError> {
+  // Run vector and FTS in parallel
+  let (vector_results, fts_results) = tokio::join!(
+    ctx.db.search_code_chunks(query_vec, oversample, filter),
+    ctx.db.fts_search_code_chunks(&params.query, oversample, filter),
+  );
+
+  let vector_results = vector_results?;
+  let fts_results = fts_results.unwrap_or_else(|e| {
+    warn!(error = %e, "FTS search failed, falling back to vector-only");
+    Vec::new()
+  });
+
+  debug!(
+    vector_count = vector_results.len(),
+    fts_count = fts_results.len(),
+    "Hybrid retrieval complete"
+  );
+
+  // Build ID-indexed lookup for all chunks
+  let mut chunk_map: HashMap<String, CodeChunk> = HashMap::new();
+  for (chunk, _) in &vector_results {
+    chunk_map.insert(chunk.id.to_string(), chunk.clone());
+  }
+  for (chunk, _) in &fts_results {
+    chunk_map.entry(chunk.id.to_string()).or_insert_with(|| chunk.clone());
+  }
+
+  // Build ranked ID lists for RRF
+  let vector_ids: Vec<String> = vector_results.iter().map(|(c, _)| c.id.to_string()).collect();
+  let fts_ids: Vec<String> = fts_results.iter().map(|(c, _)| c.id.to_string()).collect();
+
+  // RRF fusion
+  let fused = fusion::reciprocal_rank_fusion(&[vector_ids, fts_ids], rrf_k);
+  let candidates: Vec<(String, f32)> = fused.into_iter().take(rerank_candidates).collect();
+
+  // Optional reranking
+  let ranked_ids = if let Some(reranker) = reranker {
+    rerank_candidates_with_provider(&candidates, &chunk_map, reranker, &params.query).await
+  } else {
+    candidates
+  };
+
+  // Post-ranking: apply importance signal on top of RRF/reranked scores
+  let importance_weight = 0.15;
+  let rrf_weight = 1.0 - importance_weight;
+
+  let mut final_results: Vec<RankedResult> = ranked_ids
+    .into_iter()
+    .filter_map(|(id, score)| {
+      chunk_map.remove(&id).map(|chunk| {
+        let importance = calculate_importance(&chunk);
+        let rank_score = rrf_weight * score + importance_weight * importance;
+        RankedResult {
+          chunk,
+          rank_score,
+          distance: 0.0, // Not meaningful in hybrid mode
+          confidence: score,
+        }
+      })
+    })
+    .collect();
+
+  final_results.sort_by(|a, b| b.rank_score.partial_cmp(&a.rank_score).unwrap_or(Ordering::Equal));
+
+  // Build search quality from confidence scores
+  let distances: Vec<f32> = final_results.iter().map(|r| 1.0 - r.confidence.min(1.0)).collect();
   let search_quality = SearchQuality::from_distances(&distances);
 
-  // Calculate effective limit based on adaptive_limit setting
   let effective_limit = if params.adaptive_limit {
-    calculate_adaptive_limit(&ranked, limit)
+    calculate_adaptive_limit(&final_results, limit)
   } else {
     limit
   };
 
-  // Take top results and convert to CodeItem
-  let items: Vec<CodeItem> = ranked
+  let items: Vec<CodeItem> = final_results
     .into_iter()
     .take(effective_limit)
     .map(|r| {
       let mut item = CodeItem::from_search_with_confidence(&r.chunk, r.rank_score, r.confidence);
-      // Include context if requested
       if params.include_context {
         item.imports = r.chunk.imports.clone();
         item.calls = r.chunk.calls.clone();
@@ -212,9 +322,178 @@ pub async fn search(
 
   Ok(SearchResult {
     results: items,
-    query: params.query,
+    query: params.query.clone(),
     search_quality,
   })
+}
+
+/// Vector-only search: existing behavior with symbol boost and importance ranking.
+#[allow(clippy::too_many_arguments)]
+async fn search_vector_only(
+  ctx: &CodeContext<'_>,
+  params: &SearchParams,
+  config: &RankingConfig,
+  query_vec: &[f32],
+  filter: Option<&str>,
+  oversample: usize,
+  limit: usize,
+  reranker: Option<&dyn RerankerProvider>,
+  rerank_candidates: usize,
+  rrf_k: u32,
+) -> Result<SearchResult, ServiceError> {
+  debug!("Using vector search with ranking for code query");
+  let results = ctx.db.search_code_chunks(query_vec, oversample, filter).await?;
+
+  // If a reranker is available, convert to RRF format and rerank
+  if let Some(reranker) = reranker {
+    let vector_ids: Vec<String> = results.iter().map(|(c, _)| c.id.to_string()).collect();
+    let fused = fusion::reciprocal_rank_fusion(&[vector_ids], rrf_k);
+    let candidates: Vec<(String, f32)> = fused.into_iter().take(rerank_candidates).collect();
+
+    let mut chunk_map: HashMap<String, CodeChunk> = HashMap::new();
+    for (chunk, _) in &results {
+      chunk_map.insert(chunk.id.to_string(), chunk.clone());
+    }
+
+    let ranked_ids = rerank_candidates_with_provider(&candidates, &chunk_map, reranker, &params.query).await;
+
+    let importance_weight = 0.15;
+    let rrf_weight = 1.0 - importance_weight;
+
+    let mut final_results: Vec<RankedResult> = ranked_ids
+      .into_iter()
+      .filter_map(|(id, score)| {
+        chunk_map.remove(&id).map(|chunk| {
+          let importance = calculate_importance(&chunk);
+          let rank_score = rrf_weight * score + importance_weight * importance;
+          RankedResult {
+            chunk,
+            rank_score,
+            distance: 0.0,
+            confidence: score,
+          }
+        })
+      })
+      .collect();
+
+    final_results.sort_by(|a, b| b.rank_score.partial_cmp(&a.rank_score).unwrap_or(Ordering::Equal));
+
+    let distances: Vec<f32> = final_results.iter().map(|r| 1.0 - r.confidence.min(1.0)).collect();
+    let search_quality = SearchQuality::from_distances(&distances);
+
+    let effective_limit = if params.adaptive_limit {
+      calculate_adaptive_limit(&final_results, limit)
+    } else {
+      limit
+    };
+
+    let items: Vec<CodeItem> = final_results
+      .into_iter()
+      .take(effective_limit)
+      .map(|r| {
+        let mut item = CodeItem::from_search_with_confidence(&r.chunk, r.rank_score, r.confidence);
+        if params.include_context {
+          item.imports = r.chunk.imports.clone();
+          item.calls = r.chunk.calls.clone();
+        }
+        item
+      })
+      .collect();
+
+    return Ok(SearchResult {
+      results: items,
+      query: params.query.clone(),
+      search_quality,
+    });
+  }
+
+  // No reranker: use existing ranking with symbol boost
+  let ranked = rank_results(results, &params.query, config);
+
+  let distances: Vec<f32> = ranked.iter().map(|r| r.distance).collect();
+  let search_quality = SearchQuality::from_distances(&distances);
+
+  let effective_limit = if params.adaptive_limit {
+    calculate_adaptive_limit(&ranked, limit)
+  } else {
+    limit
+  };
+
+  let items: Vec<CodeItem> = ranked
+    .into_iter()
+    .take(effective_limit)
+    .map(|r| {
+      let mut item = CodeItem::from_search_with_confidence(&r.chunk, r.rank_score, r.confidence);
+      if params.include_context {
+        item.imports = r.chunk.imports.clone();
+        item.calls = r.chunk.calls.clone();
+      }
+      item
+    })
+    .collect();
+
+  Ok(SearchResult {
+    results: items,
+    query: params.query.clone(),
+    search_quality,
+  })
+}
+
+/// Rerank candidates using the provided reranker, then blend with RRF scores.
+async fn rerank_candidates_with_provider(
+  candidates: &[(String, f32)],
+  chunk_map: &HashMap<String, CodeChunk>,
+  reranker: &dyn RerankerProvider,
+  query: &str,
+) -> Vec<(String, f32)> {
+  if !reranker.is_available() {
+    warn!(
+      provider = reranker.name(),
+      "Reranker not available, using RRF scores only"
+    );
+    return candidates.to_vec();
+  }
+
+  let max = reranker.max_candidates();
+  let rerank_candidates: Vec<RerankCandidate> = candidates
+    .iter()
+    .take(max)
+    .filter_map(|(id, _)| {
+      chunk_map.get(id).map(|chunk| {
+        let text = chunk.embedding_text.as_deref().unwrap_or(&chunk.content);
+        RerankCandidate {
+          id: id.clone(),
+          text: text.chars().take(4000).collect(),
+        }
+      })
+    })
+    .collect();
+
+  if rerank_candidates.is_empty() {
+    return candidates.to_vec();
+  }
+
+  let request = RerankRequest {
+    query: query.to_string(),
+    instruction: None,
+    candidates: rerank_candidates,
+    top_n: None,
+  };
+
+  match reranker.rerank(request).await {
+    Ok(response) => {
+      debug!(
+        duration_ms = response.duration_ms,
+        results = response.results.len(),
+        "Reranking complete"
+      );
+      fusion::blend_scores(candidates, &response.results)
+    }
+    Err(e) => {
+      warn!(error = %e, "Reranking failed, using RRF scores only");
+      candidates.to_vec()
+    }
+  }
 }
 
 // ============================================================================

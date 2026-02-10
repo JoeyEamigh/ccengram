@@ -247,6 +247,11 @@ pub async fn writer_stage(
               warn!(error = %e, "Failed to optimize indexes after indexing");
             }
 
+            // Rebuild FTS indexes after bulk writes to ensure consistency
+            if let Err(e) = db.rebuild_fts_indexes().await {
+              warn!(error = %e, "Failed to rebuild FTS indexes after indexing");
+            }
+
             #[cfg(feature = "statm")]
             {
               let end_mem = get_memory_usage_mb().await;

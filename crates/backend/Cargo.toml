@@ -20,6 +20,7 @@ tracing = { workspace = true }
 
 # --- lancedb dependencies (pinned versions) ---
 lancedb = "0.23"
+lance-index = "=1.0.1"
 arrow = "56"
 arrow-array = "56"
 arrow-schema = "56"
@@ -74,6 +75,10 @@ tree-sitter-html = { version = "0.23", optional = true }
 tree-sitter-css = { version = "0.25", optional = true }
 tree-sitter-markdown = { version = "0.7", optional = true }
 
+# --- local inference (feature-gated) ---
+llama-cpp-2 = { version = "0.1", optional = true }
+hf-hub = { version = "0.4", features = ["tokio"], optional = true }
+
 # --- profiling dependencies ---
 dhat = { version = "0.3", optional = true }
 
@@ -95,10 +100,18 @@ jemalloc_pprof = { version = "0.8", features = [
 ], optional = true }
 
 [features]
-default = ["tree-sitter-tier1", "claude", "jemalloc"]
+default = ["tree-sitter-tier1", "claude", "jemalloc", "llama-cpp", "vulkan"]
 
 automemory = ["dep:llm"]
 claude = ["automemory", "llm/claude"]
+
+# Local inference via llama.cpp
+llama-cpp = ["dep:llama-cpp-2", "dep:hf-hub"]
+
+# GPU backends (only one active at a time, vulkan is most portable)
+vulkan = ["llama-cpp", "llama-cpp-2/vulkan"]
+cuda = ["llama-cpp", "llama-cpp-2/cuda"]
+metal = ["llama-cpp", "llama-cpp-2/metal"]
 
 # profiling
 statm = []

@@ -25,7 +25,7 @@ pub async fn cmd_index(command: Option<IndexCommand>) -> Result<()> {
     }) => cmd_index_docs_impl(directory.as_deref(), force, stats).await,
     Some(IndexCommand::File { path, title, force }) => cmd_index_file(&path, title.as_deref(), force).await,
     None => {
-      // Default: index code, and also docs if docs.directory is configured
+      // Default: index code, and also docs if docs.directories is configured
       cmd_index_all(false).await
     }
   }
@@ -55,7 +55,7 @@ async fn cmd_index_all(force: bool) -> Result<()> {
   print_code_result(&code_result);
 
   // Phase 2: Index docs if configured
-  if let Some(ref docs_dir) = config.docs.directory {
+  for docs_dir in &config.docs.directories {
     let docs_path = cwd.join(docs_dir);
     if docs_path.exists() {
       println!();
@@ -264,35 +264,16 @@ pub async fn cmd_index_docs_impl(directory: Option<&str>, _force: bool, stats: b
   let config = Config::load_for_project(&cwd).await;
   let is_tty = std::io::stdout().is_terminal();
 
-  // Determine the docs directory (relative to project root)
-  let docs_dir_str = if let Some(dir) = directory {
-    Some(dir.to_string())
+  // Determine the docs directories (relative to project root)
+  let docs_dirs: Vec<String> = if let Some(dir) = directory {
+    vec![dir.to_string()]
+  } else if config.docs.directories.is_empty() {
+    error!("No directory specified and docs.directories not configured");
+    error!("Use --docs-dir <path> or set docs.directories in .claude/ccengram.toml");
+    std::process::exit(1);
   } else {
-    config.docs.directory.clone()
+    config.docs.directories.clone()
   };
-
-  // Validate directory exists
-  let docs_path = docs_dir_str
-    .as_ref()
-    .map(|d| {
-      if Path::new(d).is_absolute() {
-        std::path::PathBuf::from(d)
-      } else {
-        cwd.join(d)
-      }
-    })
-    .unwrap_or_else(|| cwd.clone());
-
-  if !docs_path.exists() {
-    if docs_dir_str.is_some() {
-      error!("Docs directory not found: {}", docs_path.display());
-      std::process::exit(1);
-    } else {
-      error!("No directory specified and docs.directory not configured");
-      error!("Use --docs-dir <path> or set docs.directory in .claude/ccengram.toml");
-      std::process::exit(1);
-    }
-  }
 
   let client = ccengram::Daemon::connect_or_start(cwd.clone())
     .await
@@ -304,10 +285,12 @@ pub async fn cmd_index_docs_impl(directory: Option<&str>, _force: bool, stats: b
       Ok(stats) => {
         println!("Document Statistics:");
         println!("  Total documents: {}", stats.documents);
-        println!(
-          "  Configured directory: {}",
-          config.docs.directory.as_deref().unwrap_or("(none)")
-        );
+        let dirs_display = if config.docs.directories.is_empty() {
+          "(none)".to_string()
+        } else {
+          config.docs.directories.join(", ")
+        };
+        println!("  Configured directories: {}", dirs_display);
         println!("  Extensions: {}", config.docs.extensions.join(", "));
       }
       Err(e) => {
@@ -318,24 +301,38 @@ pub async fn cmd_index_docs_impl(directory: Option<&str>, _force: bool, stats: b
     return Ok(());
   }
 
-  println!("Indexing documents from {}...", docs_path.display());
-  if is_tty {
-    println!();
-  }
+  for docs_dir_str in &docs_dirs {
+    // Validate directory exists
+    let docs_path = if Path::new(docs_dir_str).is_absolute() {
+      std::path::PathBuf::from(docs_dir_str)
+    } else {
+      cwd.join(docs_dir_str)
+    };
 
-  let params = DocsIngestParams {
-    directory: docs_dir_str,
-    file: None,
-    stream: true,
-  };
-
-  match run_with_progress(&client, params, is_tty).await {
-    Ok(result) => {
-      print_docs_result(&result);
-    }
-    Err(e) => {
-      error!("Index error: {}", e);
+    if !docs_path.exists() {
+      error!("Docs directory not found: {}", docs_path.display());
       std::process::exit(1);
+    }
+
+    println!("Indexing documents from {}...", docs_path.display());
+    if is_tty {
+      println!();
+    }
+
+    let params = DocsIngestParams {
+      directory: Some(docs_dir_str.clone()),
+      file: None,
+      stream: true,
+    };
+
+    match run_with_progress(&client, params, is_tty).await {
+      Ok(result) => {
+        print_docs_result(&result);
+      }
+      Err(e) => {
+        error!("Index error: {}", e);
+        std::process::exit(1);
+      }
     }
   }
 

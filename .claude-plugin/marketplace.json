@@ -5,16 +5,23 @@
   },
   "metadata": {
     "description": "CCEngram plugin marketplace - Intelligent memory and code search for Claude Code",
-    "version": "1.0.0"
+    "version": "0.2.0"
   },
   "plugins": [
     {
       "name": "ccengram",
       "source": "./plugin",
       "description": "Intelligent memory and code search with vector embeddings, automatic capture, and TUI",
-      "version": "1.0.0",
+      "version": "0.2.0",
       "category": "memory",
-      "tags": ["memory", "vector-search", "rag", "embeddings", "code-search", "tui"]
+      "tags": [
+        "memory",
+        "vector-search",
+        "rag",
+        "embeddings",
+        "code-search",
+        "tui"
+      ]
     }
   ]
 }

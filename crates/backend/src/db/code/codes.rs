@@ -254,6 +254,64 @@ impl ProjectDb {
     Ok(chunks)
   }
 
+  /// Search code chunks by full-text search (BM25)
+  ///
+  /// Searches the `embedding_text` column which contains enriched, tokenized text.
+  /// Results are ordered by BM25 relevance score.
+  pub async fn fts_search_code_chunks(
+    &self,
+    query: &str,
+    limit: usize,
+    filter: Option<&str>,
+  ) -> Result<Vec<(CodeChunk, f32)>> {
+    use lance_index::scalar::FullTextSearchQuery;
+
+    debug!(
+      table = "code_chunks",
+      operation = "fts_search",
+      query = %query,
+      limit = limit,
+      has_filter = filter.is_some(),
+      "FTS searching code chunks"
+    );
+
+    let table = self.code_chunks_table();
+
+    let fts_query = FullTextSearchQuery::new(query.to_owned())
+      .with_column("embedding_text".to_string())
+      .map_err(|e| DbError::Query(format!("FTS query construction failed: {e}")))?;
+
+    let builder = if let Some(f) = filter {
+      table.query().full_text_search(fts_query).limit(limit).only_if(f)
+    } else {
+      table.query().full_text_search(fts_query).limit(limit)
+    };
+
+    let results: Vec<RecordBatch> = builder.execute().await?.try_collect().await?;
+
+    let mut chunks = Vec::new();
+    for batch in results {
+      for i in 0..batch.num_rows() {
+        let chunk = batch_to_code_chunk(&batch, i)?;
+        let score = batch
+          .column_by_name("_score")
+          .and_then(|col| col.as_any().downcast_ref::<Float32Array>())
+          .map(|arr| arr.value(i))
+          .unwrap_or(0.0);
+        chunks.push((chunk, score));
+      }
+    }
+
+    debug!(
+      table = "code_chunks",
+      operation = "fts_search",
+      results = chunks.len(),
+      "FTS search complete"
+    );
+
+    Ok(chunks)
+  }
+
   /// List code chunks with optional filters
   #[tracing::instrument(level = "trace", skip(self), fields(has_filter = filter.is_some(), limit = ?limit))]
   pub async fn list_code_chunks(&self, filter: Option<&str>, limit: Option<usize>) -> Result<Vec<CodeChunk>> {

@@ -143,6 +143,9 @@ impl ProjectDb {
     // This is idempotent - indexes that already exist are skipped
     db.create_scalar_indexes().await?;
 
+    // Create FTS indexes for keyword search (idempotent)
+    db.create_fts_indexes().await?;
+
     Ok(db)
   }
 
@@ -379,6 +382,97 @@ impl ProjectDb {
       trace!(table = %table.name(), column = column, "Scalar index already exists");
     }
 
+    Ok(())
+  }
+
+  /// Create FTS indexes for keyword search on text columns.
+  ///
+  /// FTS indexes enable full-text search (BM25) on:
+  /// - code_chunks.embedding_text: enriched text with tokenized identifiers
+  /// - memories.content: natural language memory content
+  /// - documents.content: document chunk content
+  ///
+  /// Idempotent - skips if indexes already exist.
+  #[tracing::instrument(level = "trace", skip(self))]
+  pub async fn create_fts_indexes(&self) -> Result<()> {
+    use lancedb::index::scalar::FtsIndexBuilder;
+
+    debug!("Creating FTS indexes for keyword search");
+
+    // code_chunks: FTS on embedding_text (contains enriched, tokenized text)
+    self
+      .create_fts_index_if_missing(&self.code_chunks, "embedding_text", FtsIndexBuilder::default())
+      .await?;
+
+    // memories: FTS on content (natural language)
+    self
+      .create_fts_index_if_missing(&self.memories, "content", FtsIndexBuilder::default())
+      .await?;
+
+    // documents: FTS on content (natural language)
+    self
+      .create_fts_index_if_missing(&self.documents, "content", FtsIndexBuilder::default())
+      .await?;
+
+    debug!("FTS index creation complete");
+    Ok(())
+  }
+
+  /// Helper to create an FTS index if it doesn't already exist
+  async fn create_fts_index_if_missing(
+    &self,
+    table: &Table,
+    column: &str,
+    builder: lancedb::index::scalar::FtsIndexBuilder,
+  ) -> Result<()> {
+    let indices = table.list_indices().await?;
+    let fts_exists = indices
+      .iter()
+      .any(|idx| idx.columns.contains(&column.to_string()) && matches!(idx.index_type, lancedb::index::IndexType::FTS));
+
+    if !fts_exists {
+      trace!(table = %table.name(), column = column, "Creating FTS index");
+      table.create_index(&[column], Index::FTS(builder)).execute().await?;
+    } else {
+      trace!(table = %table.name(), column = column, "FTS index already exists");
+    }
+
+    Ok(())
+  }
+
+  /// Rebuild FTS indexes (called after significant data changes).
+  ///
+  /// LanceDB FTS indexes may need rebuilding after soft deletes or many upserts.
+  /// This drops and recreates the indexes.
+  #[tracing::instrument(level = "trace", skip(self))]
+  pub async fn rebuild_fts_indexes(&self) -> Result<()> {
+    use lancedb::index::scalar::FtsIndexBuilder;
+
+    debug!("Rebuilding FTS indexes");
+
+    // Recreate with replace semantics (create_index replaces existing)
+    self
+      .code_chunks
+      .create_index(&["embedding_text"], Index::FTS(FtsIndexBuilder::default()))
+      .replace(true)
+      .execute()
+      .await?;
+
+    self
+      .memories
+      .create_index(&["content"], Index::FTS(FtsIndexBuilder::default()))
+      .replace(true)
+      .execute()
+      .await?;
+
+    self
+      .documents
+      .create_index(&["content"], Index::FTS(FtsIndexBuilder::default()))
+      .replace(true)
+      .execute()
+      .await?;
+
+    debug!("FTS index rebuild complete");
     Ok(())
   }
 

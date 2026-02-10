@@ -416,6 +416,64 @@ impl ProjectDb {
     Ok(())
   }
 
+  /// Search memories by full-text search (BM25)
+  ///
+  /// Searches the `content` column using BM25 scoring.
+  /// Results are ordered by relevance score.
+  pub async fn fts_search_memories(
+    &self,
+    query: &str,
+    limit: usize,
+    filter: Option<&str>,
+  ) -> Result<Vec<(Memory, f32)>> {
+    use lance_index::scalar::FullTextSearchQuery;
+
+    debug!(
+      table = "memories",
+      operation = "fts_search",
+      query = %query,
+      limit = limit,
+      has_filter = filter.is_some(),
+      "FTS searching memories"
+    );
+
+    let table = self.memories_table();
+
+    let fts_query = FullTextSearchQuery::new(query.to_owned())
+      .with_column("content".to_string())
+      .map_err(|e| DbError::Query(format!("FTS query construction failed: {e}")))?;
+
+    let builder = if let Some(f) = filter {
+      table.query().full_text_search(fts_query).limit(limit).only_if(f)
+    } else {
+      table.query().full_text_search(fts_query).limit(limit)
+    };
+
+    let results: Vec<RecordBatch> = builder.execute().await?.try_collect().await?;
+
+    let mut memories = Vec::new();
+    for batch in results {
+      for i in 0..batch.num_rows() {
+        let memory = batch_to_memory(&batch, i)?;
+        let score = batch
+          .column_by_name("_score")
+          .and_then(|col| col.as_any().downcast_ref::<Float32Array>())
+          .map(|arr| arr.value(i))
+          .unwrap_or(0.0);
+        memories.push((memory, score));
+      }
+    }
+
+    debug!(
+      table = "memories",
+      operation = "fts_search",
+      results = memories.len(),
+      "FTS search complete"
+    );
+
+    Ok(memories)
+  }
+
   /// Search memories by vector similarity
   #[tracing::instrument(level = "trace", skip(self, query_vector))]
   pub async fn search_memories(

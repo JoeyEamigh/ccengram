@@ -2,6 +2,7 @@ mod actor;
 mod context;
 mod db;
 mod embedding;
+mod rerank;
 mod server;
 mod service;
 

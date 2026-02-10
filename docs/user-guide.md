@@ -22,9 +22,10 @@ Intelligent memory and code search for Claude Code.
 
 ### Prerequisites
 
-- **Embedding Provider** (required): Either:
-  - [OpenRouter](https://openrouter.ai/) API key (cloud, recommended), OR
-  - [Ollama](https://ollama.ai/) running locally
+- **Embedding Provider**: Uses **llama.cpp** by default (no API keys needed, models auto-download). For better speed and performance, cloud providers are recommended:
+  - [OpenRouter](https://openrouter.ai/) (cloud, recommended)
+  - [DeepInfra](https://deepinfra.com/) (cloud, supports embedding + reranking)
+  - [Ollama](https://ollama.ai/) (local alternative)
 
 ### Method 1: One-Line Install (Recommended)
 
@@ -51,6 +52,21 @@ The binary auto-downloads on first use.
 cargo install --git https://github.com/JoeyEamigh/ccengram --bin ccengram
 ```
 
+To build with llama.cpp support (local embedding + reranking):
+
+```bash
+# Vulkan GPU (most portable, default feature)
+cargo install --git https://github.com/JoeyEamigh/ccengram --bin ccengram --features vulkan
+
+# CUDA GPU
+cargo install --git https://github.com/JoeyEamigh/ccengram --bin ccengram --features cuda
+
+# Apple Metal
+cargo install --git https://github.com/JoeyEamigh/ccengram --bin ccengram --features metal
+```
+
+Build requirements for llama.cpp: CMake, C/C++ compiler, and the relevant GPU SDK (Vulkan SDK, CUDA toolkit, or Xcode).
+
 ### Verify Installation
 
 ```bash
@@ -68,43 +84,12 @@ ccengram health
 
 ## Quick Start
 
-### Step 1: Configure Embedding Provider
+### Step 1: Initialize Your Project
 
-The global config at `~/.config/ccengram/config.toml` is created automatically on first use. Set up your embedding provider:
+CCEngram uses **llama.cpp** for embedding and reranking by default - no API keys or configuration needed. Models are downloaded automatically from HuggingFace on first use.
 
-**Option A: OpenRouter (Cloud - Recommended)**
-
-The easiest approach is using an environment variable:
-
-```bash
-export OPENROUTER_API_KEY="sk-or-..."
-# Add to ~/.bashrc or ~/.zshrc for persistence
-echo 'export OPENROUTER_API_KEY="sk-or-..."' >> ~/.bashrc
-```
-
-Or add directly to the config file:
-
-```toml
-[embedding]
-provider = "openrouter"
-openrouter_api_key = "sk-or-..."
-```
-
-**Option B: Ollama (Local)**
-
-```bash
-# Install Ollama from https://ollama.ai/
-ollama pull qwen3-embedding
-```
-
-Then edit `~/.config/ccengram/config.toml`:
-
-```toml
-[embedding]
-provider = "ollama"
-model = "qwen3-embedding"
-ollama_url = "http://localhost:11434"
-```
+> [!TIP]
+> **For better speed and performance**, use a cloud embedding provider. See [Embedding Providers](#embedding-providers) below.
 
 ### Step 2: Initialize Your Project
 
@@ -236,12 +221,23 @@ These sections **must** be in `~/.config/ccengram/config.toml`:
 
 ```toml
 [embedding]
-provider = "openrouter"           # or "ollama"
-model = "qwen/qwen3-embedding-8b"
-dimensions = 4096
+provider = "llamacpp"             # "llamacpp" (default), "openrouter", "deepinfra", or "ollama"
+dimensions = 1024                 # 1024 for llamacpp 0.6B, 4096 for cloud 8B models
 context_length = 32768
-# openrouter_api_key = "..."      # Or use OPENROUTER_API_KEY env var
-# ollama_url = "http://localhost:11434"  # For Ollama
+# For cloud providers (recommended for speed and performance):
+# provider = "openrouter"         # Set OPENROUTER_API_KEY env var
+# model = "qwen/qwen3-embedding-8b"
+# dimensions = 4096
+# For LlamaCpp customization:
+# llamacpp_model_repo = "Qwen/Qwen3-Embedding-0.6B-GGUF"  # default
+# llamacpp_gpu_layers = -1        # GPU layers to offload (-1 = all)
+
+[reranker]
+enabled = true                    # Cross-encoder reranking (default: true)
+provider = "llamacpp"             # "llamacpp" (default) or "deepinfra"
+# For cloud reranking:
+# provider = "deepinfra"          # Set DEEPINFRA_API_KEY env var
+# model = "Qwen/Qwen3-Reranker-8B"
 
 [daemon]
 idle_timeout_secs = 300           # Auto-shutdown after 5 min idle (0 = never)
@@ -271,6 +267,9 @@ salience_weight = 0.3             # Memory importance weight
 recency_weight = 0.2              # Newness weight
 explore_expand_top = 3            # Auto-expand top N results
 explore_limit = 10                # Default explore result limit
+fts_enabled = true                # Keyword + vector search (default: true)
+rrf_k = 60                       # RRF constant (rarely needs tuning)
+rerank_candidates = 30            # Candidates sent to reranker
 
 [index]
 max_file_size = 1048576           # 1MB - skip larger files
@@ -279,7 +278,7 @@ checkpoint_interval_secs = 30
 watcher_debounce_ms = 1000        # Wait before processing file events
 
 [docs]
-directory = "docs"                # Document directory to index
+directories = ["docs"]            # Document directories to index
 extensions = ["md", "txt", "rst", "adoc", "org"]
 max_file_size = 5242880           # 5MB for documents
 
@@ -614,25 +613,114 @@ Salience (0.0-1.0) indicates memory importance:
 
 ---
 
+## Hybrid Search & Reranking
+
+CCEngram uses a hybrid search pipeline by default that combines vector search with keyword matching (FTS) and cross-encoder reranking.
+
+FTS indexes are created automatically on daemon restart. No re-indexing needed -- FTS builds from existing indexed data.
+
+### Disabling Hybrid Search
+
+To use pure vector search only, disable FTS and/or the reranker in your config:
+
+```toml
+[search]
+fts_enabled = false   # Disable keyword search
+
+[reranker]
+enabled = false       # Disable cross-encoder reranking
+```
+
+## Embedding Providers
+
+By default, CCEngram uses **llama.cpp** for both embedding and reranking. Models are auto-downloaded from HuggingFace on first use - no API keys needed.
+
+For faster indexing on large codebases, **cloud providers are recommended**:
+
+### OpenRouter (Recommended Cloud)
+
+```bash
+export OPENROUTER_API_KEY="sk-or-..."
+```
+
+```toml
+[embedding]
+provider = "openrouter"
+model = "qwen/qwen3-embedding-8b"
+dimensions = 4096
+```
+
+### DeepInfra (Recommended Cloud - Embedding + Reranking)
+
+```bash
+export DEEPINFRA_API_KEY="..."
+```
+
+```toml
+[embedding]
+provider = "deepinfra"
+model = "Qwen/Qwen3-Embedding-8B"
+dimensions = 4096
+
+[reranker]
+provider = "deepinfra"
+model = "Qwen/Qwen3-Reranker-8B"
+```
+
+### Ollama (Local)
+
+```bash
+ollama pull qwen3-embedding
+```
+
+```toml
+[embedding]
+provider = "ollama"
+model = "qwen3-embedding"
+dimensions = 4096
+ollama_url = "http://localhost:11434"
+```
+
+> [!IMPORTANT]
+> When switching providers, you must re-index if the embedding dimensions change. The default llamacpp model uses 1024 dimensions; cloud models typically use 4096.
+
+### Performance Notes
+
+- **DeepInfra reranking** adds a network round-trip but provides the highest quality results.
+- **LlamaCpp reranking** has zero latency overhead beyond local compute. GPU recommended for acceptable speed.
+- **FTS without reranker** is not recommended. Keyword results tend to degrade search quality unless a reranker is present to sort by true relevance.
+
+### Provider Comparison
+
+| Provider | Type | API Key | Embedding | Reranking | Cost |
+|----------|------|---------|-----------|-----------|------|
+| LlamaCpp | Local | No | Yes | Yes | Free (GPU recommended) |
+| OpenRouter | Cloud | Yes | Yes | No | Pay-per-token |
+| DeepInfra | Cloud | Yes | Yes | Yes | Pay-per-token |
+| Ollama | Local | No | Yes | No | Free |
+
+---
+
 ## Troubleshooting
 
 ### Common Issues
 
 **"No api key configured for provider"**
 
-The embedding provider isn't configured:
+The embedding or reranker provider isn't configured:
 
 ```bash
 # Option 1: Set environment variable
-export OPENROUTER_API_KEY="sk-or-..."
+export OPENROUTER_API_KEY="sk-or-..."    # For OpenRouter
+export DEEPINFRA_API_KEY="..."           # For DeepInfra
 
 # Option 2: Add to config
 ccengram config reset
-# Edit ~/.config/ccengram/config.toml and set openrouter_api_key
+# Edit ~/.config/ccengram/config.toml and set the API key
 
-# Option 3: Use Ollama instead
-ollama pull qwen3-embedding
-# Edit config: provider = "ollama"
+# Option 3: Use a local provider (no API key needed)
+ollama pull qwen3-embedding              # Ollama
+# Or use provider = "llamacpp"           # LlamaCpp (if built with feature)
 ```
 
 **Daemon won't start**
@@ -693,6 +781,7 @@ metadata_cache_mb = 32  # Default: 64
 | Socket         | `$XDG_RUNTIME_DIR/ccengram.sock` or `/tmp/{uid}.sock` |
 | Database       | `~/.local/share/ccengram/projects/{id}/lancedb/`      |
 | Logs           | `~/.local/share/ccengram/ccengram.log*`               |
+| Models         | Managed by `hf-hub` cache (LlamaCpp only)             |
 | Binary         | `~/.local/bin/ccengram`                               |
 
 ### Health Check

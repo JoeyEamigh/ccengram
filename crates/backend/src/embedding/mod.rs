@@ -1,13 +1,16 @@
 mod ollama;
-mod openrouter;
+mod openai_compat;
 mod rate_limit;
 mod resilient;
 pub mod validation;
 
+#[cfg(feature = "llama-cpp")]
+pub mod llamacpp;
+
 use std::sync::Arc;
 
 pub use ollama::OllamaProvider;
-pub use openrouter::OpenRouterProvider;
+pub use openai_compat::OpenAiCompatibleProvider;
 use resilient::{ResilientProvider, RetryConfig};
 
 use crate::domain::config::{EmbeddingConfig, EmbeddingProvider as ConfigEmbeddingProvider};
@@ -39,7 +42,7 @@ pub trait EmbeddingProvider: Send + Sync {
 }
 
 impl dyn EmbeddingProvider {
-  pub fn from_config(config: &EmbeddingConfig) -> Result<Arc<dyn EmbeddingProvider>, EmbeddingError> {
+  pub async fn from_config(config: &EmbeddingConfig) -> Result<Arc<dyn EmbeddingProvider>, EmbeddingError> {
     match config.provider {
       ConfigEmbeddingProvider::Ollama => {
         let provider = OllamaProvider::new(config)?;
@@ -47,11 +50,26 @@ impl dyn EmbeddingProvider {
         Ok(Arc::new(provider))
       }
       ConfigEmbeddingProvider::OpenRouter => {
-        let provider = OpenRouterProvider::new(config)?;
+        let provider = OpenAiCompatibleProvider::from_embedding_config_openrouter(config)?;
 
-        // Wrap with resilient retry logic (handles 429s, timeouts, etc.)
         let resilient = ResilientProvider::with_config(provider, RetryConfig::for_cloud());
         Ok(Arc::new(resilient))
+      }
+      ConfigEmbeddingProvider::DeepInfra => {
+        let provider = OpenAiCompatibleProvider::from_embedding_config_deepinfra(config)?;
+
+        let resilient = ResilientProvider::with_config(provider, RetryConfig::for_cloud());
+        Ok(Arc::new(resilient))
+      }
+      #[cfg(feature = "llama-cpp")]
+      ConfigEmbeddingProvider::LlamaCpp => {
+        let provider = llamacpp::LlamaCppEmbeddingProvider::new(config).await?;
+        Ok(Arc::new(provider))
+      }
+      #[cfg(not(feature = "llama-cpp"))]
+      ConfigEmbeddingProvider::LlamaCpp => {
+        let provider = OpenAiCompatibleProvider::from_embedding_config_llamacpp(config);
+        Ok(Arc::new(provider))
       }
     }
   }

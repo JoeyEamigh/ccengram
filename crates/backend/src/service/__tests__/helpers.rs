@@ -43,7 +43,9 @@ impl TestContext {
     let project_uuid = Uuid::new_v4();
 
     // Create real embedding provider from config
-    let embedding = <dyn EmbeddingProvider>::from_config(&config.embedding).expect("create embedding provider");
+    let embedding = <dyn EmbeddingProvider>::from_config(&config.embedding)
+      .await
+      .expect("create embedding provider");
 
     Self {
       _temp_dir: temp_dir,
