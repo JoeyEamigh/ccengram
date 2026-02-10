@@ -29,7 +29,7 @@ mod tests {
   async fn test_explore_cross_domain_search() {
     let ctx = TestContext::new().await;
     let mem_ctx = ctx.memory_context();
-    let explore_ctx = ExploreContext::new(&ctx.db, ctx.embedding.as_ref());
+    let explore_ctx = ExploreContext::new(&ctx.db, ctx.embedding.as_ref(), None, None);
 
     // Add a code chunk about authentication
     ctx
@@ -112,7 +112,7 @@ pub async fn authenticate_oauth(provider: &str, token: &str) -> Result<User, Aut
   async fn test_explore_results_sorted_by_score() {
     let ctx = TestContext::new().await;
     let mem_ctx = ctx.memory_context();
-    let explore_ctx = ExploreContext::new(&ctx.db, ctx.embedding.as_ref());
+    let explore_ctx = ExploreContext::new(&ctx.db, ctx.embedding.as_ref(), None, None);
 
     // Add multiple memories with varying relevance
     for i in 0..5 {
@@ -156,7 +156,7 @@ pub async fn authenticate_oauth(provider: &str, token: &str) -> Result<User, Aut
   #[tokio::test]
   async fn test_explore_empty_query_error() {
     let ctx = TestContext::new().await;
-    let explore_ctx = ExploreContext::new(&ctx.db, ctx.embedding.as_ref());
+    let explore_ctx = ExploreContext::new(&ctx.db, ctx.embedding.as_ref(), None, None);
 
     let params = SearchParams {
       query: "   ".to_string(), // Whitespace only
@@ -470,7 +470,7 @@ async fn get_pending_migrations(db: &Database) -> Result<Vec<Migration>, Migrati
   async fn test_memory_context_includes_related_code() {
     let ctx = TestContext::new().await;
     let mem_ctx = ctx.memory_context();
-    let explore_ctx = ExploreContext::new(&ctx.db, ctx.embedding.as_ref());
+    let explore_ctx = ExploreContext::new(&ctx.db, ctx.embedding.as_ref(), None, None);
 
     // Index code about user authentication
     ctx

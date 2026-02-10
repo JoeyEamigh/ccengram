@@ -414,7 +414,12 @@ impl ProjectActor {
 
   /// Create an explore service context
   fn explore_context(&self) -> service::explore::ExploreContext<'_> {
-    service::explore::ExploreContext::new(&self.db, self.embedding.as_ref())
+    service::explore::ExploreContext::new(
+      &self.db,
+      self.embedding.as_ref(),
+      Some(&self.project_config.search),
+      self.reranker.as_deref(),
+    )
   }
 
   /// Get the project UUID

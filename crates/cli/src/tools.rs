@@ -700,7 +700,13 @@ mod tests {
 
   #[test]
   fn test_standard_preset_filtering() {
-    let config = Config::default();
+    let config = Config {
+      tools: ToolConfig {
+        preset: ToolPreset::Standard,
+        ..Default::default()
+      },
+      ..Default::default()
+    };
 
     let filtered = get_filtered_tool_definitions(&config);
     let arr = filtered.as_array().unwrap();

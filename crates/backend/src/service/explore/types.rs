@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{db::ProjectDb, embedding::EmbeddingProvider};
+use crate::{db::ProjectDb, domain::config::SearchConfig, embedding::EmbeddingProvider, rerank::RerankerProvider};
 
 // ============================================================================
 // Search Types
@@ -290,12 +290,26 @@ pub struct ExploreContext<'a> {
   pub db: &'a ProjectDb,
   /// Optional embedding provider for vector search
   pub embedding: &'a dyn EmbeddingProvider,
+  /// Search configuration (FTS, RRF, reranking settings)
+  pub search_config: Option<&'a SearchConfig>,
+  /// Reranker provider for cross-encoder reranking
+  pub reranker: Option<&'a dyn RerankerProvider>,
 }
 
 impl<'a> ExploreContext<'a> {
   /// Create a new explore context
-  pub fn new(db: &'a ProjectDb, embedding: &'a dyn EmbeddingProvider) -> Self {
-    Self { db, embedding }
+  pub fn new(
+    db: &'a ProjectDb,
+    embedding: &'a dyn EmbeddingProvider,
+    search_config: Option<&'a SearchConfig>,
+    reranker: Option<&'a dyn RerankerProvider>,
+  ) -> Self {
+    Self {
+      db,
+      embedding,
+      search_config,
+      reranker,
+    }
   }
 }
 

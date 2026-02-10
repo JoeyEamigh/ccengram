@@ -75,6 +75,11 @@ jobs:
       - name: Install Protoc
         uses: arduino/setup-protoc@v3
 
+      - name: Install Vulkan SDK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev glslc
+
       - name: Build
         run: cargo build --release -p cli
 

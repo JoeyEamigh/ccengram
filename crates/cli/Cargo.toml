@@ -37,5 +37,10 @@ libc = "0.2"
 [features]
 default = []
 
+# GPU backends (pass-through to backend)
+vulkan = ["ccengram/vulkan"]
+cuda = ["ccengram/cuda"]
+metal = ["ccengram/metal"]
+
 jemalloc-pprof = ["ccengram/jemalloc-pprof"]
 tracy = ["dep:tracing-tracy"]

@@ -95,8 +95,8 @@ pub const TOKEN_SAFETY_MARGIN: f32 = 0.5;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ToolPreset {
-  Minimal,
   #[default]
+  Minimal,
   Standard,
   Full,
 }
@@ -1813,9 +1813,15 @@ dimensions = 4096
   #[tokio::test]
   async fn test_load_default_when_no_config() {
     let temp = TempDir::new().unwrap();
+    // Isolate from user's global config by pointing CONFIG_DIR to empty temp
+    let config_dir = temp.path().join("config");
+    tokio::fs::create_dir_all(&config_dir).await.unwrap();
+    unsafe { std::env::set_var("CONFIG_DIR", &config_dir) };
     let config = Config::load_for_project(temp.path()).await;
-    assert_eq!(config.tools.preset, ToolPreset::Standard);
-    assert_eq!(config.embedding.dimensions, 4096);
+    unsafe { std::env::remove_var("CONFIG_DIR") };
+    let expected = Config::default();
+    assert_eq!(config.tools.preset, expected.tools.preset);
+    assert_eq!(config.embedding.dimensions, expected.embedding.dimensions);
   }
 
   #[tokio::test]
@@ -1966,7 +1972,13 @@ max_batch_size = 16
 
   #[test]
   fn test_preset_standard() {
-    let config = Config::default();
+    let config = Config {
+      tools: ToolConfig {
+        preset: ToolPreset::Standard,
+        ..Default::default()
+      },
+      ..Default::default()
+    };
     let tools = config.enabled_tool_set();
     assert_eq!(tools.len(), 11);
     assert!(tools.contains("explore"));

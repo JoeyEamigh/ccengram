@@ -624,12 +624,22 @@ impl EmbeddingProvider for OpenAiCompatibleProvider {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::config::{Config, EmbeddingConfig};
+  use crate::config::EmbeddingConfig;
+
+  /// OpenRouter-appropriate embedding config (the default config targets LlamaCpp)
+  fn openrouter_embedding_config() -> EmbeddingConfig {
+    EmbeddingConfig {
+      provider: crate::config::EmbeddingProvider::OpenRouter,
+      model: "qwen/qwen3-embedding-8b".to_string(),
+      dimensions: 4096,
+      ..Default::default()
+    }
+  }
 
   #[tokio::test]
   async fn test_embed_text_document() {
-    let config = Config::default();
-    let Ok(provider) = OpenAiCompatibleProvider::from_embedding_config_openrouter(&config.embedding) else {
+    let config = openrouter_embedding_config();
+    let Ok(provider) = OpenAiCompatibleProvider::from_embedding_config_openrouter(&config) else {
       eprintln!("OPENROUTER_API_KEY not set, skipping test");
       return;
     };
@@ -644,8 +654,8 @@ mod tests {
 
   #[tokio::test]
   async fn test_embed_text_query() {
-    let config = Config::default();
-    let Ok(provider) = OpenAiCompatibleProvider::from_embedding_config_openrouter(&config.embedding) else {
+    let config = openrouter_embedding_config();
+    let Ok(provider) = OpenAiCompatibleProvider::from_embedding_config_openrouter(&config) else {
       eprintln!("OPENROUTER_API_KEY not set, skipping test");
       return;
     };
@@ -660,8 +670,8 @@ mod tests {
 
   #[tokio::test]
   async fn test_embed_batch() {
-    let config = Config::default();
-    let Ok(provider) = OpenAiCompatibleProvider::from_embedding_config_openrouter(&config.embedding) else {
+    let config = openrouter_embedding_config();
+    let Ok(provider) = OpenAiCompatibleProvider::from_embedding_config_openrouter(&config) else {
       eprintln!("OPENROUTER_API_KEY not set, skipping test");
       return;
     };
@@ -681,14 +691,11 @@ mod tests {
 
   #[tokio::test]
   async fn test_embed_batch_with_subbatching() {
-    let config = Config {
-      embedding: EmbeddingConfig {
-        max_batch_size: Some(2),
-        ..Default::default()
-      },
-      ..Default::default()
+    let config = EmbeddingConfig {
+      max_batch_size: Some(2),
+      ..openrouter_embedding_config()
     };
-    let Ok(provider) = OpenAiCompatibleProvider::from_embedding_config_openrouter(&config.embedding) else {
+    let Ok(provider) = OpenAiCompatibleProvider::from_embedding_config_openrouter(&config) else {
       eprintln!("OPENROUTER_API_KEY not set, skipping test");
       return;
     };
@@ -708,8 +715,8 @@ mod tests {
 
   #[tokio::test]
   async fn test_embed_batch_empty() {
-    let config = Config::default();
-    let Ok(provider) = OpenAiCompatibleProvider::from_embedding_config_openrouter(&config.embedding) else {
+    let config = openrouter_embedding_config();
+    let Ok(provider) = OpenAiCompatibleProvider::from_embedding_config_openrouter(&config) else {
       eprintln!("OPENROUTER_API_KEY not set, skipping test");
       return;
     };
@@ -1052,8 +1059,8 @@ mod tests {
       return;
     };
 
-    let openrouter_config = Config::default();
-    let Ok(openrouter) = OpenAiCompatibleProvider::from_embedding_config_openrouter(&openrouter_config.embedding)
+    let openrouter_config = openrouter_embedding_config();
+    let Ok(openrouter) = OpenAiCompatibleProvider::from_embedding_config_openrouter(&openrouter_config)
     else {
       eprintln!("OPENROUTER_API_KEY not set, skipping cross-provider test");
       return;

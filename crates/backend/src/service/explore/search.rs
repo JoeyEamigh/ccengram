@@ -5,6 +5,8 @@
 
 use std::collections::HashMap;
 
+use tracing::{debug, warn};
+
 use super::{
   types::{ExpandedContext, ExploreContext, ExploreHints, ExploreResponse, ExploreResult, SearchParams},
   util::{semantic_code_preview, truncate_preview},
@@ -12,7 +14,8 @@ use super::{
 use crate::{
   db::ProjectDb,
   domain::{code::CodeChunk, document::DocumentChunk, memory::Memory},
-  service::util::ServiceError,
+  rerank::{RerankCandidate, RerankRequest, RerankerProvider},
+  service::util::{ServiceError, fusion},
 };
 
 // ============================================================================
@@ -49,27 +52,65 @@ pub async fn search(ctx: &ExploreContext<'_>, params: &SearchParams) -> Result<E
   let search_memory = params.scope.includes_memory();
   let search_docs = params.scope.includes_docs();
 
-  // Run all applicable searches in parallel
+  let fts_enabled = ctx.search_config.is_some_and(|c| c.fts_enabled);
+  let rrf_k = ctx.search_config.map_or(60, |c| c.rrf_k);
+  let oversample = if fts_enabled { 50 } else { params.limit };
+
+  // Phase 1: Run all domain searches in parallel (vector + FTS fusion, no reranking yet)
   let (code_results, memory_results, doc_results) = tokio::join!(
-    search_code_domain(ctx.db, &query_embedding, &params.query, params.limit, search_code),
-    search_memory_domain(ctx.db, &query_embedding, &params.query, params.limit, search_memory),
-    search_docs_domain(ctx.db, &query_embedding, &params.query, params.limit, search_docs),
+    search_code_domain(
+      ctx.db,
+      &query_embedding,
+      &params.query,
+      oversample,
+      search_code,
+      fts_enabled,
+      rrf_k
+    ),
+    search_memory_domain(
+      ctx.db,
+      &query_embedding,
+      &params.query,
+      oversample,
+      search_memory,
+      fts_enabled,
+      rrf_k
+    ),
+    search_docs_domain(
+      ctx.db,
+      &query_embedding,
+      &params.query,
+      oversample,
+      search_docs,
+      fts_enabled,
+      rrf_k
+    ),
   );
 
-  // Process code results
+  // Phase 2: Cross-domain reranking on the combined corpus
+  let (code_results, memory_results, doc_results) = if let Some(reranker) = ctx.reranker {
+    let rerank_candidates = ctx.search_config.map_or(30, |c| c.rerank_candidates);
+    rerank_cross_domain(
+      code_results,
+      memory_results,
+      doc_results,
+      &params.query,
+      rerank_candidates,
+      reranker,
+    )
+    .await
+  } else {
+    (code_results, memory_results, doc_results)
+  };
+
+  // Phase 3: Process results into ExploreResult structs
   if search_code {
     counts.insert("code".to_string(), code_results.len());
 
-    for (chunk, distance) in code_results {
-      let similarity: f32 = 1.0 - distance.min(1.0);
-
-      // Compute hints
+    for (chunk, score) in code_results {
       let hints = compute_code_hints(ctx.db, &chunk).await;
-
-      // Use semantic preview that prioritizes signature/docstring
       let preview = semantic_code_preview(&chunk, 300);
 
-      // Truncate docstring for result (first 2 lines)
       let docstring = chunk.docstring.as_ref().map(|d| {
         d.lines()
           .filter(|l| !l.trim().is_empty())
@@ -78,7 +119,6 @@ pub async fn search(ctx: &ExploreContext<'_>, params: &SearchParams) -> Result<E
           .join(" ")
       });
 
-      // Take top 5 imports/calls for quick context
       let imports: Vec<String> = chunk.imports.iter().take(5).cloned().collect();
       let calls: Vec<String> = chunk.calls.iter().take(5).cloned().collect();
 
@@ -92,8 +132,7 @@ pub async fn search(ctx: &ExploreContext<'_>, params: &SearchParams) -> Result<E
         language: Some(format!("{:?}", chunk.language).to_lowercase()),
         hints,
         context: None,
-        score: similarity,
-        // Semantic metadata for relevance evaluation
+        score,
         definition_kind: chunk.definition_kind.clone(),
         signature: chunk.signature.clone(),
         docstring,
@@ -104,14 +143,10 @@ pub async fn search(ctx: &ExploreContext<'_>, params: &SearchParams) -> Result<E
     }
   }
 
-  // Process memory results
   if search_memory {
     counts.insert("memory".to_string(), memory_results.len());
 
-    for (memory, distance) in memory_results {
-      let similarity: f32 = 1.0 - distance.min(1.0);
-
-      // Compute hints
+    for (memory, score) in memory_results {
       let hints = compute_memory_hints(ctx.db, &memory).await;
 
       all_results.push(ExploreResult {
@@ -124,8 +159,7 @@ pub async fn search(ctx: &ExploreContext<'_>, params: &SearchParams) -> Result<E
         language: None,
         hints,
         context: None,
-        score: similarity * memory.salience, // Weight by salience
-        // Not applicable to memories
+        score: score * memory.salience,
         definition_kind: None,
         signature: None,
         docstring: None,
@@ -136,16 +170,13 @@ pub async fn search(ctx: &ExploreContext<'_>, params: &SearchParams) -> Result<E
     }
   }
 
-  // Process document results
   if search_docs {
     counts.insert("docs".to_string(), doc_results.len());
 
-    for (chunk, distance) in doc_results {
-      let similarity: f32 = 1.0 - distance.min(1.0);
-
+    for (chunk, score) in doc_results {
       let hints = ExploreHints {
         total_chunks: Some(chunk.total_chunks),
-        related_code: None, // Not applicable to docs
+        related_code: None,
         ..Default::default()
       };
 
@@ -159,8 +190,7 @@ pub async fn search(ctx: &ExploreContext<'_>, params: &SearchParams) -> Result<E
         language: None,
         hints,
         context: None,
-        score: similarity,
-        // Not applicable to docs
+        score,
         definition_kind: None,
         signature: None,
         docstring: None,
@@ -186,7 +216,6 @@ pub async fn search(ctx: &ExploreContext<'_>, params: &SearchParams) -> Result<E
     {
       result.context = Some(expanded);
     }
-    // Memory and doc expansion handled in context tool
   }
 
   Ok(ExploreResponse {
@@ -210,52 +239,301 @@ async fn get_embedding(ctx: &ExploreContext<'_>, text: &str) -> Result<Vec<f32>,
 // Domain Search Helpers
 // ============================================================================
 
-/// Search code chunks with vector or text fallback.
+/// Search code chunks with hybrid FTS + vector search and RRF fusion.
+///
+/// Returns `(CodeChunk, score)` where score is a similarity (higher = better).
+#[allow(clippy::too_many_arguments)]
 async fn search_code_domain(
   db: &ProjectDb,
   embedding: &[f32],
-  _query: &str,
+  query: &str,
   limit: usize,
   enabled: bool,
+  fts_enabled: bool,
+  rrf_k: u32,
 ) -> Vec<(CodeChunk, f32)> {
   if !enabled {
     return Vec::new();
   }
 
-  db.search_code_chunks(embedding, limit, None).await.unwrap_or_default()
+  if fts_enabled {
+    let (vector_results, fts_results) = tokio::join!(
+      db.search_code_chunks(embedding, limit, None),
+      db.fts_search_code_chunks(query, limit, None),
+    );
+
+    let vector_results = vector_results.unwrap_or_default();
+    let fts_results = fts_results.unwrap_or_else(|e| {
+      warn!(error = %e, "FTS code search failed in explore, falling back to vector-only");
+      Vec::new()
+    });
+
+    debug!(
+      vector_count = vector_results.len(),
+      fts_count = fts_results.len(),
+      "Explore hybrid code retrieval complete"
+    );
+
+    fuse_rrf(vector_results, fts_results, rrf_k)
+  } else {
+    db.search_code_chunks(embedding, limit, None)
+      .await
+      .unwrap_or_default()
+      .into_iter()
+      .map(|(chunk, dist)| (chunk, 1.0 - dist.min(1.0)))
+      .collect()
+  }
 }
 
-/// Search memories with vector or text fallback.
+/// Search memories with hybrid FTS + vector search and RRF fusion.
+///
+/// Returns `(Memory, score)` where score is a similarity (higher = better).
+#[allow(clippy::too_many_arguments)]
 async fn search_memory_domain(
   db: &ProjectDb,
   embedding: &[f32],
-  _query: &str,
+  query: &str,
   limit: usize,
   enabled: bool,
+  fts_enabled: bool,
+  rrf_k: u32,
 ) -> Vec<(Memory, f32)> {
   if !enabled {
     return Vec::new();
   }
 
-  // Use the service layer function which properly filters out deleted memories
-  crate::service::memory::search::search_by_embedding(db, embedding, limit, None)
-    .await
-    .unwrap_or_default()
+  let deleted_filter = Some("is_deleted = false");
+
+  if fts_enabled {
+    let (vector_results, fts_results) = tokio::join!(
+      db.search_memories(embedding, limit, deleted_filter),
+      db.fts_search_memories(query, limit, deleted_filter),
+    );
+
+    let vector_results = vector_results.unwrap_or_default();
+    let fts_results = fts_results.unwrap_or_else(|e| {
+      warn!(error = %e, "FTS memory search failed in explore, falling back to vector-only");
+      Vec::new()
+    });
+
+    debug!(
+      vector_count = vector_results.len(),
+      fts_count = fts_results.len(),
+      "Explore hybrid memory retrieval complete"
+    );
+
+    fuse_rrf(vector_results, fts_results, rrf_k)
+  } else {
+    crate::service::memory::search::search_by_embedding(db, embedding, limit, None)
+      .await
+      .unwrap_or_default()
+      .into_iter()
+      .map(|(mem, dist)| (mem, 1.0 - dist.min(1.0)))
+      .collect()
+  }
 }
 
-/// Search documents with vector or text fallback.
+/// Search documents with hybrid FTS + vector search and RRF fusion.
+///
+/// Returns `(DocumentChunk, score)` where score is a similarity (higher = better).
+#[allow(clippy::too_many_arguments)]
 async fn search_docs_domain(
   db: &ProjectDb,
   embedding: &[f32],
-  _query: &str,
+  query: &str,
   limit: usize,
   enabled: bool,
+  fts_enabled: bool,
+  rrf_k: u32,
 ) -> Vec<(DocumentChunk, f32)> {
   if !enabled {
     return Vec::new();
   }
 
-  db.search_documents(embedding, limit, None).await.unwrap_or_default()
+  if fts_enabled {
+    let (vector_results, fts_results) = tokio::join!(
+      db.search_documents(embedding, limit, None),
+      db.fts_search_documents(query, limit, None),
+    );
+
+    let vector_results = vector_results.unwrap_or_default();
+    let fts_results = fts_results.unwrap_or_else(|e| {
+      warn!(error = %e, "FTS document search failed in explore, falling back to vector-only");
+      Vec::new()
+    });
+
+    debug!(
+      vector_count = vector_results.len(),
+      fts_count = fts_results.len(),
+      "Explore hybrid document retrieval complete"
+    );
+
+    fuse_rrf(vector_results, fts_results, rrf_k)
+  } else {
+    db.search_documents(embedding, limit, None)
+      .await
+      .unwrap_or_default()
+      .into_iter()
+      .map(|(doc, dist)| (doc, 1.0 - dist.min(1.0)))
+      .collect()
+  }
+}
+
+// ============================================================================
+// Hybrid Search Helpers
+// ============================================================================
+
+/// Fuse vector + FTS results with RRF into a single scored list.
+///
+/// Returns items with RRF scores (higher = better).
+fn fuse_rrf<T: Clone>(vector_results: Vec<(T, f32)>, fts_results: Vec<(T, f32)>, rrf_k: u32) -> Vec<(T, f32)> {
+  let mut item_map: HashMap<String, T> = HashMap::new();
+  let mut vector_ids: Vec<String> = Vec::with_capacity(vector_results.len());
+  let mut fts_ids: Vec<String> = Vec::with_capacity(fts_results.len());
+
+  for (i, (item, _)) in vector_results.iter().enumerate() {
+    let key = format!("v{i}");
+    item_map.insert(key.clone(), item.clone());
+    vector_ids.push(key);
+  }
+  for (i, (item, _)) in fts_results.iter().enumerate() {
+    let key = format!("f{i}");
+    item_map.insert(key.clone(), item.clone());
+    fts_ids.push(key);
+  }
+
+  let fused = fusion::reciprocal_rank_fusion(&[vector_ids, fts_ids], rrf_k);
+
+  fused
+    .into_iter()
+    .filter_map(|(id, score)| item_map.remove(&id).map(|item| (item, score)))
+    .collect()
+}
+
+/// Cross-domain reranking: merge all domain results into a single pool,
+/// rerank once with the cross-encoder, then split back by domain.
+async fn rerank_cross_domain(
+  code_results: Vec<(CodeChunk, f32)>,
+  memory_results: Vec<(Memory, f32)>,
+  doc_results: Vec<(DocumentChunk, f32)>,
+  query: &str,
+  max_candidates: usize,
+  reranker: &dyn RerankerProvider,
+) -> (Vec<(CodeChunk, f32)>, Vec<(Memory, f32)>, Vec<(DocumentChunk, f32)>) {
+  if !reranker.is_available() {
+    warn!(
+      provider = reranker.name(),
+      "Reranker not available for explore, skipping cross-domain reranking"
+    );
+    return (code_results, memory_results, doc_results);
+  }
+
+  // Build a unified candidate list with domain-prefixed keys
+  let mut candidates: Vec<(String, f32)> = Vec::new();
+  let mut texts: HashMap<String, String> = HashMap::new();
+
+  for (i, (chunk, score)) in code_results.iter().enumerate() {
+    let key = format!("c{i}");
+    let text = chunk
+      .embedding_text
+      .as_deref()
+      .unwrap_or(&chunk.content)
+      .chars()
+      .take(4000)
+      .collect();
+    candidates.push((key.clone(), *score));
+    texts.insert(key, text);
+  }
+  for (i, (mem, score)) in memory_results.iter().enumerate() {
+    let key = format!("m{i}");
+    let text = mem.content.chars().take(4000).collect();
+    candidates.push((key.clone(), *score));
+    texts.insert(key, text);
+  }
+  for (i, (doc, score)) in doc_results.iter().enumerate() {
+    let key = format!("d{i}");
+    let text = doc.content.chars().take(4000).collect();
+    candidates.push((key.clone(), *score));
+    texts.insert(key, text);
+  }
+
+  // Sort by score descending and take top N for reranking
+  candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+  candidates.truncate(max_candidates);
+
+  let max = reranker.max_candidates();
+  let rerank_items: Vec<RerankCandidate> = candidates
+    .iter()
+    .take(max)
+    .filter_map(|(key, _)| {
+      texts.get(key).map(|text| RerankCandidate {
+        id: key.clone(),
+        text: text.clone(),
+      })
+    })
+    .collect();
+
+  if rerank_items.is_empty() {
+    return (code_results, memory_results, doc_results);
+  }
+
+  let request = RerankRequest {
+    query: query.to_string(),
+    instruction: None,
+    candidates: rerank_items,
+    top_n: None,
+  };
+
+  let reranked = match reranker.rerank(request).await {
+    Ok(response) => {
+      debug!(
+        duration_ms = response.duration_ms,
+        results = response.results.len(),
+        "Explore cross-domain reranking complete"
+      );
+      fusion::blend_scores(&candidates, &response.results)
+    }
+    Err(e) => {
+      warn!(error = %e, "Explore cross-domain reranking failed, using original scores");
+      return (code_results, memory_results, doc_results);
+    }
+  };
+
+  // Build score lookup from reranked results
+  let score_map: HashMap<String, f32> = reranked.into_iter().collect();
+
+  // Apply reranked scores back to each domain
+  let code_results: Vec<(CodeChunk, f32)> = code_results
+    .into_iter()
+    .enumerate()
+    .map(|(i, (chunk, original))| {
+      let key = format!("c{i}");
+      let score = score_map.get(&key).copied().unwrap_or(original);
+      (chunk, score)
+    })
+    .collect();
+
+  let memory_results: Vec<(Memory, f32)> = memory_results
+    .into_iter()
+    .enumerate()
+    .map(|(i, (mem, original))| {
+      let key = format!("m{i}");
+      let score = score_map.get(&key).copied().unwrap_or(original);
+      (mem, score)
+    })
+    .collect();
+
+  let doc_results: Vec<(DocumentChunk, f32)> = doc_results
+    .into_iter()
+    .enumerate()
+    .map(|(i, (doc, original))| {
+      let key = format!("d{i}");
+      let score = score_map.get(&key).copied().unwrap_or(original);
+      (doc, score)
+    })
+    .collect();
+
+  (code_results, memory_results, doc_results)
 }
 
 // ============================================================================

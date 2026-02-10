@@ -239,7 +239,11 @@ mod tests {
   };
 
   fn make_reranker() -> DeepInfraReranker {
-    let config = RerankerConfig::default();
+    let config = RerankerConfig {
+      provider: crate::domain::config::RerankerProviderKind::DeepInfra,
+      model: "Qwen/Qwen3-Reranker-8B".to_string(),
+      ..Default::default()
+    };
     DeepInfraReranker::new(&config).expect("DEEPINFRA_API_KEY must be set in the environment")
   }
 

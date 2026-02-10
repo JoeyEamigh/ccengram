@@ -48,20 +48,21 @@ pub struct ActorTestContext {
 }
 
 impl ActorTestContext {
-  /// Create a new test context with OpenRouter embedding provider.
+  /// Create a new test context with the user's configured embedding provider.
   pub async fn new() -> Self {
     let project_dir = TempDir::new().expect("create project temp dir");
     let data_dir = TempDir::new().expect("create data temp dir");
     let project_id = ProjectId::from_path(project_dir.path()).await;
 
-    // Use a test config with short debounce times
-    let mut config = Config::default();
+    // Load global config so test uses the same config that ProjectActor::spawn
+    // will see (it calls Config::load_for_project which falls back to load_global)
+    let mut config = Config::load_global().await;
     config.index.watcher_debounce_ms = 50; // Fast debounce for tests
 
-    // Use the real OpenRouter provider - tests expect real embeddings
+    // Use the configured embedding provider - must match the config the actor will use
     let embedding = <dyn EmbeddingProvider>::from_config(&config.embedding)
       .await
-      .expect("OpenRouter should be available for tests");
+      .expect("Embedding provider should be available for tests");
 
     Self {
       project_dir,
