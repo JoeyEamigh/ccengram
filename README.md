@@ -125,22 +125,47 @@ The watcher performs a **startup scan** when launched to detect any files that c
 To help Claude Code make the best use of CCEngram, add something like this to your project's `CLAUDE.md`:
 
 ```markdown
-## Semantic Code Search
+## Claude
 
-This project uses CCEngram for semantic code search.
+## Semantic Code Search (CCEngram)
+
+This project uses CCEngram for semantic code search and code navigation. CCEngram tools are the most efficient way to find what you are looking for. ALWAYS USE THEM!
 
 ### Tools
 
-- **`explore`** - Semantic search across code and documents. Questions like "how does auth work?" find relevant code even without exact keyword matches.
-- **`context`** - Expands a code chunk to show surrounding lines. Use after `explore` if you need to see more context.
+- **`explore`** - Semantic search across code, docs, and memories. Returns ranked results with IDs you can pass to `context`. Key parameters:
+  - `expand_top` (default 3): Automatically includes full context (callers, callees, siblings, related memories) for top N results — use this to get call graph info in a single call
+  - `scope`: `code` (default, searches code+docs), `memory` (past decisions/patterns, rarely useful by itself), `all` (everything including memories)
+- **`context`** - Get full navigation context for specific result IDs from `explore`. Returns:
+  - **Callers**: Functions that call this code (who uses this?)
+  - **Callees**: Functions this code calls (what does this depend on?)
+  - **Siblings**: Other functions/types in the same file
+  - **Related memories**: Past decisions and patterns related to this code
+  - Accepts single `id` or batch `ids` (up to 5) for efficient lookups
+  - Use `depth` parameter to control how many items per section (default 5)
 
-### When to Use `explore` vs Grep/Glob
+### Usage Patterns
 
-Use `explore` when searching by concept or meaning. Use Grep/Glob when you know the exact symbol name or pattern. You can combine both: first use `explore` to find relevant areas, then Grep/Glob within those files for exact matches.
+- **Understanding a function's role**: Use `explore` with `expand_top` to find the function and immediately see its callers and callees
+- **Tracing a call chain**: Use `context` on a result to see callers, then `context` on a caller to trace further up
+- **Finding all consumers of an API**: Use `context` to get callers of a function — this is faster than Grep for understanding usage patterns since it shows the actual call graph
+- **Batch lookups**: Pass multiple IDs to `context` with the `ids` parameter to get context for several results at once
+
+### When to Use CCEngram vs Grep/Glob
+
+CCEngram's `explore` supports both semantic and keyword search internally (backed by a reranker), but it is significantly slower than Grep/Glob. Use each tool where it excels:
+
+| Task                                             | Use                                                                |
+| ------------------------------------------------ | ------------------------------------------------------------------ |
+| Search by concept or meaning                     | `explore`                                                          |
+| Understand what calls a function / what it calls | `explore` with `expand_top`, or `context`                          |
+| Quick exact symbol name or string literal lookup | Grep/Glob (much faster)                                            |
+| Navigate a call graph across files               | `context` chaining                                                 |
+| Combine approaches                               | `explore` to find relevant areas, then Grep/Glob for exact matches |
 
 ### Agent Selection
 
-**Always use the `SemExplore` agent instead of the built-in `Explore` agent.** SemExplore has the same capabilities plus access to semantic search tools.
+**Always use the `SemExplore` agent instead of the built-in `Explore` agent.** SemExplore has the same capabilities plus access to CCEngram's semantic search and code navigation tools.
 ```
 
 ## Projects
